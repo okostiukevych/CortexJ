@@ -1,12 +1,13 @@
 package io.cortexj.spi.runtime;
 
-import io.cortexj.hardware.EnvironmentProfile;
-import io.cortexj.hardware.HardwareProfile;
+import io.cortexj.runtime.RuntimeDescriptor;
 import io.cortexj.runtime.RuntimeId;
 
 public interface RuntimeProvider {
 
     RuntimeId id();
+
+    RuntimeDescriptor descriptor();
 
     RuntimeProbeResult probe(RuntimeProbeContext context);
 
