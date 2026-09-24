@@ -116,6 +116,7 @@ public final class DefaultExecutionPlanner implements Planner {
         return new ExecutionPlan(
                 outcome.resolved.descriptor().canonicalId(),
                 outcome.resolved.revision(),
+                outcome.resolved,
                 winner,
                 fallbacks,
                 reasons,

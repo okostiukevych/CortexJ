@@ -8,6 +8,7 @@ public final class ExecutionPlan {
 
     private final String modelId;
     private final String resolvedRevision;
+    private final io.cortexj.spi.repository.ResolvedModel resolvedModel;
     private final ExecutionCandidate selected;
     private final List<ExecutionCandidate> fallbacks;
     private final List<PlanReason> reasons;
@@ -22,6 +23,7 @@ public final class ExecutionPlan {
 
     public ExecutionPlan(String modelId,
                         String resolvedRevision,
+                        io.cortexj.spi.repository.ResolvedModel resolvedModel,
                         ExecutionCandidate selected,
                         List<ExecutionCandidate> fallbacks,
                         List<PlanReason> reasons,
@@ -35,6 +37,7 @@ public final class ExecutionPlan {
                         String inputsDigest) {
         this.modelId = modelId;
         this.resolvedRevision = resolvedRevision;
+        this.resolvedModel = resolvedModel;
         this.selected = selected;
         this.fallbacks = Collections.unmodifiableList(new ArrayList<ExecutionCandidate>(fallbacks));
         this.reasons = Collections.unmodifiableList(new ArrayList<PlanReason>(reasons));
@@ -54,6 +57,10 @@ public final class ExecutionPlan {
 
     public String resolvedRevision() {
         return resolvedRevision;
+    }
+
+    public io.cortexj.spi.repository.ResolvedModel resolvedModel() {
+        return resolvedModel;
     }
 
     public ExecutionCandidate selected() {

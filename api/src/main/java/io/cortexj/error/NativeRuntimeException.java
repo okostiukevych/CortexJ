@@ -4,4 +4,8 @@ public class NativeRuntimeException extends CortexJException {
     public NativeRuntimeException(String code, String message) { super(code, message); }
     public NativeRuntimeException(String code, String message, String remediation) { super(code, message, remediation); }
     public NativeRuntimeException(String code, String message, Throwable cause) { super(code, message, cause); }
+    public NativeRuntimeException(String code, String message, String remediation, Throwable cause) {
+        super(code, message, cause);
+        remediate(remediation);
+    }
 }
