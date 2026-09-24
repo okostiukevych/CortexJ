@@ -42,8 +42,11 @@ execution path was selected.
 </dependency>
 ```
 
-Starters available: `cortexj-starter-java17`, `cortexj-starter-java21`, `cortexj-starter-java25`
-(Java 8/11 platform modules already ship as part of the shared Java 8 baseline).
+Starters for **every supported LTS line** (§7.1 of the spec): `cortexj-starter-java8`,
+`cortexj-starter-java11`, `cortexj-starter-java17`, `cortexj-starter-java21`,
+`cortexj-starter-java25`. The starter matches your JVM at bootstrap: using a starter
+built for a newer JVM fails fast with an actionable diagnostic (AC-JAVA-004), and the
+business code stays identical across all five (AC-JAVA-003).
 
 ## CLI
 
@@ -104,7 +107,7 @@ Layering rules (enforced by module boundaries):
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
 | `cortexj-runtime-llamacpp` | llama.cpp provider (probe + honest diagnostics; JNI bridge is a later milestone) |
 | `cortexj-platform-java8..25` | LTS platform modules |
-| `cortexj-starter-java17/21/25` | Maven starters with JVM validation |
+| `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |
 | `cortexj-tck` | Technology compatibility kit for runtime/repository providers |
 | `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run` |
 
@@ -117,7 +120,10 @@ Layering rules (enforced by module boundaries):
 - **M2** — runtime SPI registry, core platform, OpenAI-compatible remote provider: done
 - **M3** — ONNX provider (probe/load/tokenizer/embeddings); llama.cpp probe + actionable
   diagnostics (JNI execution bridge intentionally deferred)
-- **M5** — platform modules for Java 8/11/17/21/25 + starters 17/21/25 with wrong-JVM detection
+- **M5** — platform modules for Java 8/11/17/21/25 + starters for all five LTS lines with
+  wrong-JVM detection
+- **M6** — legacy support: verified by building and testing the full shared core on real
+  JDK 8 and JDK 11 (M6 acceptance: starter-java8/java11 present, 87 tests green on both)
 
 Known follow-ups (explicit non-goals of this drop, tracked by the spec's v1.0 scope):
 llama.cpp JNI bridge, Safetensors direct execution, conversion subsystem, lockfile/air-gap
@@ -125,14 +131,32 @@ bundle, Spring AI/LangChain4j adapters, JInfer/DJL providers, server mode.
 
 ## Build
 
-```text
-JDK 21+ required to build (LTS platform modules up to release 25); artifacts themselves
-target Java 8 where applicable.
+The reactor adapts to the building JDK via profiles:
 
-mvn install
+| Build JDK | Modules built |
+|---|---|
+| 8 | shared core, platform-java8, starter-java8, providers, TCK |
+| 11 | + platform-java11, starter-java11 |
+| 17 | + platform-java17, starter-java17 |
+| 21 | + platform-java21, starter-java21 |
+| 25 | + platform-java25, starter-java25, CLI (fat jar) |
+
+```text
+mvn clean install
 ```
 
-87 automated tests across 13 test suites: planner synthetic matrices (determinism, hard
+Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
+
+- `mvn test` green on each LTS JDK — 87 tests, 0 failures on every lane
+  (JDK 8 build uses `-source/-target 8`; JDK 9+ uses `--release 8`).
+- The single shaded CLI jar runs unchanged on Java 8 through 25, reporting the correct
+  JVM each time; newer platform classes are skipped gracefully on older JVMs, and the
+  matching `PlatformModule` is selected at runtime (fixed pool on 8–17, virtual threads
+  from 21+).
+- `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
+  and the exact remediation: *replace with cortexj-starter-java8*.
+
+87 automated tests across 16 suites: planner synthetic matrices (determinism, hard
 constraints, JVM/quality/offline policies), provider TCK, download integrity, cache safety,
 and an end-to-end load→plan→execute→close cycle.
 
