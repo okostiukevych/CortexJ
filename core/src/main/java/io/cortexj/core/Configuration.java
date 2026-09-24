@@ -77,7 +77,7 @@ public final class Configuration {
             config.put("remote.baseUrl", remoteBaseUrl);
         }
         if (remoteApiKey != null) {
-            config.put("remote.apiKeyPresent", "true");
+            config.put("remote.apiKey", remoteApiKey);
         }
         if (memoryLimitBytes != null) {
             config.put("memoryLimitBytes", String.valueOf(memoryLimitBytes));

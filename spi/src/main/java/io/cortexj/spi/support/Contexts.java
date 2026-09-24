@@ -45,11 +45,12 @@ public final class Contexts {
                                                 java.nio.file.Path artifactPath,
                                                 DeviceType device,
                                                 Map<String, Object> runtimeOptions,
+                                                Map<String, String> platformConfiguration,
                                                 EnvironmentProfile environment,
                                                 HardwareProfile hardware,
                                                 ExecutorService executor,
                                                 PlatformEventListener listener) {
-        return new RuntimeOpenRequest(model, artifact, artifactPath, device, runtimeOptions, environment, hardware, executor, listener);
+        return new RuntimeOpenRequest(model, artifact, artifactPath, device, runtimeOptions, platformConfiguration, environment, hardware, executor, listener);
     }
 
     public static PlanningContext planningContext(EnvironmentProfile environment, HardwareProfile hardware, ExecutionRequest request, PlanningContext.CacheLookup cacheLookup) {

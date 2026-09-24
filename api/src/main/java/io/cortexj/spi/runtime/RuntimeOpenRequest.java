@@ -20,6 +20,7 @@ public final class RuntimeOpenRequest {
     private final Path artifactPath;
     private final DeviceType device;
     private final Map<String, Object> runtimeOptions;
+    private final Map<String, String> platformConfiguration;
     private final EnvironmentProfile environment;
     private final HardwareProfile hardware;
     private final ExecutorService executor;
@@ -30,6 +31,7 @@ public final class RuntimeOpenRequest {
                              Path artifactPath,
                              DeviceType device,
                              Map<String, Object> runtimeOptions,
+                             Map<String, String> platformConfiguration,
                              EnvironmentProfile environment,
                              HardwareProfile hardware,
                              ExecutorService executor,
@@ -41,6 +43,9 @@ public final class RuntimeOpenRequest {
         this.runtimeOptions = runtimeOptions == null
                 ? Collections.<String, Object>emptyMap()
                 : Collections.unmodifiableMap(new LinkedHashMap<String, Object>(runtimeOptions));
+        this.platformConfiguration = platformConfiguration == null
+                ? Collections.<String, String>emptyMap()
+                : Collections.unmodifiableMap(new LinkedHashMap<String, String>(platformConfiguration));
         this.environment = environment;
         this.hardware = hardware;
         this.executor = executor;
@@ -65,6 +70,10 @@ public final class RuntimeOpenRequest {
 
     public Map<String, Object> runtimeOptions() {
         return runtimeOptions;
+    }
+
+    public Map<String, String> platformConfiguration() {
+        return platformConfiguration;
     }
 
     public EnvironmentProfile environment() {
