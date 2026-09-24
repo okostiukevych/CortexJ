@@ -30,6 +30,8 @@ public enum ReasonCode {
     DEVICE_PREFERENCE_MATCH("device matches the user preference"),
     RUNTIME_MATURITY_HIGH("runtime is marked stable"),
     QUALITY_PROFILE_MATCH("artifact quantization matches the quality profile"),
+    POLICY_APPLIED("a custom planner policy adjusted this candidate"),
+    PLANNER_NOTE("planner note"),
     LOWER_STARTUP_COST("lower estimated startup/conversion cost"),
     HIGHER_QUALITY_QUANTIZATION("higher quality quantization within the memory budget");
 

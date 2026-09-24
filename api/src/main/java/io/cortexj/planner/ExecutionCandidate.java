@@ -66,6 +66,48 @@ public final class ExecutionCandidate {
         return notes;
     }
 
+    public java.util.List<PlanReason> notesAsReasons() {
+        java.util.List<PlanReason> reasons = new java.util.ArrayList<PlanReason>();
+        for (Map.Entry<String, String> entry : notes.entrySet()) {
+            ReasonCode code = codeForKey(entry.getKey());
+            String message = prettifiedKey(entry.getKey())
+                    + ("true".equals(entry.getValue()) ? "" : ": " + entry.getValue());
+            reasons.add(code == ReasonCode.LOWER_STARTUP_COST && "tight".equals(entry.getValue())
+                    ? PlanReason.negative(code, message)
+                    : PlanReason.positive(code, message));
+        }
+        return reasons;
+    }
+
+    private static ReasonCode codeForKey(String key) {
+        if (key.equals("cached")) {
+            return ReasonCode.LOCAL_CACHE_HIT;
+        }
+        if (key.equals("nativeFormat")) {
+            return ReasonCode.NATIVE_ARTIFACT_AVAILABLE;
+        }
+        if (key.equals("headroom")) {
+            return ReasonCode.MEMORY_HEADROOM_OK;
+        }
+        if (key.equals("preferredRuntime")) {
+            return ReasonCode.USER_PREFERENCE_MATCH;
+        }
+        if (key.equals("preferredDevice")) {
+            return ReasonCode.DEVICE_PREFERENCE_MATCH;
+        }
+        if (key.equals("preferredQuantization")) {
+            return ReasonCode.QUALITY_PROFILE_MATCH;
+        }
+        if (key.startsWith("policy:")) {
+            return ReasonCode.POLICY_APPLIED;
+        }
+        return ReasonCode.PLANNER_NOTE;
+    }
+
+    private static String prettifiedKey(String key) {
+        return key.startsWith("policy:") ? key.substring("policy:".length()) : key;
+    }
+
     public String stableKey() {
         return runtimeId + "|" + (artifact == null ? "-" : artifact.id()) + "|" + device + "|" + (quantization == null ? "-" : quantization);
     }
@@ -119,6 +161,11 @@ public final class ExecutionCandidate {
 
         public Builder score(double score) {
             this.score = score;
+            return this;
+        }
+
+        public Builder addScore(double delta) {
+            this.score += delta;
             return this;
         }
 

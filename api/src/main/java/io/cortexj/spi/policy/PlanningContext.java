@@ -7,7 +7,7 @@ import io.cortexj.planner.ExecutionRequest;
 public final class PlanningContext {
 
     public interface CacheLookup {
-        boolean isCached(String artifactId, String checksum);
+        boolean isCached(String repositoryId, String revision, String artifactId, String checksum);
     }
 
     private final EnvironmentProfile environment;
@@ -21,7 +21,7 @@ public final class PlanningContext {
         this.request = request;
         this.cacheLookup = cacheLookup == null ? new CacheLookup() {
             @Override
-            public boolean isCached(String artifactId, String checksum) {
+            public boolean isCached(String repositoryId, String revision, String artifactId, String checksum) {
                 return false;
             }
         } : cacheLookup;
