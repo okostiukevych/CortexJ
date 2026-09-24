@@ -58,6 +58,9 @@ public final class CortexJMain {
             if (command.equals("run")) {
                 return runModel(platform, args);
             }
+            if (command.equals("bundle")) {
+                return bundle(args);
+            }
             System.err.println("Unknown command: " + command);
             usage();
             return 1;
@@ -77,6 +80,10 @@ public final class CortexJMain {
         System.out.println("  cortexj plan <model> [options]        print the explainable execution plan");
         System.out.println("  cortexj pull <model>                 download the planned artifacts into the cache");
         System.out.println("  cortexj run <model> --prompt <text>   load and execute the model");
+        System.out.println();
+        System.out.println("Air-gap bundle:");
+        System.out.println("  cortexj bundle create <model> --out <dir>   create a portable offline bundle");
+        System.out.println("  cortexj bundle verify <dir>                 verify a bundle before deployment");
         System.out.println();
         System.out.println("Options for plan/pull/run:");
         System.out.println("  --runtime <id>        require a specific runtime");
@@ -234,6 +241,71 @@ public final class CortexJMain {
         } finally {
             handle.close();
         }
+    }
+
+    private static int bundle(String[] args) {
+        if (args.length < 3) {
+            usage();
+            return 1;
+        }
+        String action = args[1];
+        java.util.List<io.cortexj.spi.repository.ModelRepositoryProvider> repositories =
+                io.cortexj.core.SpiRegistries.loadSorted(io.cortexj.spi.repository.ModelRepositoryProvider.class,
+                        new io.cortexj.core.SpiRegistries.IdAccessor<io.cortexj.spi.repository.ModelRepositoryProvider>() {
+                            public String idOf(io.cortexj.spi.repository.ModelRepositoryProvider provider) {
+                                return provider.id().value();
+                            }
+                        }, java.util.Collections.<io.cortexj.spi.repository.ModelRepositoryProvider>emptyList());
+        io.cortexj.repository.local.bundle.ModelBundler bundler =
+                new io.cortexj.repository.local.bundle.ModelBundler(repositories, defaultCache());
+        if (action.equals("create")) {
+            String model = args[2];
+            String out = optionValue(args, "--out");
+            if (out == null) {
+                System.err.println("bundle create requires --out <dir>");
+                return 1;
+            }
+            boolean offline = false;
+            for (String arg : args) {
+                if (arg.equals("--offline")) {
+                    offline = true;
+                    break;
+                }
+            }
+            io.cortexj.spi.repository.ResolutionContext context =
+                    io.cortexj.spi.repository.ResolutionContext.create(offline,
+                            io.cortexj.spi.repository.TokenSupplier.none(), null, null);
+            java.nio.file.Path bundleDir =
+                    bundler.create(io.cortexj.model.ModelReference.of(model), java.nio.file.Paths.get(out), context);
+            io.cortexj.repository.local.bundle.BundleReport report = bundler.verify(bundleDir);
+            System.out.println("bundle created: " + bundleDir);
+            System.out.println("  model:    " + report.modelId());
+            System.out.println("  revision: " + report.revision());
+            System.out.println("  artifacts verified: " + report.verifiedArtifacts());
+            return report.isOk() ? 0 : 2;
+        }
+        if (action.equals("verify")) {
+            io.cortexj.repository.local.bundle.BundleReport report =
+                    bundler.verify(java.nio.file.Paths.get(args[2]));
+            System.out.println("bundle: " + args[2]);
+            if (report.modelId() != null) {
+                System.out.println("  model:    " + report.modelId());
+                System.out.println("  revision: " + report.revision());
+                System.out.println("  artifacts verified: " + report.verifiedArtifacts());
+            }
+            for (String issue : report.issues()) {
+                System.out.println("  ERROR: " + issue);
+            }
+            System.out.println(report.isOk() ? "bundle is consistent" : "bundle verification FAILED");
+            return report.isOk() ? 0 : 2;
+        }
+        System.err.println("Unknown bundle action: " + action + " (use create or verify)");
+        return 1;
+    }
+
+    private static io.cortexj.cache.CacheStorage defaultCache() {
+        String home = System.getProperty("user.home", ".");
+        return new io.cortexj.cache.CacheStorage(java.nio.file.Paths.get(home, ".cortexj", "cache"));
     }
 
     private static String modelArg(String[] args) {
