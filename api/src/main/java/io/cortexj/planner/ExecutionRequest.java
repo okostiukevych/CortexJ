@@ -30,6 +30,7 @@ public final class ExecutionRequest {
     private final ArtifactFormat requiredFormat;
     private final String preferredQuantization;
     private final ReproducibilityMode reproducibilityMode;
+    private final ModelLockfile lockfile;
     private final Map<String, Map<String, Object>> runtimeOptions;
     private final boolean downloadAllowed;
 
@@ -49,6 +50,7 @@ public final class ExecutionRequest {
         this.requiredFormat = builder.requiredFormat;
         this.preferredQuantization = normalize(builder.preferredQuantization);
         this.reproducibilityMode = builder.reproducibilityMode == null ? ReproducibilityMode.FLEXIBLE : builder.reproducibilityMode;
+        this.lockfile = builder.lockfile;
         this.runtimeOptions = deepCopy(builder.runtimeOptions);
         this.downloadAllowed = builder.downloadAllowed;
     }
@@ -148,6 +150,10 @@ public final class ExecutionRequest {
         return reproducibilityMode;
     }
 
+    public ModelLockfile lockfile() {
+        return lockfile;
+    }
+
     public Map<String, Map<String, Object>> runtimeOptions() {
         return runtimeOptions;
     }
@@ -182,6 +188,7 @@ public final class ExecutionRequest {
         private ArtifactFormat requiredFormat;
         private String preferredQuantization;
         private ReproducibilityMode reproducibilityMode;
+        private ModelLockfile lockfile;
         private final Map<String, Map<String, Object>> runtimeOptions = new LinkedHashMap<String, Map<String, Object>>();
         private boolean downloadAllowed = true;
 
@@ -259,6 +266,16 @@ public final class ExecutionRequest {
 
         public Builder reproducibilityMode(ReproducibilityMode mode) {
             this.reproducibilityMode = mode;
+            return this;
+        }
+
+        public Builder lockfile(ModelLockfile lockfile) {
+            this.lockfile = lockfile;
+            if (lockfile != null) {
+                if (reproducibilityMode == null || reproducibilityMode == ReproducibilityMode.FLEXIBLE) {
+                    this.reproducibilityMode = ReproducibilityMode.PINNED_MODEL;
+                }
+            }
             return this;
         }
 

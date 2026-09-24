@@ -14,6 +14,8 @@ import io.cortexj.planner.ExecutionCandidate;
 import io.cortexj.planner.ExecutionPlan;
 import io.cortexj.planner.ExecutionRequest;
 import io.cortexj.planner.FallbackPolicy;
+import io.cortexj.planner.ModelLockfile;
+import io.cortexj.planner.ReproducibilityMode;
 import io.cortexj.planner.MemoryEstimate;
 import io.cortexj.planner.PlanDownload;
 import io.cortexj.planner.PlanReason;
@@ -67,6 +69,7 @@ public final class DefaultExecutionPlanner implements Planner {
     @Override
     public ExecutionPlan plan(ExecutionRequest request) {
         Outcome outcome = runPipeline(request);
+        enforcePinning(request, outcome);
         if (outcome.viable.isEmpty()) {
             if (request.requiredRuntime() != null) {
                 PlanningException impossible = new PlanningException(ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
@@ -130,6 +133,55 @@ public final class DefaultExecutionPlanner implements Planner {
                 inputs.platformVersion,
                 PLANNER_VERSION,
                 digest(outcome, request));
+    }
+
+    private void enforcePinning(ExecutionRequest request, Outcome outcome) {
+        ModelLockfile lockfile = request.lockfile();
+        if (lockfile == null) {
+            return;
+        }
+        if (lockfile.revision() != null && !lockfile.revision().equals(outcome.resolved.revision())) {
+            PlanningException pinned = new PlanningException(ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
+                    "Pinned model revision '" + lockfile.revision() + "' does not match resolved revision '"
+                            + outcome.resolved.revision() + "' for " + lockfile.model(),
+                    "The repository content changed; re-verify the model or update the lockfile.");
+            pinned.detail("lockfileRevision", lockfile.revision());
+            pinned.detail("resolvedRevision", outcome.resolved.revision());
+            throw pinned;
+        }
+        if (request.reproducibilityMode() != ReproducibilityMode.PINNED_PLAN) {
+            return;
+        }
+        List<ExecutionCandidate> matching = new ArrayList<ExecutionCandidate>();
+        List<SupportReport.RejectedCandidate> pinRejections = new ArrayList<SupportReport.RejectedCandidate>();
+        for (ExecutionCandidate candidate : outcome.viable) {
+            boolean runtimeMatches = !lockfile.pinsRuntime() || lockfile.runtimeId().equals(candidate.runtimeId());
+            boolean artifactMatches = !lockfile.pinsArtifact()
+                    || (candidate.artifact() != null && lockfile.artifactFile().equals(candidate.artifact().id()));
+            if (runtimeMatches && artifactMatches) {
+                matching.add(candidate);
+            } else {
+                pinRejections.add(new SupportReport.RejectedCandidate(candidate,
+                        PlanReason.negative(ReasonCode.USER_REQUIREMENT_CONFLICT,
+                                "candidate " + candidate.stableKey() + " does not match the pinned plan ("
+                                        + lockfile.runtimeId() + " / " + lockfile.artifactFile() + ")")));
+            }
+        }
+        if (matching.isEmpty()) {
+            PlanningException violated = new PlanningException(ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
+                    "PINNED_PLAN mode: no viable candidate matches the lockfile (runtime '"
+                            + lockfile.runtimeId() + "', artifact '" + lockfile.artifactFile() + "').",
+                    "The environment drifted from the locked plan; restore the pinned runtime/artifact "
+                            + "or regenerate the lockfile explicitly.");
+            violated.detail("lockfileRuntime", String.valueOf(lockfile.runtimeId()));
+            violated.detail("lockfileArtifact", String.valueOf(lockfile.artifactFile()));
+            for (SupportReport.RejectedCandidate rejected : pinRejections) {
+                violated.detail("rejected:" + rejected.candidate().stableKey(), rejected.reason().message());
+            }
+            throw violated;
+        }
+        outcome.viable.retainAll(matching);
+        outcome.rejected.addAll(pinRejections);
     }
 
     public SupportReport inspect(ExecutionRequest request) {
