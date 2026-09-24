@@ -153,12 +153,20 @@ public final class DefaultModelHandle implements ModelHandle {
         return model.executeAsync(request);
     }
 
+    private void transitionTo(ModelLifecycleState next) {
+        if (!state.canTransitionTo(next)) {
+            throw new IllegalStateException(
+                    "Illegal model lifecycle transition " + state + " -> " + next);
+        }
+        state = next;
+    }
+
     @Override
     public void close() {
         if (state == ModelLifecycleState.CLOSED) {
             return;
         }
-        state = ModelLifecycleState.CLOSING;
+        transitionTo(ModelLifecycleState.CLOSING);
         try {
             model.close();
         } catch (RuntimeException ignored) {
@@ -167,7 +175,7 @@ public final class DefaultModelHandle implements ModelHandle {
             runtime.close();
         } catch (RuntimeException ignored) {
         }
-        state = ModelLifecycleState.CLOSED;
+        transitionTo(ModelLifecycleState.CLOSED);
         platform.events().info(io.cortexj.observability.PlatformEvent.Type.PLATFORM_CLOSED,
                 "model handle closed: " + descriptor.canonicalId());
     }

@@ -11,6 +11,9 @@ import java.util.ServiceLoader;
 
 public final class SpiRegistries {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(SpiRegistries.class.getName());
+
     public interface IdAccessor<T> {
         String idOf(T provider);
     }
@@ -47,7 +50,7 @@ public final class SpiRegistries {
                     found.add(candidate);
                 }
             } catch (Throwable entryFailure) {
-                System.err.println("[cortexj] skipping unloadable " + type.getSimpleName()
+                LOG.fine("skipping unloadable " + type.getSimpleName()
                         + " entry: " + entryFailure.getMessage());
             }
         }

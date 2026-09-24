@@ -19,6 +19,7 @@ public final class ExecutionRequest {
     private final String requiredRuntime;
     private final String preferredRuntime;
     private final Set<String> forbiddenRuntimes;
+    private final Set<String> allowedRepositories;
     private final DevicePreference requiredDevice;
     private final DevicePreference preferredDevice;
     private final Long memoryLimitBytes;
@@ -37,6 +38,7 @@ public final class ExecutionRequest {
         this.requiredRuntime = normalize(builder.requiredRuntime);
         this.preferredRuntime = normalize(builder.preferredRuntime);
         this.forbiddenRuntimes = Collections.unmodifiableSet(new LinkedHashSet<String>(normalizeAll(builder.forbiddenRuntimes)));
+        this.allowedRepositories = Collections.unmodifiableSet(new LinkedHashSet<String>(normalizeAll(builder.allowedRepositories)));
         this.requiredDevice = builder.requiredDevice;
         this.preferredDevice = builder.preferredDevice;
         this.memoryLimitBytes = builder.memoryLimitBytes;
@@ -95,6 +97,15 @@ public final class ExecutionRequest {
 
     public Set<String> forbiddenRuntimes() {
         return forbiddenRuntimes;
+    }
+
+    public Set<String> allowedRepositories() {
+        return allowedRepositories;
+    }
+
+    public boolean isRepositoryAllowed(String repositoryId) {
+        return allowedRepositories.isEmpty()
+                || allowedRepositories.contains(repositoryId == null ? "" : repositoryId.trim().toLowerCase());
     }
 
     public DevicePreference requiredDevice() {
@@ -160,6 +171,7 @@ public final class ExecutionRequest {
         private String requiredRuntime;
         private String preferredRuntime;
         private final List<String> forbiddenRuntimes = new ArrayList<String>();
+        private final List<String> allowedRepositories = new ArrayList<String>();
         private DevicePreference requiredDevice;
         private DevicePreference preferredDevice;
         private Long memoryLimitBytes;
@@ -192,6 +204,11 @@ public final class ExecutionRequest {
 
         public Builder forbiddenRuntime(String runtimeId) {
             this.forbiddenRuntimes.add(runtimeId);
+            return this;
+        }
+
+        public Builder allowedRepository(String repositoryId) {
+            this.allowedRepositories.add(repositoryId);
             return this;
         }
 

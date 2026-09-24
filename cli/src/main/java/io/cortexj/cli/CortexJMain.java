@@ -92,17 +92,35 @@ public final class CortexJMain {
         System.out.println("Environment:");
         System.out.println("  " + platform.environment());
         System.out.println();
+        System.out.println("Detected platform module:");
+        System.out.println("  " + platform.platformModule());
+        System.out.println();
+        System.out.println("Detected starters:");
+        java.util.List<io.cortexj.StarterInfo> starters = new java.util.ArrayList<io.cortexj.StarterInfo>();
+        try {
+            for (io.cortexj.StarterInfo starter : java.util.ServiceLoader.load(io.cortexj.StarterInfo.class)) {
+                starters.add(starter);
+            }
+        } catch (Throwable ignored) {
+        }
+        if (starters.isEmpty()) {
+            System.out.println("  (none on classpath)");
+        }
+        for (io.cortexj.StarterInfo starter : starters) {
+            System.out.println("  - " + starter.starterId() + " (requires Java " + starter.requiredFeatureVersion() + ")");
+        }
+        System.out.println();
         System.out.println("Hardware:");
         System.out.println("  " + platform.hardware());
         System.out.println();
-        System.out.println("Runtimes:");
-        List<RuntimeDescriptor> runtimes = platform.runtimes();
-        if (runtimes.isEmpty()) {
+        System.out.println("Runtimes (probe results):");
+        List<io.cortexj.runtime.RuntimeHealthReport> health = platform.runtimeHealth();
+        if (health.isEmpty()) {
             System.out.println("  (none registered - add a cortexj starter or runtime artifact)");
         }
-        for (RuntimeDescriptor descriptor : runtimes) {
-            System.out.println("  - " + descriptor.id() + " v" + descriptor.version()
-                    + " [" + String.join(", ", format(descriptor)) + "]");
+        for (io.cortexj.runtime.RuntimeHealthReport report : health) {
+            System.out.println("  - " + report.runtimeId() + ": " + report.health().name().toLowerCase()
+                    + (report.message().isEmpty() ? "" : " - " + report.message()));
         }
         System.out.println();
         System.out.println("Recommendation:");
@@ -156,8 +174,7 @@ public final class CortexJMain {
 
     private static int pull(CortexJ platform, String[] args) {
         String model = modelArg(args);
-        ExecutionRequest request = ExecutionRequest.builder(ModelReference.of(model))
-                .build();
+        ExecutionRequest request = buildRequest(args, model);
         SupportReport report = platform.support().inspect(request);
         for (io.cortexj.planner.PlanDownload download : report.requiredDownloads()) {
             System.out.println("planned download: " + download);
@@ -172,6 +189,12 @@ public final class CortexJMain {
             System.out.println("pull completed");
             return 0;
         } catch (CortexJException e) {
+            SupportReport after = platform.support().inspect(request);
+            if (after.requiredDownloads().isEmpty() && report.requiredDownloads().size() > 0) {
+                System.out.println("pull completed (artifacts cached; execution was not attempted: "
+                        + e.code() + " " + e.getMessage() + ")");
+                return 0;
+            }
             System.err.println("pull failed:");
             System.err.println(e.toString());
             return 2;

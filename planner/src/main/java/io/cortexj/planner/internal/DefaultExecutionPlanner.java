@@ -54,6 +54,8 @@ public final class DefaultExecutionPlanner implements Planner {
     private final MemoryEstimator memoryEstimator;
     private final List<HardConstraint> constraints;
     private final List<ScoringRules.ScoringRule> scoringRules;
+    private final java.util.Map<String, io.cortexj.spi.runtime.RuntimeProbeResult> probeCache =
+            new java.util.concurrent.ConcurrentHashMap<String, io.cortexj.spi.runtime.RuntimeProbeResult>();
 
     public DefaultExecutionPlanner(PlannerInputs inputs) {
         this.inputs = inputs;
@@ -160,6 +162,16 @@ public final class DefaultExecutionPlanner implements Planner {
                     Collections.singletonList(new Recommendation("model-unresolved", e.getMessage())),
                     Collections.singletonList(PlanReason.warning(ReasonCode.REVISION_UNRESOLVED, e.getMessage())),
                     e.getMessage());
+        } catch (RuntimeException e) {
+            return new SupportReport(request.model().value(), null,
+                    Collections.<ExecutionCandidate>emptyList(),
+                    Collections.<SupportReport.RejectedCandidate>emptyList(),
+                    Collections.<PlanDownload>emptyList(),
+                    Collections.singletonList(new Recommendation("inspection-failed",
+                            "Inspection failed with an unexpected error: " + e.getMessage())),
+                    Collections.singletonList(PlanReason.warning(ReasonCode.RUNTIME_UNAVAILABLE,
+                            "unexpected failure during inspection: " + e.getMessage())),
+                    "Inspection failed: " + e.getMessage());
         }
     }
 
@@ -173,8 +185,7 @@ public final class DefaultExecutionPlanner implements Planner {
 
         for (RuntimeProvider provider : providers) {
             RuntimeDescriptor descriptor = provider.descriptor();
-            RuntimeProbeResult probe = provider.probe(new RuntimeProbeContext(
-                    inputs.environment, inputs.hardware, inputs.offline, inputs.runtimeConfiguration()));
+            RuntimeProbeResult probe = probeCached(provider);
             probes.put(descriptor.id().value(), probe);
             outcome.runtimeById.put(descriptor.id().value(), descriptor);
             outcome.runtimeHealthLines.add(descriptor.id().value() + ": " + probe.health().name().toLowerCase()
@@ -187,7 +198,7 @@ public final class DefaultExecutionPlanner implements Planner {
             if (descriptor.devices().contains(DeviceType.REMOTE) && !isRemoteSyntheticBlocked(request)) {
                 ModelArtifact remoteArtifact = remoteArtifact(resolved);
                 addEvaluatedCandidate(outcome, provider, descriptor, probe, remoteArtifact, request, resolved,
-                        false, false);
+                        true, true);
             }
             for (ResolvedArtifact resolvedArtifact : sortedArtifacts(resolved)) {
                 ModelArtifact artifact = resolvedArtifact.artifact();
@@ -207,6 +218,24 @@ public final class DefaultExecutionPlanner implements Planner {
         applyPolicies(outcome, request);
         scoreAndSort(outcome, request);
         return outcome;
+    }
+
+    private RuntimeProbeResult probeCached(RuntimeProvider provider) {
+        String key = provider.id().value();
+        io.cortexj.spi.runtime.RuntimeProbeResult cached = probeCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        RuntimeProbeResult result;
+        try {
+            result = provider.probe(new RuntimeProbeContext(
+                    inputs.environment, inputs.hardware, inputs.offline, inputs.runtimeConfiguration()));
+        } catch (RuntimeException probeFailure) {
+            result = io.cortexj.spi.runtime.RuntimeProbeResult.unavailable(
+                    "probe threw: " + probeFailure.getMessage());
+        }
+        probeCache.put(key, result);
+        return result;
     }
 
     private boolean isRemoteSyntheticBlocked(ExecutionRequest request) {
@@ -275,6 +304,7 @@ public final class DefaultExecutionPlanner implements Planner {
                 ? support.memoryEstimateOverride()
                 : memoryEstimator.estimate(artifact, contextLength);
         builder.memoryEstimate(estimate);
+        builder.note("supportLevel", support.level().name());
 
         outcome.builderByCandidateKey.put(candidateKey(descriptor.id().value(), artifact.id()), builder);
         outcome.candidates.add(new CandidateHolder(descriptor, probe, builder));
@@ -374,6 +404,9 @@ public final class DefaultExecutionPlanner implements Planner {
             if (!repository.supports(reference)) {
                 continue;
             }
+            if (!request.isRepositoryAllowed(repository.id().value())) {
+                continue;
+            }
             try {
                 return repository.resolve(reference, resolutionContext());
             } catch (RuntimeException e) {
@@ -403,17 +436,17 @@ public final class DefaultExecutionPlanner implements Planner {
 
             @Override
             public TokenSupplier tokenSupplier() {
-                return TokenSupplier.none();
+                return captured.tokenSupplier;
             }
 
             @Override
             public java.util.concurrent.ExecutorService executor() {
-                return null;
+                return captured.executor;
             }
 
             @Override
             public io.cortexj.observability.PlatformEventListener eventListener() {
-                return io.cortexj.observability.PlatformEventListener.NOOP;
+                return captured.eventListener;
             }
         };
     }

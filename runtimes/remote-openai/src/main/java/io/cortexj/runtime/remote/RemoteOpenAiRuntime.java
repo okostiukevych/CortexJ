@@ -47,6 +47,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
     private final String baseUrl;
     private final String apiKey;
     private final ExecutorService executor;
+    private final boolean ownsExecutor;
     private final PlatformEventListener eventListener;
     private final HttpJsonClient client = new HttpJsonClient();
 
@@ -54,6 +55,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         this.runtimeId = runtimeId;
         this.baseUrl = HttpJsonClient.trimSlash(baseUrl);
         this.apiKey = apiKey;
+        this.ownsExecutor = executor == null;
         this.executor = executor == null ? Executors.newFixedThreadPool(4) : executor;
         this.eventListener = eventListener == null ? PlatformEventListener.NOOP : eventListener;
     }
@@ -85,6 +87,17 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
     @Override
     public void close() {
+        if (ownsExecutor) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     final class RemoteModel implements RuntimeModel, TextGenerationCapability,

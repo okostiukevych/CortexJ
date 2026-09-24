@@ -154,7 +154,7 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     private JsonNode fetchModelInfo(String slug, String token) {
         HttpURLConnection connection = null;
         try {
-            URL url = new URL(apiBase + "/api/models/" + slug);
+            URL url = new URL(apiBase + "/api/models/" + slug + "?blobs=true");
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(10_000);
