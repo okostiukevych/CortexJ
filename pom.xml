@@ -21,6 +21,7 @@
     <jackson.version>2.17.1</jackson.version>
     <junit.version>5.10.2</junit.version>
     <onnxruntime.version>1.19.0</onnxruntime.version>
+    <opentelemetry.version>1.49.0</opentelemetry.version>
 
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
@@ -37,6 +38,7 @@
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>
+    <module>observability</module>
     <module>planner</module>
     <module>core</module>
     <module>repositories/local</module>
@@ -129,6 +131,16 @@
         <groupId>com.microsoft.onnxruntime</groupId>
         <artifactId>onnxruntime</artifactId>
         <version>${onnxruntime.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>${opentelemetry.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-sdk</artifactId>
+        <version>${opentelemetry.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
