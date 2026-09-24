@@ -1,0 +1,241 @@
+package io.cortexj.cli;
+
+import io.cortexj.CortexJ;
+import io.cortexj.diagnostics.Recommendation;
+import io.cortexj.diagnostics.SupportReport;
+import io.cortexj.error.CortexJException;
+import io.cortexj.model.ModelHandle;
+import io.cortexj.model.ModelReference;
+import io.cortexj.planner.ExecutionRequest;
+import io.cortexj.planner.FallbackPolicy;
+import io.cortexj.runtime.RuntimeDescriptor;
+
+import java.util.List;
+
+public final class CortexJMain {
+
+    public static void main(String[] args) {
+        try {
+            int status = run(args);
+            System.exit(status);
+        } catch (CortexJException e) {
+            System.err.println(e.toString());
+            System.exit(2);
+        }
+    }
+
+    static int run(String[] args) {
+        if (args.length == 0) {
+            usage();
+            return 1;
+        }
+        String command = args[0];
+        if (command.equals("help") || command.equals("--help") || command.equals("-h")) {
+            usage();
+            return 0;
+        }
+
+        CortexJ platform = CortexJ.builder().build();
+        try {
+            if (command.equals("doctor")) {
+                return doctor(platform);
+            }
+            if (command.equals("runtimes")) {
+                return runtimes(platform);
+            }
+            if (command.equals("hardware")) {
+                return hardware(platform);
+            }
+            if (command.equals("inspect")) {
+                return inspect(platform, args);
+            }
+            if (command.equals("plan")) {
+                return plan(platform, args);
+            }
+            if (command.equals("pull")) {
+                return pull(platform, args);
+            }
+            if (command.equals("run")) {
+                return runModel(platform, args);
+            }
+            System.err.println("Unknown command: " + command);
+            usage();
+            return 1;
+        } finally {
+            platform.close();
+        }
+    }
+
+    private static void usage() {
+        System.out.println("cortexj - AI runtime orchestration for the JVM");
+        System.out.println();
+        System.out.println("Usage:");
+        System.out.println("  cortexj doctor                       show environment, runtimes and recommendations");
+        System.out.println("  cortexj runtimes                     list registered runtime providers");
+        System.out.println("  cortexj hardware                     show detected hardware profile");
+        System.out.println("  cortexj inspect <model>              can this model run here, and what is needed");
+        System.out.println("  cortexj plan <model> [options]        print the explainable execution plan");
+        System.out.println("  cortexj pull <model>                 download the planned artifacts into the cache");
+        System.out.println("  cortexj run <model> --prompt <text>   load and execute the model");
+        System.out.println();
+        System.out.println("Options for plan/pull/run:");
+        System.out.println("  --runtime <id>        require a specific runtime");
+        System.out.println("  --prefer-runtime <id> prefer a runtime");
+        System.out.println("  --offline             forbid network access");
+        System.out.println("  --limit-mb <n>        hard memory limit in MiB");
+        System.out.println("  --prompt <text>       prompt for 'run'");
+    }
+
+    private static int doctor(CortexJ platform) {
+        System.out.println("== CortexJ doctor ==");
+        System.out.println();
+        System.out.println("Environment:");
+        System.out.println("  " + platform.environment());
+        System.out.println();
+        System.out.println("Hardware:");
+        System.out.println("  " + platform.hardware());
+        System.out.println();
+        System.out.println("Runtimes:");
+        List<RuntimeDescriptor> runtimes = platform.runtimes();
+        if (runtimes.isEmpty()) {
+            System.out.println("  (none registered - add a cortexj starter or runtime artifact)");
+        }
+        for (RuntimeDescriptor descriptor : runtimes) {
+            System.out.println("  - " + descriptor.id() + " v" + descriptor.version()
+                    + " [" + String.join(", ", format(descriptor)) + "]");
+        }
+        System.out.println();
+        System.out.println("Recommendation:");
+        System.out.println("  use 'cortexj inspect <model>' to check a specific model");
+        return 0;
+    }
+
+    private static String[] format(RuntimeDescriptor descriptor) {
+        String[] parts = new String[]{
+                descriptor.maturity().name(),
+                descriptor.isNativeRuntime() ? "native" : "pure-java",
+                "min-java-" + descriptor.minJavaFeatureVersion()
+        };
+        return parts;
+    }
+
+    private static int runtimes(CortexJ platform) {
+        for (RuntimeDescriptor descriptor : platform.runtimes()) {
+            System.out.println(descriptor.id() + "\t" + descriptor.version()
+                    + "\ttasks=" + descriptor.tasks()
+                    + "\tformats=" + descriptor.formats()
+                    + "\tdevices=" + descriptor.devices());
+        }
+        return 0;
+    }
+
+    private static int hardware(CortexJ platform) {
+        System.out.println(platform.hardware());
+        for (String note : platform.hardware().detectionNotes()) {
+            System.out.println("  note: " + note);
+        }
+        return 0;
+    }
+
+    private static int inspect(CortexJ platform, String[] args) {
+        String model = modelArg(args);
+        SupportReport report = platform.support().inspect(ModelReference.of(model));
+        System.out.println(report.explanation());
+        for (Recommendation recommendation : report.recommendations()) {
+            System.out.println("Recommendation: " + recommendation);
+        }
+        return report.isExecutable() ? 0 : 3;
+    }
+
+    private static int plan(CortexJ platform, String[] args) {
+        String model = modelArg(args);
+        ExecutionRequest request = buildRequest(args, model);
+        System.out.print(platform.planner().plan(request).explanation());
+        return 0;
+    }
+
+    private static int pull(CortexJ platform, String[] args) {
+        String model = modelArg(args);
+        ExecutionRequest request = ExecutionRequest.builder(ModelReference.of(model))
+                .build();
+        SupportReport report = platform.support().inspect(request);
+        for (io.cortexj.planner.PlanDownload download : report.requiredDownloads()) {
+            System.out.println("planned download: " + download);
+        }
+        if (report.requiredDownloads().isEmpty()) {
+            System.out.println("nothing to download: all viable artifacts are already available locally");
+            return 0;
+        }
+        try {
+            ModelHandle handle = platform.models().load(request);
+            handle.close();
+            System.out.println("pull completed");
+            return 0;
+        } catch (CortexJException e) {
+            System.err.println("pull failed:");
+            System.err.println(e.toString());
+            return 2;
+        }
+    }
+
+    private static int runModel(CortexJ platform, String[] args) {
+        String model = modelArg(args);
+        String prompt = optionValue(args, "--prompt");
+        if (prompt == null) {
+            System.err.println("run requires --prompt <text>");
+            return 1;
+        }
+        ExecutionRequest request = buildRequest(args, model);
+        ModelHandle handle = platform.models().load(request);
+        try {
+            io.cortexj.inference.TextGenerationCapability generator =
+                    handle.capability(io.cortexj.inference.TextGenerationCapability.class);
+            io.cortexj.inference.GenerationResponse response = generator.generate(
+                    io.cortexj.inference.GenerationRequest.prompt(prompt));
+            System.out.println(response.text());
+            return 0;
+        } finally {
+            handle.close();
+        }
+    }
+
+    private static String modelArg(String[] args) {
+        if (args.length < 2) {
+            throw new IllegalArgumentException("command requires a model argument, e.g. cortexj plan Qwen/Qwen3-8B");
+        }
+        return args[1];
+    }
+
+    private static ExecutionRequest buildRequest(String[] args, String model) {
+        ExecutionRequest.Builder builder = ExecutionRequest.builder(ModelReference.of(model));
+        String required = optionValue(args, "--runtime");
+        if (required != null) {
+            builder.requiredRuntime(required);
+            builder.fallbackPolicy(FallbackPolicy.DISABLED);
+        }
+        String preferred = optionValue(args, "--prefer-runtime");
+        if (preferred != null) {
+            builder.preferredRuntime(preferred);
+        }
+        String limit = optionValue(args, "--limit-mb");
+        if (limit != null) {
+            builder.memoryLimitBytes(Long.parseLong(limit) * 1024L * 1024L);
+        }
+        for (String arg : args) {
+            if (arg.equals("--offline")) {
+                builder.offline(true);
+                break;
+            }
+        }
+        return builder.build();
+    }
+
+    private static String optionValue(String[] args, String option) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals(option) && i + 1 < args.length) {
+                return args[i + 1];
+            }
+        }
+        return null;
+    }
+}
