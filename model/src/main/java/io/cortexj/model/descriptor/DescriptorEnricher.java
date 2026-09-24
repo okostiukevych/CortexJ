@@ -50,8 +50,8 @@ public final class DescriptorEnricher {
         String base = dot > 0 ? lower.substring(0, dot) : lower;
         String[] parts = base.split("-");
         for (int i = parts.length - 1; i >= 0; i--) {
-            String part = parts[i].replace("_", "").trim();
-            if (part.startsWith("q") && part.length() >= 2 && part.length() <= 5) {
+            String part = parts[i].trim();
+            if (part.startsWith("q") && part.length() >= 2 && part.length() <= 6) {
                 return Quantization.parse(part).label();
             }
         }
