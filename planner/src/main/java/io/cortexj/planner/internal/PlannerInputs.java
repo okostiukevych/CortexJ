@@ -2,6 +2,7 @@ package io.cortexj.planner.internal;
 
 import io.cortexj.hardware.EnvironmentProfile;
 import io.cortexj.hardware.HardwareProfile;
+import io.cortexj.observability.PlatformEventListener;
 import io.cortexj.model.ArtifactFormat;
 import io.cortexj.model.ModelArtifact;
 import io.cortexj.spi.artifact.ArtifactInspector;
@@ -29,6 +30,9 @@ public final class PlannerInputs {
     public final EnvironmentProfile environment;
     public final HardwareProfile hardware;
     public final PlanningContext.CacheLookup cacheLookup;
+    public final io.cortexj.spi.repository.TokenSupplier tokenSupplier;
+    public final java.util.concurrent.ExecutorService executor;
+    public final PlatformEventListener eventListener;
     public final boolean offline;
     public final boolean remoteAllowed;
     public final String platformVersion;
@@ -42,6 +46,9 @@ public final class PlannerInputs {
                         EnvironmentProfile environment,
                         HardwareProfile hardware,
                         PlanningContext.CacheLookup cacheLookup,
+                        io.cortexj.spi.repository.TokenSupplier tokenSupplier,
+                        java.util.concurrent.ExecutorService executor,
+                        PlatformEventListener eventListener,
                         boolean offline,
                         boolean remoteAllowed,
                         String platformVersion,
@@ -54,6 +61,9 @@ public final class PlannerInputs {
         this.environment = environment;
         this.hardware = hardware;
         this.cacheLookup = cacheLookup;
+        this.tokenSupplier = tokenSupplier == null ? io.cortexj.spi.repository.TokenSupplier.none() : tokenSupplier;
+        this.executor = executor;
+        this.eventListener = eventListener == null ? PlatformEventListener.NOOP : eventListener;
         this.offline = offline;
         this.remoteAllowed = remoteAllowed;
         this.platformVersion = platformVersion;

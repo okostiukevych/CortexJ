@@ -84,10 +84,13 @@ public final class HardConstraints {
                                 + " does not match the required format " + request.requiredFormat());
             }
             if (request.requiredDevice() != null && request.requiredDevice() != io.cortexj.planner.DevicePreference.AUTO
-                    && candidate.device() != DeviceType.REMOTE
                     && deviceTypeOf(request.requiredDevice()) != candidate.device()) {
                 return PlanReason.negative(ReasonCode.USER_REQUIREMENT_CONFLICT,
                         "device " + candidate.device() + " does not match the required device " + request.requiredDevice());
+            }
+            if (!request.isDownloadAllowed() && candidate.requiresDownload()) {
+                return PlanReason.negative(ReasonCode.USER_REQUIREMENT_CONFLICT,
+                        "artifact requires a download but downloads are disabled by the user request");
             }
             return null;
         }

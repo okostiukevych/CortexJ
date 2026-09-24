@@ -32,6 +32,7 @@ public final class ScoringRules {
         rules.add(new MaturityRule());
         rules.add(new QualityProfileRule());
         rules.add(new LocalityRule());
+        rules.add(new SupportLevelRule());
         return rules;
     }
 
@@ -208,6 +209,23 @@ public final class ScoringRules {
                 default:
                     candidate.addScore(bits / 16.0d * 0.5d);
                     break;
+            }
+        }
+    }
+
+    public static final class SupportLevelRule implements ScoringRule {
+
+        @Override
+        public String name() {
+            return "support-level";
+        }
+
+        @Override
+        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            String level = candidate.build().notes().get("supportLevel");
+            if ("PARTIAL".equals(level)) {
+                candidate.addScore(-1.0d);
+                candidate.note("partialSupport", "true");
             }
         }
     }

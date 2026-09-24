@@ -49,7 +49,6 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             .version("1.19")
             .format(ArtifactFormat.ONNX)
             .device(DeviceType.CPU)
-            .device(DeviceType.GPU)
             .task(TaskCapability.EMBEDDING)
             .task(TaskCapability.CLASSIFICATION)
             .minJavaFeatureVersion(8)
@@ -58,6 +57,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             .threadSafety(io.cortexj.runtime.ThreadSafety.STATELESS)
             .maturity(RuntimeDescriptor.Maturity.STABLE)
             .metadata("engine", "Microsoft ONNX Runtime")
+            .metadata("executionProvider", "CPU (GPU EP requires a CUDA-enabled onnxruntime build)")
             .build();
 
     private volatile OrtEnvironment environment;
@@ -108,10 +108,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                     io.cortexj.planner.ReasonCode.FORMAT_UNSUPPORTED,
                     "onnx runtime only executes ONNX artifacts"));
         }
-        DeviceType device = request.hardware().hasAccelerator() && !request.userRequest().isOffline()
-                ? DeviceType.GPU
-                : DeviceType.CPU;
-        return RuntimeSupport.full(device);
+        return RuntimeSupport.full(DeviceType.CPU);
     }
 
     @Override
@@ -147,7 +144,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                 byte[] modelBytes = Files.readAllBytes(modelPath);
                 OrtSession session = env.createSession(modelBytes,
                         new OrtSession.SessionOptions());
-                HfTokenizer.Algorithm tokenizer = loadTokenizer(modelPath);
+                HfTokenizer.TokenEncoder tokenizer = loadTokenizer(modelPath);
                 return new OnnxModel(session, tokenizer);
             } catch (io.cortexj.error.CortexJException e) {
                 throw e;
@@ -159,7 +156,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             }
         }
 
-        private HfTokenizer.Algorithm loadTokenizer(Path modelPath) {
+        private HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
             Path tokenizerJson = modelPath.resolveSibling("tokenizer.json");
             if (!Files.isRegularFile(tokenizerJson)) {
                 tokenizerJson = modelPath.getParent() == null
@@ -174,18 +171,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                             + e.getMessage());
                 }
             }
-            return new HfTokenizer.Algorithm() {
-                @Override
-                public List<String> tokenize(String text) {
-                    List<String> parts = new ArrayList<String>();
-                    for (String token : text.toLowerCase().split("[^a-z0-9]+")) {
-                        if (!token.isEmpty()) {
-                            parts.add(token);
-                        }
-                    }
-                    return parts;
-                }
-            };
+            return HfTokenizer.fallback();
         }
 
         @Override
@@ -196,10 +182,10 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
     final class OnnxModel implements RuntimeModel, io.cortexj.inference.EmbeddingCapability {
 
         private final OrtSession session;
-        private final HfTokenizer.Algorithm tokenizer;
+        private final HfTokenizer.TokenEncoder tokenizer;
         private volatile boolean closed;
 
-        OnnxModel(OrtSession session, HfTokenizer.Algorithm tokenizer) {
+        OnnxModel(OrtSession session, HfTokenizer.TokenEncoder tokenizer) {
             this.session = session;
             this.tokenizer = tokenizer;
         }
@@ -235,7 +221,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             List<float[]> vectors = new ArrayList<float[]>();
             long totalTokens = 0;
             for (String text : request.texts()) {
-                int[] ids = HfTokenizer.encode(tokenizer, Collections.<String, Integer>emptyMap(), text);
+                int[] ids = tokenizer.encode(text);
                 totalTokens += ids.length;
                 float[] vector = runSession(ids);
                 vectors.add(vector);

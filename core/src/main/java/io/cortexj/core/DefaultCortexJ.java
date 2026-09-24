@@ -96,6 +96,11 @@ public final class DefaultCortexJ implements CortexJ {
                         snapshot.environment,
                         snapshot.hardware,
                         cacheLookup,
+                        configuration.tokenSupplier() == null
+                                ? io.cortexj.spi.repository.TokenSupplier.none()
+                                : configuration.tokenSupplier(),
+                        ioExecutor,
+                        events.asListener(),
                         resolved.offline,
                         resolved.remoteRuntimeAllowed,
                         "0.1.0",
@@ -182,6 +187,31 @@ public final class DefaultCortexJ implements CortexJ {
             descriptors.add(provider.descriptor());
         }
         return descriptors;
+    }
+
+    @Override
+    public java.util.List<io.cortexj.runtime.RuntimeHealthReport> runtimeHealth() {
+        java.util.List<io.cortexj.runtime.RuntimeHealthReport> reports =
+                new ArrayList<io.cortexj.runtime.RuntimeHealthReport>();
+        for (RuntimeProvider provider : runtimeProviders) {
+            io.cortexj.spi.runtime.RuntimeProbeResult result;
+            try {
+                result = provider.probe(new io.cortexj.spi.runtime.RuntimeProbeContext(
+                        snapshot.environment, snapshot.hardware, config().offline,
+                        config().runtimeConfiguration()));
+            } catch (RuntimeException probeFailure) {
+                result = io.cortexj.spi.runtime.RuntimeProbeResult.unavailable(
+                        "probe failed: " + probeFailure.getMessage());
+            }
+            reports.add(new io.cortexj.runtime.RuntimeHealthReport(
+                    provider.id(), result.health(), result.message()));
+        }
+        return reports;
+    }
+
+    @Override
+    public String platformModule() {
+        return platformModule.name();
     }
 
     ResolutionContext resolutionContext() {
