@@ -110,6 +110,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 artifactPath,
                 candidate.device(),
                 planOptions(request, candidate),
+                platform.config().runtimeConfiguration(),
                 platform.environment(),
                 platform.hardware(),
                 platform.executor(),
