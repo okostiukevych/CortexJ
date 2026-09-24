@@ -45,24 +45,69 @@
     <module>runtimes/onnx</module>
     <module>runtimes/llamacpp</module>
     <module>platform/java8</module>
-    <module>platform/java11</module>
-    <module>platform/java17</module>
-    <module>starters/java17</module>
-    <module>cli</module>
+    <module>starters/java8</module>
     <module>tck</module>
   </modules>
 
   <profiles>
     <profile>
-      <id>modern-jdk</id>
+      <id>jdk8-compiler</id>
+      <activation>
+        <jdk>1.8</jdk>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <configuration>
+              <release combine.self="override"/>
+              <source>8</source>
+              <target>8</target>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>jdk11plus</id>
+      <activation>
+        <jdk>[11,)</jdk>
+      </activation>
+      <modules>
+        <module>platform/java11</module>
+        <module>starters/java11</module>
+      </modules>
+    </profile>
+    <profile>
+      <id>jdk17plus</id>
+      <activation>
+        <jdk>[17,)</jdk>
+      </activation>
+      <modules>
+        <module>platform/java17</module>
+        <module>starters/java17</module>
+      </modules>
+    </profile>
+    <profile>
+      <id>jdk21plus</id>
       <activation>
         <jdk>[21,)</jdk>
       </activation>
       <modules>
         <module>platform/java21</module>
-        <module>platform/java25</module>
         <module>starters/java21</module>
+      </modules>
+    </profile>
+    <profile>
+      <id>jdk25plus</id>
+      <activation>
+        <jdk>[25,)</jdk>
+      </activation>
+      <modules>
+        <module>platform/java25</module>
         <module>starters/java25</module>
+        <module>cli</module>
       </modules>
     </profile>
   </profiles>
@@ -139,8 +184,8 @@
             <configuration>
               <rules>
                 <requireJavaVersion>
-                  <version>[21,)</version>
-                  <message>Building CortexJ requires JDK 21+ (LTS platform modules up to Java 25). Runtime artifacts still target Java 8 where applicable.</message>
+                  <version>[8,)</version>
+                  <message>CortexJ requires JDK 8+ to build. The base module set targets Java 8; LTS platform modules (java11/17/21/25) activate automatically on newer JDKs.</message>
                 </requireJavaVersion>
               </rules>
             </configuration>

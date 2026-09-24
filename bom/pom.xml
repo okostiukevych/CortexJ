@@ -34,6 +34,12 @@
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-runtime-remote-openai</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-repository-local</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-repository-huggingface</artifactId><version>${project.version}</version></dependency>
+      <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-starter-java8</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-starter-java11</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-starter-java17</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-starter-java21</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-starter-java25</artifactId><version>${project.version}</version></dependency>

@@ -13,20 +13,58 @@
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>
-      <artifactId>cortexj-starter-java17</artifactId>
+      <artifactId>cortexj-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-platform-java8</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-platform-java11</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-platform-java17</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-platform-java21</artifactId>
       <version>${project.version}</version>
-      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-platform-java25</artifactId>
       <version>${project.version}</version>
-      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-repository-local</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-repository-huggingface</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-remote-openai</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-onnx</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-llamacpp</artifactId>
+      <version>${project.version}</version>
     </dependency>
   </dependencies>
   <build>
