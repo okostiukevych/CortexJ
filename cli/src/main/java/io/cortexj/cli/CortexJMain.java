@@ -84,6 +84,8 @@ public final class CortexJMain {
         System.out.println("  --offline             forbid network access");
         System.out.println("  --limit-mb <n>        hard memory limit in MiB");
         System.out.println("  --prompt <text>       prompt for 'run'");
+        System.out.println("  --lockfile <path>     enforce a strict pinned plan (plan mode)");
+        System.out.println("  --lockfile-out <path> write the lockfile for the produced plan");
     }
 
     private static int doctor(CortexJ platform) {
@@ -168,7 +170,19 @@ public final class CortexJMain {
     private static int plan(CortexJ platform, String[] args) {
         String model = modelArg(args);
         ExecutionRequest request = buildRequest(args, model);
-        System.out.print(platform.planner().plan(request).explanation());
+        io.cortexj.planner.ExecutionPlan plan = platform.planner().plan(request);
+        System.out.print(plan.explanation());
+        String lockfileOut = optionValue(args, "--lockfile-out");
+        if (lockfileOut != null) {
+            try {
+                io.cortexj.planner.ModelLockfile.fromPlan(plan).writeTo(java.nio.file.Paths.get(lockfileOut));
+                System.out.println();
+                System.out.println("lockfile written: " + lockfileOut);
+            } catch (java.io.IOException e) {
+                System.err.println("cannot write lockfile: " + e.getMessage());
+                return 2;
+            }
+        }
         return 0;
     }
 
@@ -248,6 +262,15 @@ public final class CortexJMain {
             if (arg.equals("--offline")) {
                 builder.offline(true);
                 break;
+            }
+        }
+        String lockfilePath = optionValue(args, "--lockfile");
+        if (lockfilePath != null) {
+            try {
+                builder.lockfile(io.cortexj.planner.ModelLockfile.readFrom(java.nio.file.Paths.get(lockfilePath)))
+                        .reproducibilityMode(io.cortexj.planner.ReproducibilityMode.PINNED_PLAN);
+            } catch (java.io.IOException e) {
+                throw new IllegalArgumentException("cannot read lockfile " + lockfilePath + ": " + e.getMessage());
             }
         }
         return builder.build();
