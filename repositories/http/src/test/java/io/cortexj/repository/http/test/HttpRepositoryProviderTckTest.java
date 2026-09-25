@@ -24,7 +24,8 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
 
     @BeforeEach
     void startServer() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         server.createContext("/models/test-model.gguf", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
@@ -51,7 +52,7 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
     }
 
     private String url() {
-        return "http://localhost:" + port + "/models/test-model.gguf";
+        return "http://127.0.0.1:" + port + "/models/test-model.gguf";
     }
 
     @Override
@@ -90,7 +91,7 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
     @org.junit.jupiter.api.Test
     void missingFileProducesTypedError() {
         ModelReference missing = ModelReference.of(
-                "http://localhost:" + port + "/models/nope.gguf");
+                "http://127.0.0.1:" + port + "/models/nope.gguf");
         try {
             provider().resolve(missing, onlineContext());
             org.junit.jupiter.api.Assertions.fail("404 must fail resolution");

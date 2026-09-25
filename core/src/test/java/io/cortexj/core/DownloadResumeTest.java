@@ -50,7 +50,8 @@ class DownloadResumeTest {
     void startServer() throws IOException {
         rangeRequests.set(0);
         rangeHeaders.clear();
-        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         port = server.getAddress().getPort();
         server.start();
     }
@@ -61,7 +62,7 @@ class DownloadResumeTest {
     }
 
     private String url() {
-        return "http://localhost:" + port + "/models/model.bin";
+        return "http://127.0.0.1:" + port + "/models/model.bin";
     }
 
     private ResolvedArtifact artifact(byte[] payload, Checksum checksum) {
@@ -222,7 +223,8 @@ class DownloadResumeTest {
             }
         });
 
-        HttpServer proxy = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        HttpServer proxy = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        proxy.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         proxy.createContext("/", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
@@ -242,7 +244,7 @@ class DownloadResumeTest {
             CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
             DownloadManager downloads = new DownloadManager(new EventBus(
                     java.util.Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
-                    "localhost", String.valueOf(proxy.getAddress().getPort()));
+                    "127.0.0.1", String.valueOf(proxy.getAddress().getPort()));
 
             Path result = downloads.download(artifact(fullPayload, null), "proxy-repo", "rev1", cache, 0L);
             assertArrayEquals(fullPayload, Files.readAllBytes(result));

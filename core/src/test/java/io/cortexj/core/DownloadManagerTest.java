@@ -40,7 +40,8 @@ class DownloadManagerTest {
     @BeforeEach
     void startServer() throws IOException {
         hits.set(0);
-        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         port = server.getAddress().getPort();
         server.start();
     }
@@ -140,7 +141,7 @@ class DownloadManagerTest {
         Path path = manager.download(
                 resolvedArtifact("model.gguf", bytes.length,
                         io.cortexj.model.Checksum.sha256(sha256Hex(bytes)),
-                        URI.create("http://localhost:" + port + "/good/model.gguf")),
+                        URI.create("http://127.0.0.1:" + port + "/good/model.gguf")),
                 "test-repo", "rev1", cache, 0L);
 
         assertTrue(Files.exists(path));
@@ -159,7 +160,7 @@ class DownloadManagerTest {
                 sha256Hex(payload("expected-different")));
         assertThrows(ArtifactIntegrityException.class, () -> manager.download(
                 resolvedArtifact("model.gguf", bytes.length, wrong,
-                        URI.create("http://localhost:" + port + "/bad/model.gguf")),
+                        URI.create("http://127.0.0.1:" + port + "/bad/model.gguf")),
                 "test-repo", "rev1", cache, 0L));
         assertTrue(tempDir.toAbsolutePath().toString().length() > 0);
     }
@@ -182,7 +183,7 @@ class DownloadManagerTest {
         Path path = manager.download(
                 resolvedArtifact("model.gguf", bytes.length,
                         io.cortexj.model.Checksum.sha256(sha256Hex(bytes)),
-                        URI.create("http://localhost:" + port + "/redirect")),
+                        URI.create("http://127.0.0.1:" + port + "/redirect")),
                 "test-repo", "rev1", cache, 0L);
         assertEquals("redirected-payload", new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
     }
@@ -195,7 +196,7 @@ class DownloadManagerTest {
                 io.cortexj.error.ArtifactResolutionException.class,
                 () -> manager.download(
                         resolvedArtifact("huge.gguf", 10_000_000_000L, null,
-                                URI.create("http://localhost:" + port + "/good/model.gguf")),
+                                URI.create("http://127.0.0.1:" + port + "/good/model.gguf")),
                         "test-repo", "rev1", cache, 1_000L));
         assertEquals("CORTEXJ-ARTIFACT-2004", exception.code());
         assertEquals(0, hits.get());

@@ -61,9 +61,10 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
 
     @BeforeAll
     static void startStub() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         int port = server.getAddress().getPort();
-        baseUrl = "http://localhost:" + port;
+        baseUrl = "http://127.0.0.1:" + port;
 
         server.createContext("/v1/models", new HttpHandler() {
             @Override
@@ -108,9 +109,14 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
     }
 
     private static String readBody(HttpExchange exchange) throws IOException {
-        byte[] bytes = new byte[4096];
-        int read = exchange.getRequestBody().read(bytes);
-        return read < 0 ? "" : new String(bytes, 0, read, StandardCharsets.UTF_8);
+        java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        java.io.InputStream input = exchange.getRequestBody();
+        byte[] chunk = new byte[4096];
+        int read;
+        while ((read = input.read(chunk)) >= 0) {
+            buffer.write(chunk, 0, read);
+        }
+        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private static void respond(HttpExchange exchange, int status, String json) throws IOException {
@@ -118,11 +124,20 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
     }
 
     private static void respond(HttpExchange exchange, int status, String contentType, byte[] payload) throws IOException {
+        drain(exchange);
         exchange.getResponseHeaders().add("Content-Type", contentType);
         exchange.sendResponseHeaders(status, payload.length);
         OutputStream output = exchange.getResponseBody();
         output.write(payload);
         output.close();
+    }
+
+    private static void drain(HttpExchange exchange) throws IOException {
+        java.io.InputStream input = exchange.getRequestBody();
+        byte[] sink = new byte[4096];
+        while (input.read(sink) >= 0) {
+            // discard any pending request body
+        }
     }
 
     private final RemoteOpenAiProvider provider = new RemoteOpenAiProvider();
