@@ -43,6 +43,7 @@
     <module>core</module>
     <module>repositories/local</module>
     <module>repositories/huggingface</module>
+    <module>repositories/http</module>
     <module>runtimes/remote-openai</module>
     <module>runtimes/onnx</module>
     <module>runtimes/llamacpp</module>
@@ -80,6 +81,7 @@
       <modules>
         <module>platform/java11</module>
         <module>starters/java11</module>
+        <module>streaming/flow</module>
       </modules>
     </profile>
     <profile>

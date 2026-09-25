@@ -67,11 +67,15 @@ public final class DownloadManager {
                 "download started: " + artifact.artifact().id(), attributes);
 
         IOException lastError = null;
+        long downloadStartedMillis = System.currentTimeMillis();
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
                 java.nio.file.Path path = attemptDownload(artifact, repositoryId, revision, cache, declaredSize);
+                Map<String, String> completed = new LinkedHashMap<String, String>(attributes);
+                completed.put("durationMillis",
+                        String.valueOf(System.currentTimeMillis() - downloadStartedMillis));
                 events.publish(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
-                        "download completed: " + artifact.artifact().id(), attributes);
+                        "download completed: " + artifact.artifact().id(), completed);
                 return path;
             } catch (IOException e) {
                 lastError = e;

@@ -83,6 +83,7 @@ class EndToEndLoadTest {
                 .revision("rev1")
                 .architecture("llama")
                 .task(TaskCapability.TEXT_GENERATION)
+                .trustNote("community upload, checksums unverified")
                 .artifact(MODEL_ARTIFACT)
                 .build();
         List<ResolvedArtifact> artifacts = new ArrayList<ResolvedArtifact>();

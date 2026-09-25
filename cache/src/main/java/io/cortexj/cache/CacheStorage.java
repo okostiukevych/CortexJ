@@ -137,7 +137,8 @@ public final class CacheStorage {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String name = file.getFileName().toString();
-                if (name.endsWith(".part-") || name.endsWith(".lock") || name.endsWith(".manifest")) {
+                if (name.contains(".part-") || name.endsWith(".lock") || name.endsWith(".manifest")
+                        || name.endsWith(".pinned")) {
                     return FileVisitResult.CONTINUE;
                 }
                 long size = attrs.size();
@@ -155,6 +156,59 @@ public final class CacheStorage {
             total += entry.sizeBytes();
         }
         return total;
+    }
+
+    public boolean isPinned(String repositoryId, String revision, String artifactId) {
+        return Files.isRegularFile(artifactPath(repositoryId, revision, artifactId)
+                .resolveSibling(artifactPath(repositoryId, revision, artifactId).getFileName() + ".pinned"));
+    }
+
+    public void pin(String repositoryId, String revision, String artifactId) throws IOException {
+        Path artifact = artifactPath(repositoryId, revision, artifactId);
+        if (!Files.isRegularFile(artifact)) {
+            throw new IOException("cannot pin a missing artifact: " + artifactId);
+        }
+        Files.createDirectories(artifact.getParent());
+        Path marker = artifact.resolveSibling(artifact.getFileName() + ".pinned");
+        if (!Files.exists(marker)) {
+            Files.createFile(marker);
+        }
+    }
+
+    public void unpin(String repositoryId, String revision, String artifactId) throws IOException {
+        Path artifact = artifactPath(repositoryId, revision, artifactId);
+        Files.deleteIfExists(artifact.resolveSibling(artifact.getFileName() + ".pinned"));
+    }
+
+    public long evictOlderThan(long cutoffEpochMillis) throws IOException {
+        List<CacheEntry> entries = list();
+        long freed = 0L;
+        for (CacheEntry entry : entries) {
+            if (entry.lastModifiedMillis() >= cutoffEpochMillis) {
+                continue;
+            }
+            if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                continue;
+            }
+            if (Files.deleteIfExists(entry.path())) {
+                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                freed += entry.sizeBytes();
+            }
+        }
+        return freed;
+    }
+
+    public long clear() throws IOException {
+        List<CacheEntry> entries = list();
+        long freed = 0L;
+        for (CacheEntry entry : entries) {
+            if (Files.deleteIfExists(entry.path())) {
+                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"));
+                freed += entry.sizeBytes();
+            }
+        }
+        return freed;
     }
 
     public long evictToFit(long incomingBytes) throws IOException {
@@ -177,9 +231,13 @@ public final class CacheStorage {
             if (total + incomingBytes - freed <= maxSizeBytes) {
                 break;
             }
-            Files.deleteIfExists(entry.path());
-            deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
-            freed += entry.sizeBytes();
+            if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                continue;
+            }
+            if (Files.deleteIfExists(entry.path())) {
+                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                freed += entry.sizeBytes();
+            }
         }
         return freed;
     }

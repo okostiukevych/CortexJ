@@ -67,7 +67,14 @@ java -jar cli/target/cortexj-cli-*.jar run Qwen/Qwen3-8B --lockfile release.lock
 # air-gap bundles (spec 62)
 java -jar cli/target/cortexj-cli-*.jar bundle create Qwen/Qwen3-8B --out ./bundle
 java -jar cli/target/cortexj-cli-*.jar bundle verify ./bundle
+
+# cache management (spec 59, 33.4)
+java -jar cli/target/cortexj-cli-*.jar cache list
+java -jar cli/target/cortexj-cli-*.jar cache clean
 ```
+
+Guides for every supported runtime, adapter and extension point live under `docs/`
+(spec 101/102).
 
 ## Architecture
 
@@ -111,17 +118,19 @@ Layering rules (enforced by module boundaries):
 | `cortexj-streaming` | `TokenStream` implementation utilities |
 | `cortexj-repository-local` | Local filesystem repository (`cortexj-model.json` manifests) |
 | `cortexj-repository-huggingface` | Hugging Face resolver (immutable revisions, offline mode) |
+| `cortexj-repository-http` | Plain HTTP(S) URL references (ETag revisions, trust notes) |
 | `cortexj-runtime-remote-openai` | OpenAI-compatible remote provider (vLLM, llama-server, gateways) |
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
 | `cortexj-runtime-llamacpp` | llama.cpp provider (probe + honest diagnostics; JNI bridge is a later milestone) |
 | `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
-| `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/spans |
+| `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/histograms/spans |
+| `cortexj-streaming-flow` | Java `Flow.Publisher` streaming adapter (Java 11+) |
 | `integrations/spring-ai` | Spring AI adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |
 | `cortexj-tck` | Technology compatibility kit for runtime/repository providers |
-| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / bundle` |
+| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / cache list/clean / bundle create/verify` |
 
 ## Status (milestones from the spec)
 
@@ -149,8 +158,16 @@ Layering rules (enforced by module boundaries):
   materializes conversions into the cache with a provenance manifest (§32.4), original
   artifacts stay immutable
 
-Current test matrix: **26 suites / 127 tests green on JDK 25** (full reactor incl. adapter
-modules), **23 suites / 116 tests green on real JDK 8** (shared core + providers + TCK).
+Full spec-conformance pass additionally delivered: cache eviction policies
+(pinned/age-cap/manual + `cache list/clean` CLI, plus a fix for in-progress downloads
+participating in LRU eviction), trust policies (TRUSTED_ONLY / ALLOW_UNSIGNED_WITH_WARNING /
+CUSTOM, spec 35.2), a plain HTTP repository provider (spec 14.3), the Java Flow streaming
+adapter (spec 37.3), duration/token metrics on PLAN_CREATED / DOWNLOAD_COMPLETED /
+INFERENCE_COMPLETED events surfaced through the OTel histogram (spec 57.1), and the
+documentation set required by spec 101/102 under `docs/`.
+
+Current test matrix: **30 suites / 140 tests green on JDK 25** (full reactor incl. adapter
+modules), **26 suites / 127 tests green on real JDK 8** (shared core + providers + TCK).
 
 Known follow-ups (explicit non-goals of this drop, tracked by the spec's v1.0 scope):
 llama.cpp JNI bridge, Safetensors direct execution, real format converters (the conversion

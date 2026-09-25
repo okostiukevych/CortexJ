@@ -30,6 +30,7 @@ public final class OtelEventListener implements PlatformEventListener {
     private final LongCounter downloadCounter;
     private final LongCounter downloadFailureCounter;
     private final LongCounter bytesDownloadedCounter;
+    private final io.opentelemetry.api.metrics.DoubleHistogram inferenceHistogram;
     private final Map<String, Span> spansByModel = new ConcurrentHashMap<String, Span>();
 
     public OtelEventListener() {
@@ -54,12 +55,24 @@ public final class OtelEventListener implements PlatformEventListener {
         this.bytesDownloadedCounter = meter.counterBuilder("cortexj.artifact.downloaded.bytes")
                 .setDescription("Bytes downloaded into the cache")
                 .build();
+        this.inferenceHistogram = meter.histogramBuilder("cortexj.operation.duration")
+                .setDescription("Duration of timed platform operations (planning, downloads, inference)")
+                .setUnit("ms")
+                .build();
     }
 
     @Override
     public void onEvent(PlatformEvent event) {
         Attributes attributes = attributes(event);
         eventCounter.add(1, attributes);
+        String durationMillis = event.attributes().get("durationMillis");
+        if (durationMillis != null) {
+            try {
+                inferenceHistogram.record(Double.parseDouble(durationMillis), attributes);
+            } catch (NumberFormatException ignored) {
+                return;
+            }
+        }
         switch (event.type()) {
             case MODEL_RESOLUTION_STARTED:
                 spansByModel.putIfAbsent(spanKey(event), tracer.spanBuilder("cortexj.model.resolution")

@@ -102,6 +102,8 @@ public final class DefaultModels implements io.cortexj.Models {
                     "This is an internal contract violation; report it to the platform maintainers.");
         }
 
+        enforceTrustPolicy(resolved);
+
         Path artifactPath = ensureArtifact(plan, resolved, candidate);
 
         ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
@@ -196,6 +198,26 @@ public final class DefaultModels implements io.cortexj.Models {
                 "Resolved model does not contain artifact " + artifact.id(),
                 "The selected artifact vanished during resolution; re-run the plan.")
                 .detail("artifact", artifact.id());
+    }
+
+    private void enforceTrustPolicy(ResolvedModel resolved) {
+        io.cortexj.model.TrustPolicy policy = platform.config().trustPolicy;
+        String trustNote = resolved.descriptor().trustNote();
+        if (trustNote == null || trustNote.isEmpty()) {
+            return;
+        }
+        if (policy == io.cortexj.model.TrustPolicy.TRUSTED_ONLY) {
+            throw new ModelLoadException(io.cortexj.ErrorCode.SEC_POLICY_BLOCKED,
+                    "Model " + resolved.descriptor().canonicalId()
+                            + " is not explicitly trusted and the platform runs with TRUSTED_ONLY: "
+                            + trustNote,
+                    "Verify the model publisher and checksums, pin a trusted revision, "
+                            + "or relax the trust policy to ALLOW_UNSIGNED_WITH_WARNING.");
+        }
+        if (policy == io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING) {
+            platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
+                    "untrusted model loaded (trust policy allows it): " + trustNote);
+        }
     }
 
     private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate) {
