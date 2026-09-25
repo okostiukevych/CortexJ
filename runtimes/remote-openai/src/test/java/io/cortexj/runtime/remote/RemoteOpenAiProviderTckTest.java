@@ -75,7 +75,8 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
         server.createContext("/v1/chat/completions", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
-                lastAuthHeader.put("chat", exchange.getRequestHeaders().getFirst("Authorization"));
+                String auth = exchange.getRequestHeaders().getFirst("Authorization");
+                lastAuthHeader.put("chat", auth == null ? "" : auth);
                 String body = readBody(exchange);
                 if (body.contains("\"stream\":true") || body.contains("\"stream\" : true")) {
                     respond(exchange, 200, "text/event-stream",
@@ -90,7 +91,8 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
         server.createContext("/v1/embeddings", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
-                lastAuthHeader.put("embed", exchange.getRequestHeaders().getFirst("Authorization"));
+                String auth = exchange.getRequestHeaders().getFirst("Authorization");
+                lastAuthHeader.put("embed", auth == null ? "" : auth);
                 respond(exchange, 200, "{\"object\":\"list\",\"data\":[{\"index\":0,\"embedding\":[0.1,0.2,0.3]},{\"index\":1,\"embedding\":[0.4,0.5,0.6]}],\"model\":\"tck-model\"}");
             }
         });
