@@ -21,7 +21,8 @@ Everything from earlier guides plus:
 - all adapter modules (`cortexj-spring-ai`, `cortexj-langchain4j`,
   `cortexj-observability`);
 - the complete CLI (`doctor`, `runtimes`, `hardware`, `inspect`, `plan`, `pull`, `run`,
-  `cache list`, `cache clean`, `bundle create/verify`, lockfile flags).
+  `server`, `convert`, `cache list`, `cache clean`, `bundle create/verify`, lockfile
+  flags).
 
 ## 3. Verify your environment
 

@@ -67,3 +67,13 @@ java -jar cortexj-cli-*.jar run Qwen/Qwen3-8B-GGUF --lockfile release.lock
 `--lockfile` enforces `PINNED_PLAN`: the planner must reproduce the locked runtime and
 artifact or fail with `CORTEXJ-PLAN-4002` and a full explanation. Revision drift is
 detected separately (resolved revision must equal the locked revision).
+
+## 6. Deterministic quantization conversion (spec 32)
+
+```bash
+java -jar cortexj-cli-*.jar convert ./release-bundle/model.gguf --to f16 --out ./converted
+```
+
+The bundled `gguf-float` converter rewrites F32 tensors as F16 (and back) with a
+provenance manifest (sha256 of the output, converted tensor counts); originals stay
+immutable.
