@@ -1,8 +1,8 @@
-package io.cortexj.stream;
+package io.cortexj.stream.internal;
 
 import io.cortexj.error.CortexJException;
 import io.cortexj.inference.FinishReason;
-import io.cortexj.stream.internal.PushTokenStream;
+import io.cortexj.stream.TokenStream;
 
 public final class TokenStreamPublisher {
 

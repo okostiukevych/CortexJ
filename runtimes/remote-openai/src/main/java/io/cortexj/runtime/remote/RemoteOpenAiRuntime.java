@@ -164,7 +164,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         @Override
         public TokenStream stream(GenerationRequest request) {
             final Map<String, Object> payload = generationPayload(request, true);
-            final io.cortexj.stream.TokenStreamPublisher publisher = new io.cortexj.stream.TokenStreamPublisher();
+            final io.cortexj.stream.internal.TokenStreamPublisher publisher = new io.cortexj.stream.internal.TokenStreamPublisher();
             final Runnable worker = new Runnable() {
                 @Override
                 public void run() {
@@ -186,7 +186,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             return publisher.stream();
         }
 
-        private void streamSse(io.cortexj.stream.TokenStreamPublisher publisher, Map<String, Object> payload) throws IOException {
+        private void streamSse(io.cortexj.stream.internal.TokenStreamPublisher publisher, Map<String, Object> payload) throws IOException {
             URL url = new URL(baseUrl + "/v1/chat/completions");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             try {
@@ -220,7 +220,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             }
         }
 
-        private void readSseStream(InputStream stream, io.cortexj.stream.TokenStreamPublisher publisher) throws IOException {
+        private void readSseStream(InputStream stream, io.cortexj.stream.internal.TokenStreamPublisher publisher) throws IOException {
             BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
             StringBuilder content = new StringBuilder();
             String line;
