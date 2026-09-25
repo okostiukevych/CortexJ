@@ -61,6 +61,9 @@ public final class CortexJMain {
             if (command.equals("bundle")) {
                 return bundle(args);
             }
+            if (command.equals("convert")) {
+                return convert(args);
+            }
             if (command.equals("cache")) {
                 return cache(args);
             }
@@ -87,6 +90,9 @@ public final class CortexJMain {
         System.out.println("Cache management:");
         System.out.println("  cortexj cache list                    list cached artifacts");
         System.out.println("  cortexj cache clean                   remove all cached artifacts");
+        System.out.println();
+        System.out.println("Conversion:");
+        System.out.println("  cortexj convert <model> --to f16 --out <dir>  convert GGUF float width");
         System.out.println();
         System.out.println("Air-gap bundle:");
         System.out.println("  cortexj bundle create <model> --out <dir>   create a portable offline bundle");
@@ -288,6 +294,82 @@ public final class CortexJMain {
         }
         System.err.println("Unknown cache action: " + action + " (use list or clean)");
         return 1;
+    }
+
+    private static int convert(String[] args) {
+        if (args.length < 4) {
+            usage();
+            return 1;
+        }
+        String model = args[1];
+        String target = optionValue(args, "--to");
+        String out = optionValue(args, "--out");
+        if (target == null || out == null) {
+            System.err.println("convert requires --to <f16|f32> and --out <dir>");
+            return 1;
+        }
+        java.util.List<io.cortexj.spi.repository.ModelRepositoryProvider> repositories =
+                io.cortexj.core.SpiRegistries.loadSorted(io.cortexj.spi.repository.ModelRepositoryProvider.class,
+                        new io.cortexj.core.SpiRegistries.IdAccessor<io.cortexj.spi.repository.ModelRepositoryProvider>() {
+                            public String idOf(io.cortexj.spi.repository.ModelRepositoryProvider provider) {
+                                return provider.id().value();
+                            }
+                        }, java.util.Collections.<io.cortexj.spi.repository.ModelRepositoryProvider>emptyList());
+        io.cortexj.cache.CacheStorage cache = defaultCache();
+        io.cortexj.spi.repository.ResolutionContext context =
+                io.cortexj.spi.repository.ResolutionContext.create(false,
+                        io.cortexj.spi.repository.TokenSupplier.none(), null, null);
+        io.cortexj.spi.repository.ResolvedModel resolved = null;
+        for (io.cortexj.spi.repository.ModelRepositoryProvider repository : repositories) {
+            if (!repository.supports(io.cortexj.model.ModelReference.of(model))) {
+                continue;
+            }
+            try {
+                resolved = repository.resolve(io.cortexj.model.ModelReference.of(model), context);
+                break;
+            } catch (RuntimeException ignored) {
+                return 2;
+            }
+        }
+        if (resolved == null) {
+            System.err.println("no repository can resolve: " + model);
+            return 2;
+        }
+        io.cortexj.spi.repository.ResolvedArtifact source = null;
+        for (io.cortexj.spi.repository.ResolvedArtifact candidate : resolved.artifacts()) {
+            if (candidate.artifact().format() == io.cortexj.model.ArtifactFormat.GGUF) {
+                source = candidate;
+                break;
+            }
+        }
+        if (source == null) {
+            System.err.println("model has no GGUF artifact to convert: " + model);
+            return 2;
+        }
+        java.nio.file.Path sourcePath;
+        try {
+            String scheme = source.location() == null ? "" : source.location().getScheme();
+            if (scheme.equals("file")) {
+                sourcePath = java.nio.file.Paths.get(source.location().getPath());
+            } else {
+                sourcePath = new io.cortexj.core.download.DownloadManager(new io.cortexj.core.EventBus(
+                        java.util.Collections.<io.cortexj.observability.PlatformEventListener>emptyList()))
+                        .download(source, resolved.repository().value(), resolved.revision(), cache, 0L);
+            }
+        } catch (RuntimeException e) {
+            System.err.println("cannot obtain source artifact: " + e.getMessage());
+            return 2;
+        }
+        io.cortexj.convert.gguf.GgufFloatConverter converter = new io.cortexj.convert.gguf.GgufFloatConverter();
+        io.cortexj.spi.conversion.ConversionRequest request = new io.cortexj.spi.conversion.ConversionRequest(
+                source.artifact(), sourcePath, io.cortexj.model.ArtifactFormat.GGUF, target,
+                java.nio.file.Paths.get(out), java.util.Collections.<String, Object>emptyMap());
+        io.cortexj.spi.conversion.ConversionResult result = converter.convert(request);
+        System.out.println("converted: " + result.outputPath());
+        for (java.util.Map.Entry<String, String> entry : result.provenance().entrySet()) {
+            System.out.println("  " + entry.getKey() + ": " + entry.getValue());
+        }
+        return 0;
     }
 
     private static int bundle(String[] args) {
