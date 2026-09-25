@@ -1,4 +1,4 @@
-package io.cortexj.runtime.onnx;
+package io.cortexj.model.token;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

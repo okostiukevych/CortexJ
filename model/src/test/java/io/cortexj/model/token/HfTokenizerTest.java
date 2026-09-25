@@ -1,4 +1,4 @@
-package io.cortexj.runtime.onnx;
+package io.cortexj.model.token;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

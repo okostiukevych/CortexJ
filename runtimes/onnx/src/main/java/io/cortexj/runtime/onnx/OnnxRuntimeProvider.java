@@ -144,7 +144,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                 byte[] modelBytes = Files.readAllBytes(modelPath);
                 OrtSession session = env.createSession(modelBytes,
                         new OrtSession.SessionOptions());
-                HfTokenizer.TokenEncoder tokenizer = loadTokenizer(modelPath);
+                io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer = loadTokenizer(modelPath);
                 return new OnnxModel(session, tokenizer);
             } catch (io.cortexj.error.CortexJException e) {
                 throw e;
@@ -156,7 +156,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             }
         }
 
-        private HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
+        private io.cortexj.model.token.HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
             Path tokenizerJson = modelPath.resolveSibling("tokenizer.json");
             if (!Files.isRegularFile(tokenizerJson)) {
                 tokenizerJson = modelPath.getParent() == null
@@ -165,13 +165,13 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             }
             if (tokenizerJson != null && Files.isRegularFile(tokenizerJson)) {
                 try {
-                    return HfTokenizer.load(tokenizerJson);
+                    return io.cortexj.model.token.HfTokenizer.load(tokenizerJson);
                 } catch (Exception e) {
                     LOG.warning("tokenizer.json present but unreadable, falling back to whitespace tokenizer: "
                             + e.getMessage());
                 }
             }
-            return HfTokenizer.fallback();
+            return io.cortexj.model.token.HfTokenizer.fallback();
         }
 
         @Override
@@ -182,10 +182,10 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
     final class OnnxModel implements RuntimeModel, io.cortexj.inference.EmbeddingCapability {
 
         private final OrtSession session;
-        private final HfTokenizer.TokenEncoder tokenizer;
+        private final io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer;
         private volatile boolean closed;
 
-        OnnxModel(OrtSession session, HfTokenizer.TokenEncoder tokenizer) {
+        OnnxModel(OrtSession session, io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer) {
             this.session = session;
             this.tokenizer = tokenizer;
         }
