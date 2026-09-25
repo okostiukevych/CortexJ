@@ -41,6 +41,9 @@ public final class ExplanationBuilder {
                     .append(" (").append(selected.artifact().format())
                     .append(", ").append(mebi(selected.artifact().sizeBytes())).append(" MiB)\n");
         }
+        if (selected.requiresConversion()) {
+            sb.append("  conversion: ").append(selected.conversion().describe()).append('\n');
+        }
         sb.append("  device: ").append(selected.device()).append('\n');
         if (selected.quantization() != null) {
             sb.append("  quantization: ").append(selected.quantization()).append('\n');

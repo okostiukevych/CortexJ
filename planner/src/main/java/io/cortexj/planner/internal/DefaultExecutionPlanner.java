@@ -13,6 +13,7 @@ import io.cortexj.model.ModelReference;
 import io.cortexj.planner.ExecutionCandidate;
 import io.cortexj.planner.ExecutionPlan;
 import io.cortexj.planner.ExecutionRequest;
+import io.cortexj.planner.ConversionStep;
 import io.cortexj.planner.FallbackPolicy;
 import io.cortexj.planner.ModelLockfile;
 import io.cortexj.planner.ReproducibilityMode;
@@ -26,6 +27,9 @@ import io.cortexj.planner.internal.constraint.HardConstraints;
 import io.cortexj.planner.internal.scoring.ScoringRules;
 import io.cortexj.runtime.DeviceType;
 import io.cortexj.runtime.RuntimeDescriptor;
+import io.cortexj.spi.conversion.ConversionRequest;
+import io.cortexj.spi.conversion.ConversionSupport;
+import io.cortexj.spi.conversion.ModelConverter;
 import io.cortexj.spi.policy.ExecutionPolicy;
 import io.cortexj.spi.policy.PolicyDecision;
 import io.cortexj.spi.repository.ModelRepositoryProvider;
@@ -266,10 +270,123 @@ public final class DefaultExecutionPlanner implements Planner {
             }
         }
 
+        if (outcome.candidates.isEmpty()) {
+            generateConversionCandidates(outcome, request, resolved, providers, probes);
+        }
+
         applyConstraints(outcome, request, resolved, probes);
         applyPolicies(outcome, request);
         scoreAndSort(outcome, request);
         return outcome;
+    }
+
+    private void generateConversionCandidates(Outcome outcome,
+                                              ExecutionRequest request,
+                                              ResolvedModel resolved,
+                                              List<RuntimeProvider> providers,
+                                              Map<String, RuntimeProbeResult> probes) {
+        if (inputs.converters.isEmpty()) {
+            return;
+        }
+        for (RuntimeProvider provider : providers) {
+            RuntimeDescriptor descriptor = provider.descriptor();
+            RuntimeProbeResult probe = probes.get(descriptor.id().value());
+            for (ResolvedArtifact resolvedArtifact : sortedArtifacts(resolved)) {
+                ModelArtifact source = resolvedArtifact.artifact();
+                if (!source.format().isExecutableWeights()) {
+                    continue;
+                }
+                String scheme = resolvedArtifact.location() == null ? "" : resolvedArtifact.location().getScheme();
+                boolean localFile = scheme.equals("file");
+                boolean cached = !localFile
+                        && inputs.isCached(resolved.repository().value(), resolved.revision(), source);
+                for (ArtifactFormat targetFormat : descriptor.formats()) {
+                    if (targetFormat == source.format()) {
+                        continue;
+                    }
+                    ModelConverter converter = findConverter(source, targetFormat);
+                    if (converter == null) {
+                        continue;
+                    }
+                    addConversionCandidate(outcome, provider, descriptor, probe, source,
+                            converter, targetFormat, request, resolved, localFile, cached);
+                }
+            }
+        }
+    }
+
+    private ModelConverter findConverter(ModelArtifact source, ArtifactFormat targetFormat) {
+        ModelConverter best = null;
+        for (ModelConverter converter : inputs.converters) {
+            ConversionSupport support;
+            try {
+                support = converter.evaluate(new ConversionRequest(source, null, targetFormat, null, null,
+                        java.util.Collections.<String, Object>emptyMap()));
+            } catch (RuntimeException evaluationFailure) {
+                continue;
+            }
+            if (support != null && support.isSupported()) {
+                if (best == null || converter.id().value().compareTo(best.id().value()) < 0) {
+                    best = converter;
+                }
+            }
+        }
+        return best;
+    }
+
+    private void addConversionCandidate(Outcome outcome,
+                                        RuntimeProvider provider,
+                                        RuntimeDescriptor descriptor,
+                                        RuntimeProbeResult probe,
+                                        ModelArtifact source,
+                                        ModelConverter converter,
+                                        ArtifactFormat targetFormat,
+                                        ExecutionRequest request,
+                                        ResolvedModel resolved,
+                                        boolean localFile,
+                                        boolean cached) {
+        final Map<String, String> metadata = new LinkedHashMap<String, String>(source.metadata());
+        metadata.put("convertedFrom", source.id());
+        ModelArtifact converted = new ModelArtifact.Abstract(
+                source.id() + "." + targetFormat.name().toLowerCase(),
+                targetFormat, source.sizeBytes(), null, metadata) {
+        };
+
+        RuntimeSupport support;
+        try {
+            support = provider.evaluate(new RuntimeEvaluationRequest(
+                    resolved.descriptor(), converted, inputs.environment, inputs.hardware, request));
+        } catch (RuntimeException evaluationFailure) {
+            return;
+        }
+        if (support == null || !support.isSupported()) {
+            return;
+        }
+
+        ConversionStep step = new ConversionStep(converter.id().value(), source.id(),
+                source.format(), targetFormat, null);
+
+        ExecutionCandidate.Builder builder = ExecutionCandidate.builder(descriptor.id().value())
+                .artifact(converted)
+                .device(support.proposedDevice() == null ? DeviceType.CPU : support.proposedDevice())
+                .requiresDownload(!localFile && !cached)
+                .conversion(step)
+                .score(-30.0d);
+        builder.note("conversion", converter.id().value());
+        if (localFile) {
+            builder.note("localFile", "true");
+        } else if (cached) {
+            builder.note("cached", "true");
+        }
+        String quantization = source.metadata().get("quantization");
+        builder.quantization(quantization == null
+                ? io.cortexj.model.descriptor.DescriptorEnricher.quantizationFromFileName(source.id())
+                : quantization);
+        int contextLength = resolved.descriptor().contextLength();
+        builder.memoryEstimate(memoryEstimator.estimate(converted, contextLength));
+        builder.note("supportLevel", support.level().name());
+
+        outcome.candidates.add(new CandidateHolder(descriptor, probe, builder));
     }
 
     private RuntimeProbeResult probeCached(RuntimeProvider provider) {

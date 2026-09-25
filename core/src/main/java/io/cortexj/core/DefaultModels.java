@@ -166,6 +166,9 @@ public final class DefaultModels implements io.cortexj.Models {
                 || candidate.device() == DeviceType.REMOTE) {
             return null;
         }
+        if (candidate.requiresConversion()) {
+            return materializeConversion(plan, resolved, candidate);
+        }
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
             if (!resolvedArtifact.artifact().id().equals(artifact.id())) {
                 continue;
@@ -193,6 +196,161 @@ public final class DefaultModels implements io.cortexj.Models {
                 "Resolved model does not contain artifact " + artifact.id(),
                 "The selected artifact vanished during resolution; re-run the plan.")
                 .detail("artifact", artifact.id());
+    }
+
+    private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate) {
+        io.cortexj.planner.ConversionStep step = candidate.conversion();
+        ResolvedArtifact source = null;
+        for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
+            if (resolvedArtifact.artifact().id().equals(step.sourceArtifactId())) {
+                source = resolvedArtifact;
+                break;
+            }
+        }
+        if (source == null) {
+            throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
+                    "Conversion source artifact " + step.sourceArtifactId()
+                            + " is not part of the resolved model",
+                    "The repository content changed after planning; re-run the plan.")
+                    .detail("artifact", step.sourceArtifactId());
+        }
+        String repositoryId = resolved.repository().value();
+        String revision = resolved.revision();
+        String convertedId = candidate.artifact().id();
+
+        io.cortexj.cache.CacheStorage cache = platform.cache();
+        Path cached = cache.get(repositoryId, revision, convertedId, null);
+        if (cached != null) {
+            return cached;
+        }
+
+        Path sourcePath = ensureSourceArtifact(resolved, source);
+        Path outputDirectory;
+        try {
+            outputDirectory = java.nio.file.Files.createTempDirectory("cortexj-conversion");
+        } catch (java.io.IOException e) {
+            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "Cannot create a conversion working directory: " + e.getMessage(), e);
+        }
+        try {
+            io.cortexj.spi.conversion.ModelConverter converter = converterById(step.converterId());
+            if (converter == null) {
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Converter " + step.converterId() + " is not registered on this platform",
+                        "Add the converter module to the assembly or re-plan without conversion.");
+            }
+            io.cortexj.spi.conversion.ConversionResult result = converter.convert(
+                    new io.cortexj.spi.conversion.ConversionRequest(
+                            source.artifact(), sourcePath, step.targetFormat(),
+                            step.targetQuantization(), outputDirectory,
+                            java.util.Collections.<String, Object>emptyMap()));
+            Path outputPath = result.outputPath();
+            if (outputPath == null || !java.nio.file.Files.isRegularFile(outputPath)) {
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Converter " + step.converterId() + " produced no output artifact",
+                        "Report the converter failure to the converter maintainer.");
+            }
+            String sha256;
+            try (java.io.InputStream input = java.nio.file.Files.newInputStream(outputPath)) {
+                java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    digest.update(buffer, 0, read);
+                }
+                StringBuilder hex = new StringBuilder();
+                for (byte b : digest.digest()) {
+                    hex.append(String.format("%02x", b));
+                }
+                sha256 = hex.toString();
+            }
+            try (java.io.InputStream input = java.nio.file.Files.newInputStream(outputPath)) {
+                cache.put(repositoryId, revision, convertedId, null, input);
+            }
+            writeProvenance(resolved, candidate, step, converter, source, result, sha256);
+            return cache.get(repositoryId, revision, convertedId, null);
+        } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
+            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "Conversion of " + step.sourceArtifactId() + " failed: " + e.getMessage(), e);
+        }
+    }
+
+    private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source) {
+        String scheme = source.location() == null ? "" : source.location().getScheme();
+        if (scheme.equals("file")) {
+            return Paths.get(source.location().getPath());
+        }
+        io.cortexj.cache.CacheStorage cache = platform.cache();
+        Path cached = cache.get(resolved.repository().value(), resolved.revision(),
+                source.artifact().id(), source.artifact().checksum());
+        if (cached != null) {
+            return cached;
+        }
+        if (platform.config().offline) {
+            throw new ArtifactResolutionException(ErrorCode.MODEL_OFFLINE_UNRESOLVED,
+                    "Conversion source artifact " + source.artifact().id()
+                            + " is not cached and offline mode is active.",
+                    "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
+                    .detail("artifact", source.artifact().id());
+        }
+        return platform.downloads().download(source, resolved.repository().value(),
+                resolved.revision(), cache, 0L);
+    }
+
+    private io.cortexj.spi.conversion.ModelConverter converterById(String converterId) {
+        for (io.cortexj.spi.conversion.ModelConverter converter : platform.converters()) {
+            if (converter.id().value().equals(converterId)) {
+                return converter;
+            }
+        }
+        return null;
+    }
+
+    private void writeProvenance(ResolvedModel resolved,
+                                 ExecutionCandidate candidate,
+                                 io.cortexj.planner.ConversionStep step,
+                                 io.cortexj.spi.conversion.ModelConverter converter,
+                                 ResolvedArtifact source,
+                                 io.cortexj.spi.conversion.ConversionResult result,
+                                 String outputSha256) {
+        try {
+            java.nio.file.Path directory = platform.config().workingDirectory
+                    .resolve("converted").resolve(resolved.repository().value())
+                    .resolve(resolved.revision());
+            java.nio.file.Files.createDirectories(directory);
+            java.util.Properties manifest = new java.util.Properties();
+            manifest.setProperty("sourceRevision", resolved.revision());
+            manifest.setProperty("sourceArtifact", source.artifact().id());
+            String sourceChecksum = source.artifact().checksum() == null
+                    ? "" : source.artifact().checksum().value();
+            manifest.setProperty("sourceChecksum", sourceChecksum);
+            manifest.setProperty("converterId", converter.id().value());
+            manifest.setProperty("targetFormat", step.targetFormat().name());
+            if (step.targetQuantization() != null) {
+                manifest.setProperty("quantization", step.targetQuantization());
+            }
+            if (candidate.quantization() != null) {
+                manifest.setProperty("candidateQuantization", candidate.quantization());
+            }
+            manifest.setProperty("outputArtifact", candidate.artifact().id());
+            manifest.setProperty("outputChecksum", "sha256:" + outputSha256);
+            manifest.setProperty("timestamp", java.time.format.DateTimeFormatter.ISO_INSTANT
+                    .format(java.time.Instant.now()));
+            manifest.setProperty("platformVersion", io.cortexj.core.CortexJInfo.VERSION);
+            manifest.setProperty("originalArtifactImmutable", "true");
+            for (java.util.Map.Entry<String, String> entry : result.provenance().entrySet()) {
+                manifest.setProperty("converter." + entry.getKey(), entry.getValue());
+            }
+            java.io.OutputStream out = java.nio.file.Files.newOutputStream(
+                    directory.resolve(candidate.artifact().id() + ".provenance.properties"));
+            try {
+                manifest.store(out, "CortexJ deterministic conversion provenance (spec 32.4)");
+            } finally {
+                out.close();
+            }
+        } catch (java.io.IOException ignored) {
+            // provenance is best-effort and must not block model loading
+        }
     }
 
     void closeAll() {

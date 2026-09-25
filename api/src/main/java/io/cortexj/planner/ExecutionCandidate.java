@@ -18,6 +18,7 @@ public final class ExecutionCandidate {
     private final boolean requiresDownload;
     private final double score;
     private final Map<String, String> notes;
+    private final ConversionStep conversion;
 
     private ExecutionCandidate(Builder builder) {
         this.runtimeId = builder.runtimeId;
@@ -28,6 +29,7 @@ public final class ExecutionCandidate {
         this.requiresDownload = builder.requiresDownload;
         this.score = builder.score;
         this.notes = Collections.unmodifiableMap(new LinkedHashMap<String, String>(builder.notes));
+        this.conversion = builder.conversion;
     }
 
     public String runtimeId() {
@@ -64,6 +66,14 @@ public final class ExecutionCandidate {
 
     public Map<String, String> notes() {
         return notes;
+    }
+
+    public ConversionStep conversion() {
+        return conversion;
+    }
+
+    public boolean requiresConversion() {
+        return conversion != null;
     }
 
     public java.util.List<PlanReason> notesAsReasons() {
@@ -125,6 +135,7 @@ public final class ExecutionCandidate {
         private MemoryEstimate memoryEstimate;
         private boolean requiresDownload;
         private double score;
+        private ConversionStep conversion;
         private final Map<String, String> notes = new LinkedHashMap<String, String>();
 
         private Builder(String runtimeId) {
@@ -166,6 +177,11 @@ public final class ExecutionCandidate {
 
         public Builder addScore(double delta) {
             this.score += delta;
+            return this;
+        }
+
+        public Builder conversion(ConversionStep step) {
+            this.conversion = step;
             return this;
         }
 
