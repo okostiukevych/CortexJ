@@ -11,6 +11,7 @@ public enum ReasonCode {
     NATIVE_BINARY_MISSING("native binary for this OS/architecture is not available"),
     OS_ARCH_UNSUPPORTED("runtime does not support this OS/architecture"),
     MEMORY_LIMIT_EXCEEDED("estimated memory exceeds the configured hard limit"),
+    TASK_UNSUPPORTED("runtime does not support any task this model offers"),
     MEMORY_INSUFFICIENT("estimated memory exceeds physically available memory"),
     LICENSE_BLOCKED("model license is blocked by the configured policy"),
     TRUST_POLICY_BLOCKED("artifact is blocked by the trust policy"),

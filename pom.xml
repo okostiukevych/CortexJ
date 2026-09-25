@@ -49,9 +49,11 @@
     <module>runtimes/llamacpp</module>
     <module>runtimes/djl</module>
     <module>converters/gguf</module>
+    <module>converters/safetensors</module>
     <module>server</module>
     <module>maven-plugin</module>
     <module>examples</module>
+    <module>declarative</module>
     <module>platform/java8</module>
     <module>starters/java8</module>
     <module>tck</module>

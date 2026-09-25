@@ -48,6 +48,7 @@ class ExecutionPlannerTest {
         return new TestRuntimeProvider("onnx", ArtifactFormat.ONNX)
                 .devices(io.cortexj.runtime.DeviceType.CPU)
                 .task(io.cortexj.model.TaskCapability.EMBEDDING)
+                .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
                 .maturity(io.cortexj.runtime.RuntimeDescriptor.Maturity.STABLE);
     }
 
