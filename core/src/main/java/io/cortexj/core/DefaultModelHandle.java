@@ -106,10 +106,84 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @SuppressWarnings("unchecked")
     private <T> T capabilityIfSupportedInternal(Class<T> capabilityType) {
+        if (capabilityType == io.cortexj.inference.TextGenerationCapability.class
+                && model instanceof io.cortexj.inference.TextGenerationCapability) {
+            return capabilityType.cast(new InstrumentedGeneration(
+                    (io.cortexj.inference.TextGenerationCapability) model));
+        }
+        if (capabilityType == io.cortexj.inference.EmbeddingCapability.class
+                && model instanceof io.cortexj.inference.EmbeddingCapability) {
+            return capabilityType.cast(new InstrumentedEmbedding(
+                    (io.cortexj.inference.EmbeddingCapability) model));
+        }
         if (capabilityType.isInstance(model)) {
             return capabilityType.cast(model);
         }
         return null;
+    }
+
+    private void publishInferenceCompleted(long startNanos, String detail, Long outputTokens) {
+        long durationMillis = (System.nanoTime() - startNanos) / 1_000_000L;
+        java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+        attributes.put("runtime", candidate.runtimeId());
+        attributes.put("model", descriptor.canonicalId());
+        attributes.put("durationMillis", String.valueOf(durationMillis));
+        if (detail != null) {
+            attributes.put("detail", detail);
+        }
+        if (outputTokens != null) {
+            attributes.put("outputTokens", String.valueOf(outputTokens));
+            if (durationMillis > 0 && outputTokens > 0) {
+                attributes.put("tokensPerSecond",
+                        String.format(java.util.Locale.ROOT, "%.1f",
+                                outputTokens * 1000.0 / durationMillis));
+            }
+        }
+        platform.events().publish(io.cortexj.observability.PlatformEvent.Type.INFERENCE_COMPLETED,
+                io.cortexj.observability.PlatformEvent.Level.INFO,
+                "inference completed via " + candidate.runtimeId(), attributes);
+    }
+
+    private final class InstrumentedGeneration implements io.cortexj.inference.TextGenerationCapability {
+
+        private final io.cortexj.inference.TextGenerationCapability delegate;
+
+        InstrumentedGeneration(io.cortexj.inference.TextGenerationCapability delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public io.cortexj.inference.GenerationResponse generate(io.cortexj.inference.GenerationRequest request) {
+            long start = System.nanoTime();
+            io.cortexj.inference.GenerationResponse response = delegate.generate(request);
+            io.cortexj.inference.TokenUsage usage = response == null ? null : response.usage();
+            publishInferenceCompleted(start, "generate",
+                    usage != null && usage.isKnown() ? Long.valueOf(usage.outputTokens()) : null);
+            return response;
+        }
+
+        @Override
+        public io.cortexj.stream.TokenStream stream(io.cortexj.inference.GenerationRequest request) {
+            return delegate.stream(request);
+        }
+    }
+
+    private final class InstrumentedEmbedding implements io.cortexj.inference.EmbeddingCapability {
+
+        private final io.cortexj.inference.EmbeddingCapability delegate;
+
+        InstrumentedEmbedding(io.cortexj.inference.EmbeddingCapability delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public io.cortexj.inference.EmbeddingResponse embed(io.cortexj.inference.EmbeddingRequest request) {
+            long start = System.nanoTime();
+            io.cortexj.inference.EmbeddingResponse response = delegate.embed(request);
+            publishInferenceCompleted(start,
+                    response == null ? null : "embed:" + response.vectors().size(), null);
+            return response;
+        }
     }
 
     @Override

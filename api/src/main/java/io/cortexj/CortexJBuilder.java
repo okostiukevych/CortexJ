@@ -20,6 +20,7 @@ public final class CortexJBuilder {
     private final List<ExecutionPolicy> executionPolicies = new ArrayList<ExecutionPolicy>();
     private final List<io.cortexj.spi.conversion.ModelConverter> converters =
             new ArrayList<io.cortexj.spi.conversion.ModelConverter>();
+    private io.cortexj.model.TrustPolicy trustPolicy = io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING;
     private final List<PlatformEventListener> eventListeners = new ArrayList<PlatformEventListener>();
 
     private boolean offline = offlineFromEnvironment();
@@ -105,6 +106,11 @@ public final class CortexJBuilder {
         return this;
     }
 
+    public CortexJBuilder trustPolicy(io.cortexj.model.TrustPolicy policy) {
+        this.trustPolicy = policy == null ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING : policy;
+        return this;
+    }
+
     public List<RuntimeProvider> runtimeProviders() {
         return runtimeProviders;
     }
@@ -126,6 +132,10 @@ public final class CortexJBuilder {
 
     public List<io.cortexj.spi.conversion.ModelConverter> converters() {
         return converters;
+    }
+
+    public io.cortexj.model.TrustPolicy trustPolicy() {
+        return trustPolicy;
     }
 
     public List<PlatformEventListener> eventListeners() {

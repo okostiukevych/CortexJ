@@ -11,6 +11,7 @@ public final class Configuration {
     public final String remoteBaseUrl;
     public final String remoteApiKey;
     public final boolean remoteRuntimeAllowed;
+    public final io.cortexj.model.TrustPolicy trustPolicy;
 
     private static final String SYSPROP_PREFIX = "cortexj.";
 
@@ -19,13 +20,16 @@ public final class Configuration {
                         Long memoryLimitBytes,
                         String remoteBaseUrl,
                         String remoteApiKey,
-                        boolean remoteRuntimeAllowed) {
+                        boolean remoteRuntimeAllowed,
+                        io.cortexj.model.TrustPolicy trustPolicy) {
         this.offline = offline;
         this.workingDirectory = workingDirectory;
         this.memoryLimitBytes = memoryLimitBytes;
         this.remoteBaseUrl = remoteBaseUrl;
         this.remoteApiKey = remoteApiKey;
         this.remoteRuntimeAllowed = remoteRuntimeAllowed;
+        this.trustPolicy = trustPolicy == null
+                ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING : trustPolicy;
     }
 
     public static Configuration from(io.cortexj.CortexJBuilder builder, EnvironmentSnapshot snapshot) {
@@ -67,7 +71,7 @@ public final class Configuration {
                 env("OPENAI_API_KEY"));
 
         return new Configuration(offline, workingDirectory, memoryLimit, remoteBaseUrl, remoteApiKey,
-                builder.isRemoteRuntimeAllowed());
+                builder.isRemoteRuntimeAllowed(), builder.trustPolicy());
     }
 
     public java.util.Map<String, String> runtimeConfiguration() {

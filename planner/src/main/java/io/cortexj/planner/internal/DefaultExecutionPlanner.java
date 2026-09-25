@@ -72,6 +72,7 @@ public final class DefaultExecutionPlanner implements Planner {
 
     @Override
     public ExecutionPlan plan(ExecutionRequest request) {
+        long planningStartedMillis = System.currentTimeMillis();
         Outcome outcome = runPipeline(request);
         enforcePinning(request, outcome);
         if (outcome.viable.isEmpty()) {
@@ -95,6 +96,18 @@ public final class DefaultExecutionPlanner implements Planner {
                 noCandidate.detail("rejected:" + rejected.candidate().stableKey(), rejected.reason().message());
             }
             throw noCandidate;
+        }
+
+        if (inputs.eventListener != null) {
+            java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+            attributes.put("model", request.model().value());
+            attributes.put("durationMillis",
+                    String.valueOf(System.currentTimeMillis() - planningStartedMillis));
+            inputs.eventListener.onEvent(new io.cortexj.observability.PlatformEvent(
+                    io.cortexj.observability.PlatformEvent.Type.PLAN_CREATED,
+                    io.cortexj.observability.PlatformEvent.Level.INFO,
+                    "plan created for " + request.model().value(),
+                    attributes, System.currentTimeMillis()));
         }
 
         ExecutionCandidate winner = outcome.viable.get(0);

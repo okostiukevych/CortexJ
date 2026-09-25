@@ -1,0 +1,61 @@
+# Writing a Planner Policy
+
+Planner policies (spec §27) customize soft scoring and rejection without touching the
+planner itself. Hard constraints are built-in and cannot be bypassed by scores.
+
+## 1. Implement the SPI
+
+```java
+public final class PrivacyPolicy implements ExecutionPolicy {
+
+    @Override
+    public String policyId() { return "privacy-no-remote"; }
+
+    @Override
+    public PolicyDecision evaluate(ExecutionCandidate candidate, PlanningContext context) {
+        if (candidate.device() == DeviceType.REMOTE) {
+            return PolicyDecision.reject(ReasonCode.USER_REQUIREMENT_CONFLICT,
+                    "remote execution is forbidden by the privacy policy");
+        }
+        return PolicyDecision.neutral();
+    }
+}
+```
+
+## 2. Register
+
+Programmatic (per deployment):
+
+```java
+CortexJ platform = CortexJ.builder()
+        .executionPolicy(new PrivacyPolicy())
+        .build();
+```
+
+`PolicyDecision` options:
+
+- `neutral()` — no opinion;
+- `reject(reasonCode, message)` — candidate is removed and reported with the reason;
+- `scoreAdjustment(delta, reasonCode, message)` — soft scoring shift (spec §25);
+  adjustments can never override hard constraints (Java version, memory limit,
+  required runtime, offline rules...).
+
+## 3. PlanningContext
+
+Policies receive the environment profile, hardware profile, the user's
+`ExecutionRequest`, and a cache lookup — enough to encode rules like "prefer
+quantized GGUF on machines under 16 GB", "never schedule degraded runtimes for
+production models", or "require q6_k or better for the finance use case".
+
+## 4. Quality profiles (§90)
+
+`ExecutionRequest.qualityProfile(QualityProfile.MEMORY_FIRST)` maps to built-in
+scoring rules (`QualityProfileRule`); policies compose with them and their effects
+are visible in the plan explanation — chosen quantization is never hidden.
+
+## 5. Testing
+
+Policies are pure functions of (candidate, context) — unit test them directly with
+synthetic candidates. For integration, register the policy on a platform built with
+test providers (see `planner/src/test` for fixtures) and assert the plan outcome and
+the explanation text.

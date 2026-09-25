@@ -61,6 +61,9 @@ public final class CortexJMain {
             if (command.equals("bundle")) {
                 return bundle(args);
             }
+            if (command.equals("cache")) {
+                return cache(args);
+            }
             System.err.println("Unknown command: " + command);
             usage();
             return 1;
@@ -80,6 +83,10 @@ public final class CortexJMain {
         System.out.println("  cortexj plan <model> [options]        print the explainable execution plan");
         System.out.println("  cortexj pull <model>                 download the planned artifacts into the cache");
         System.out.println("  cortexj run <model> --prompt <text>   load and execute the model");
+        System.out.println();
+        System.out.println("Cache management:");
+        System.out.println("  cortexj cache list                    list cached artifacts");
+        System.out.println("  cortexj cache clean                   remove all cached artifacts");
         System.out.println();
         System.out.println("Air-gap bundle:");
         System.out.println("  cortexj bundle create <model> --out <dir>   create a portable offline bundle");
@@ -241,6 +248,46 @@ public final class CortexJMain {
         } finally {
             handle.close();
         }
+    }
+
+    private static int cache(String[] args) {
+        String action = args.length >= 2 ? args[1] : "";
+        io.cortexj.cache.CacheStorage storage = defaultCache();
+        if (action.equals("list")) {
+            try {
+                java.util.List<io.cortexj.cache.CacheEntry> entries = storage.list();
+                if (entries.isEmpty()) {
+                    System.out.println("cache is empty: " + storage.root());
+                    return 0;
+                }
+                long total = 0L;
+                for (io.cortexj.cache.CacheEntry entry : entries) {
+                    total += entry.sizeBytes();
+                    System.out.printf(java.util.Locale.ROOT, "%10.1f MiB  %s%n",
+                            Double.valueOf(entry.sizeBytes() / 1048576.0), entry.key());
+                }
+                System.out.printf(java.util.Locale.ROOT, "%10.1f MiB total (%d artifacts)%n",
+                        Double.valueOf(total / 1048576.0), Integer.valueOf(entries.size()));
+                return 0;
+            } catch (java.io.IOException e) {
+                System.err.println("cache listing failed: " + e.getMessage());
+                return 2;
+            }
+        }
+        if (action.equals("clean")) {
+            try {
+                long freed = storage.clear();
+                System.out.printf(java.util.Locale.ROOT,
+                        "cache cleaned, freed %.1f MiB at %s%n",
+                        Double.valueOf(freed / 1048576.0), storage.root());
+                return 0;
+            } catch (java.io.IOException e) {
+                System.err.println("cache cleanup failed: " + e.getMessage());
+                return 2;
+            }
+        }
+        System.err.println("Unknown cache action: " + action + " (use list or clean)");
+        return 1;
     }
 
     private static int bundle(String[] args) {
