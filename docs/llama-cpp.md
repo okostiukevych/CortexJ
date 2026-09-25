@@ -42,6 +42,13 @@ Use the bundled deterministic converter to shrink float32 GGUF files before runn
 java -jar cortexj-cli-0.1.0-SNAPSHOT.jar convert ./model.gguf --to f16 --out ./converted
 ```
 
+## GraalVM/native-image compatibility (§96)
+
+The llama-server bridge is pure Java (process + HTTP, no JNI) — the most
+native-image-friendly execution path of the platform. The llama-server binary itself
+must be present at native-image runtime; verify with the probe before claiming
+support.
+
 ## Planning behavior
 
 - GGUF formats on CPU/GPU; quantization read from the filename when the header is absent.

@@ -68,6 +68,12 @@ java -jar cortexj-cli-*.jar run Qwen/Qwen3-8B-GGUF --lockfile release.lock
 artifact or fail with `CORTEXJ-PLAN-4002` and a full explanation. Revision drift is
 detected separately (resolved revision must equal the locked revision).
 
+## GraalVM/native-image compatibility (§96)
+
+Core/planner avoid unnecessary reflection (spec 96); the declarative module
+(`cortexj-declarative`) uses `java.lang.reflect.Proxy` and requires native-image
+reachability metadata for the annotated interfaces.
+
 ## 6. Deterministic quantization conversion (spec 32)
 
 ```bash

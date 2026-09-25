@@ -50,3 +50,11 @@ Batch embeddings are required by spec §45 and fully supported.
 
 - CPU only — GPU EP builds are a packaging concern (spec §36) and not bundled.
 - Text generation through ONNX is not declared; use llama.cpp or a remote runtime.
+
+## GraalVM/native-image compatibility (§96)
+
+The provider binds to the bundled ONNX Runtime natives via JNI — native-image builds
+require the ONNX Runtime native-image configuration (onnxruntime ships
+`onnxruntime_native_image` metadata). Core/planner code is reflection-free in the hot
+path and ServiceLoader-based registration works with native-image reachability
+metadata. Individual verification is required before claiming native-image support.
