@@ -15,6 +15,30 @@ import java.util.Map;
 
 final class HttpJsonClient {
 
+    private final java.net.Proxy proxy;
+
+    HttpJsonClient() {
+        this(null);
+    }
+
+    static HttpJsonClient fromConfiguration(java.util.Map<String, String> platformConfiguration) {
+        String host = platformConfiguration == null ? null : platformConfiguration.get("proxy.host");
+        String port = platformConfiguration == null ? null : platformConfiguration.get("proxy.port");
+        if (host != null && !host.trim().isEmpty() && port != null && !port.trim().isEmpty()) {
+            try {
+                return new HttpJsonClient(new java.net.Proxy(java.net.Proxy.Type.HTTP,
+                        new java.net.InetSocketAddress(host, Integer.parseInt(port.trim()))));
+            } catch (NumberFormatException ignored) {
+                // fall back to system proxy defaults on malformed port
+            }
+        }
+        return new HttpJsonClient(null);
+    }
+
+    private HttpJsonClient(java.net.Proxy proxy) {
+        this.proxy = proxy;
+    }
+
     static final class Response {
 
         final int status;
@@ -60,7 +84,9 @@ final class HttpJsonClient {
     private Response exchange(String method, String baseUrl, String path, String jsonBody,
                               String apiKey, int connectTimeout, int readTimeout) throws IOException {
         URL url = new URL(trimSlash(baseUrl) + path);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        HttpURLConnection connection = proxy == null
+                ? (HttpURLConnection) url.openConnection()
+                : (HttpURLConnection) url.openConnection(proxy);
         try {
             connection.setRequestMethod(method);
             connection.setConnectTimeout(connectTimeout);

@@ -21,6 +21,8 @@ public final class CortexJBuilder {
     private final List<io.cortexj.spi.conversion.ModelConverter> converters =
             new ArrayList<io.cortexj.spi.conversion.ModelConverter>();
     private io.cortexj.model.TrustPolicy trustPolicy = io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING;
+    private String proxyHost;
+    private String proxyPort;
     private final List<PlatformEventListener> eventListeners = new ArrayList<PlatformEventListener>();
 
     private boolean offline = offlineFromEnvironment();
@@ -111,6 +113,17 @@ public final class CortexJBuilder {
         return this;
     }
 
+    public CortexJBuilder proxy(String host, int port) {
+        if (host == null || host.trim().isEmpty()) {
+            this.proxyHost = null;
+            this.proxyPort = null;
+            return this;
+        }
+        this.proxyHost = host.trim();
+        this.proxyPort = String.valueOf(port);
+        return this;
+    }
+
     public List<RuntimeProvider> runtimeProviders() {
         return runtimeProviders;
     }
@@ -136,6 +149,14 @@ public final class CortexJBuilder {
 
     public io.cortexj.model.TrustPolicy trustPolicy() {
         return trustPolicy;
+    }
+
+    public String proxyHost() {
+        return proxyHost;
+    }
+
+    public String proxyPort() {
+        return proxyPort;
     }
 
     public List<PlatformEventListener> eventListeners() {

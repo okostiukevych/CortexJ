@@ -164,7 +164,79 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.stream.TokenStream stream(io.cortexj.inference.GenerationRequest request) {
-            return delegate.stream(request);
+            long startedNanos = System.nanoTime();
+            io.cortexj.stream.TokenStream upstream = delegate.stream(request);
+            return new FirstTokenTimingStream(upstream, startedNanos);
+        }
+    }
+
+    private final class FirstTokenTimingStream implements io.cortexj.stream.TokenStream {
+
+        private final io.cortexj.stream.TokenStream upstream;
+        private final long startedNanos;
+        private final java.util.concurrent.atomic.AtomicLong tokensSeen =
+                new java.util.concurrent.atomic.AtomicLong();
+        private volatile Long firstTokenMillis;
+
+        FirstTokenTimingStream(io.cortexj.stream.TokenStream upstream, long startedNanos) {
+            this.upstream = upstream;
+            this.startedNanos = startedNanos;
+        }
+
+        @Override
+        public io.cortexj.stream.StreamSubscription subscribe(io.cortexj.stream.TokenConsumer consumer) {
+            return upstream.subscribe(new io.cortexj.stream.TokenConsumer() {
+                @Override
+                public void onToken(io.cortexj.stream.Token token) {
+                    long count = tokensSeen.incrementAndGet();
+                    if (count == 1) {
+                        firstTokenMillis = Long.valueOf(
+                                (System.nanoTime() - startedNanos) / 1_000_000L);
+                        publishFirstToken(firstTokenMillis.longValue());
+                    }
+                    consumer.onToken(token);
+                }
+
+                @Override
+                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
+                    long durationMillis = (System.nanoTime() - startedNanos) / 1_000_000L;
+                    long outputTokens = tokensSeen.get();
+                    java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+                    attributes.put("runtime", candidate.runtimeId());
+                    attributes.put("model", descriptor.canonicalId());
+                    attributes.put("durationMillis", String.valueOf(durationMillis));
+                    attributes.put("outputTokens", String.valueOf(outputTokens));
+                    attributes.put("firstTokenMillis", String.valueOf(firstTokenMillis));
+                    if (durationMillis > 0 && outputTokens > 0) {
+                        attributes.put("tokensPerSecond", String.format(java.util.Locale.ROOT,
+                                "%.1f", outputTokens * 1000.0 / durationMillis));
+                    }
+                    platform.events().publish(io.cortexj.observability.PlatformEvent.Type.INFERENCE_COMPLETED,
+                            io.cortexj.observability.PlatformEvent.Level.INFO,
+                            "stream completed via " + candidate.runtimeId(), attributes);
+                    consumer.onComplete(completion);
+                }
+
+                @Override
+                public void onError(io.cortexj.error.CortexJException error) {
+                    consumer.onError(error);
+                }
+            });
+        }
+
+        @Override
+        public void close() {
+            upstream.close();
+        }
+
+        private void publishFirstToken(long millis) {
+            java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+            attributes.put("runtime", candidate.runtimeId());
+            attributes.put("model", descriptor.canonicalId());
+            attributes.put("firstTokenMillis", String.valueOf(millis));
+            platform.events().publish(io.cortexj.observability.PlatformEvent.Type.INFERENCE_FIRST_TOKEN,
+                    io.cortexj.observability.PlatformEvent.Level.INFO,
+                    "first token after " + millis + " ms", attributes);
         }
     }
 
@@ -205,14 +277,29 @@ public final class DefaultModelHandle implements ModelHandle {
 
     public InferenceResponse execute(InferenceRequest request) {
         if (serializeAccess) {
+            long waitStartedNanos = System.nanoTime();
             sessionLock.lock();
+            long queueWaitMillis = (System.nanoTime() - waitStartedNanos) / 1_000_000L;
             try {
+                if (queueWaitMillis > 0) {
+                    publishQueueWait(queueWaitMillis);
+                }
                 return model.execute(request);
             } finally {
                 sessionLock.unlock();
             }
         }
         return model.execute(request);
+    }
+
+    private void publishQueueWait(long queueWaitMillis) {
+        java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+        attributes.put("runtime", candidate.runtimeId());
+        attributes.put("model", descriptor.canonicalId());
+        attributes.put("queueWaitMillis", String.valueOf(queueWaitMillis));
+        platform.events().publish(io.cortexj.observability.PlatformEvent.Type.INFERENCE_COMPLETED,
+                io.cortexj.observability.PlatformEvent.Level.INFO,
+                "queued for " + queueWaitMillis + " ms before inference", attributes);
     }
 
     public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
