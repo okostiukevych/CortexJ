@@ -26,7 +26,36 @@ public final class HardConstraints {
         constraints.add(new MemoryLimitConstraint());
         constraints.add(new PhysicalMemoryConstraint());
         constraints.add(new LicenseConstraint());
+        constraints.add(new TaskCapabilityConstraint());
         return constraints;
+    }
+
+    /**
+     * Spec 47 / M9 multimodal planning: a runtime is only a candidate for a model
+     * when it supports at least one task (or input modality) the model actually
+     * offers - an embedding-only runtime must never win a text-generation model.
+     */
+    public static final class TaskCapabilityConstraint implements HardConstraint {
+
+        @Override
+        public PlanReason check(ExecutionCandidate candidate, HardConstraint.ConstraintContext context) {
+            java.util.Set<io.cortexj.model.TaskCapability> modelTasks = context.model.tasks();
+            if (modelTasks == null || modelTasks.isEmpty()) {
+                return null;
+            }
+            java.util.Set<io.cortexj.model.TaskCapability> runtimeTasks = context.runtime.tasks();
+            if (runtimeTasks == null || runtimeTasks.isEmpty()) {
+                return null;
+            }
+            for (io.cortexj.model.TaskCapability task : modelTasks) {
+                if (runtimeTasks.contains(task)) {
+                    return null;
+                }
+            }
+            return PlanReason.negative(ReasonCode.TASK_UNSUPPORTED,
+                    "runtime " + context.runtime.id().value() + " supports " + runtimeTasks
+                            + " but the model only offers " + modelTasks);
+        }
     }
 
     public static final class RuntimeAvailableConstraint implements HardConstraint {
