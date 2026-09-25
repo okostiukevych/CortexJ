@@ -90,6 +90,7 @@
         <module>platform/java17</module>
         <module>starters/java17</module>
         <module>integrations/spring-ai</module>
+        <module>integrations/langchain4j</module>
       </modules>
     </profile>
     <profile>
