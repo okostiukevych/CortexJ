@@ -45,6 +45,7 @@ class LlamaServerBridgeTest {
     void startServer() throws IOException {
         stopped.set(false);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         port = server.getAddress().getPort();
         server.createContext("/health", new HttpHandler() {
             @Override
@@ -54,6 +55,7 @@ class LlamaServerBridgeTest {
             }
         });
         server.createContext("/v1/chat/completions", new ChatHandler());
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));
         server.start();
     }
 
@@ -73,6 +75,7 @@ class LlamaServerBridgeTest {
             while ((read = input.read(buffer)) >= 0) {
                 body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
             }
+            input.close();
             boolean stream = body.toString().contains("\"stream\":true")
                     || body.toString().contains("\"stream\" : true");
             if (!stream) {
