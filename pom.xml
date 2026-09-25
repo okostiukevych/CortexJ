@@ -89,6 +89,7 @@
       <modules>
         <module>platform/java17</module>
         <module>starters/java17</module>
+        <module>integrations/spring-ai</module>
       </modules>
     </profile>
     <profile>
