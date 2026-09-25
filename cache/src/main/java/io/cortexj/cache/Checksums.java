@@ -50,11 +50,29 @@ public final class Checksums {
     }
 
     private static MessageDigest digest(String algorithm) {
+        String canonical = canonicalAlgorithm(algorithm);
         try {
-            return MessageDigest.getInstance(algorithm);
+            return MessageDigest.getInstance(canonical);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("Missing digest algorithm " + algorithm, e);
         }
+    }
+
+    private static String canonicalAlgorithm(String algorithm) {
+        if (algorithm == null) {
+            return "SHA-256";
+        }
+        String normalized = algorithm.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.equals("sha256") || normalized.equals("sha-256")) {
+            return "SHA-256";
+        }
+        if (normalized.equals("sha1") || normalized.equals("sha-1")) {
+            return "SHA-1";
+        }
+        if (normalized.equals("md5")) {
+            return "MD5";
+        }
+        return algorithm.trim();
     }
 
     private static String toHex(byte[] bytes) {

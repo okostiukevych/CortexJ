@@ -23,7 +23,7 @@ public final class Checksum {
     }
 
     public static Checksum sha256(String value) {
-        return of("sha256", value);
+        return of("SHA-256", value);
     }
 
     public String algorithm() {

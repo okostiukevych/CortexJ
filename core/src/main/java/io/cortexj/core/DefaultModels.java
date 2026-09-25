@@ -177,7 +177,7 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             String scheme = resolvedArtifact.location() == null ? "" : resolvedArtifact.location().getScheme();
             if (scheme.equals("file")) {
-                return Paths.get(resolvedArtifact.location().getPath());
+                return Paths.get(resolvedArtifact.location());
             }
             io.cortexj.cache.CacheStorage cache = platform.cache();
             io.cortexj.model.Checksum checksum = artifact.checksum();
@@ -300,7 +300,7 @@ public final class DefaultModels implements io.cortexj.Models {
     private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source) {
         String scheme = source.location() == null ? "" : source.location().getScheme();
         if (scheme.equals("file")) {
-            return Paths.get(source.location().getPath());
+            return Paths.get(source.location());
         }
         io.cortexj.cache.CacheStorage cache = platform.cache();
         Path cached = cache.get(resolved.repository().value(), resolved.revision(),

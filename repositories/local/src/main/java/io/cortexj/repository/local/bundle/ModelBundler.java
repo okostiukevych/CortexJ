@@ -190,7 +190,7 @@ public final class ModelBundler {
         String scheme = artifact.location() == null ? "" : artifact.location().getScheme();
         try {
             if (scheme.equals("file")) {
-                Path source = java.nio.file.Paths.get(artifact.location().getPath());
+                Path source = java.nio.file.Paths.get(artifact.location());
                 if (!Files.isRegularFile(source)) {
                     throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
                             "Source artifact does not exist: " + source,
