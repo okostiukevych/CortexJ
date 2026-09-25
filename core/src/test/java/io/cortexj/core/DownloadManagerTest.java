@@ -57,6 +57,7 @@ class DownloadManagerTest {
             public void handle(HttpExchange exchange) throws IOException {
                 hits.incrementAndGet();
                 exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                exchange.getResponseHeaders().add("Connection", "close");
                 exchange.sendResponseHeaders(200, payload.length);
                 OutputStream output = exchange.getResponseBody();
                 output.write(payload);

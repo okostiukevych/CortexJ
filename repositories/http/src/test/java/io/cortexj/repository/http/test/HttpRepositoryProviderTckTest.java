@@ -29,6 +29,7 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
         server.createContext("/models/test-model.gguf", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 byte[] payload = "gguf-payload".getBytes(StandardCharsets.UTF_8);
                 if ("HEAD".equals(exchange.getRequestMethod())) {
                     exchange.getResponseHeaders().add("ETag", "\"rev-42\"");
