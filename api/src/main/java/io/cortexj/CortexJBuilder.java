@@ -18,6 +18,8 @@ public final class CortexJBuilder {
     private final List<RuntimeProvider> runtimeProviders = new ArrayList<RuntimeProvider>();
     private final List<ModelRepositoryProvider> repositoryProviders = new ArrayList<ModelRepositoryProvider>();
     private final List<ExecutionPolicy> executionPolicies = new ArrayList<ExecutionPolicy>();
+    private final List<io.cortexj.spi.conversion.ModelConverter> converters =
+            new ArrayList<io.cortexj.spi.conversion.ModelConverter>();
     private final List<PlatformEventListener> eventListeners = new ArrayList<PlatformEventListener>();
 
     private boolean offline = offlineFromEnvironment();
@@ -113,6 +115,17 @@ public final class CortexJBuilder {
 
     public List<ExecutionPolicy> executionPolicies() {
         return executionPolicies;
+    }
+
+    public CortexJBuilder converter(io.cortexj.spi.conversion.ModelConverter converter) {
+        if (converter != null) {
+            converters.add(converter);
+        }
+        return this;
+    }
+
+    public List<io.cortexj.spi.conversion.ModelConverter> converters() {
+        return converters;
     }
 
     public List<PlatformEventListener> eventListeners() {

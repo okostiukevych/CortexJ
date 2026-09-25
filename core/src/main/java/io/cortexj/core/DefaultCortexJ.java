@@ -32,6 +32,7 @@ public final class DefaultCortexJ implements CortexJ {
     private final io.cortexj.core.EventBus events;
     private final List<RuntimeProvider> runtimeProviders;
     private final List<ModelRepositoryProvider> repositoryProviders;
+    private final List<io.cortexj.spi.conversion.ModelConverter> converters;
     private final io.cortexj.cache.CacheStorage cache;
     private final io.cortexj.core.download.DownloadManager downloadManager;
     private final io.cortexj.planner.internal.DefaultExecutionPlanner planner;
@@ -59,6 +60,13 @@ public final class DefaultCortexJ implements CortexJ {
                         return provider.id().value();
                     }
                 }, configuration.repositoryProviders());
+
+        this.converters = SpiRegistries.loadSorted(io.cortexj.spi.conversion.ModelConverter.class,
+                new SpiRegistries.IdAccessor<io.cortexj.spi.conversion.ModelConverter>() {
+                    public String idOf(io.cortexj.spi.conversion.ModelConverter converter) {
+                        return converter.id().value();
+                    }
+                }, configuration.converters());
 
         Configuration resolved = Configuration.from(configuration, snapshot);
         this.cache = new io.cortexj.cache.CacheStorage(
@@ -90,7 +98,7 @@ public final class DefaultCortexJ implements CortexJ {
                 new io.cortexj.planner.internal.PlannerInputs(
                         runtimeProviders,
                         repositoryProviders,
-                        new ArrayList<io.cortexj.spi.conversion.ModelConverter>(),
+                        converters,
                         configuration.executionPolicies(),
                         null,
                         snapshot.environment,
@@ -103,13 +111,17 @@ public final class DefaultCortexJ implements CortexJ {
                         events.asListener(),
                         resolved.offline,
                         resolved.remoteRuntimeAllowed,
-                        "0.1.0",
+                        CortexJInfo.VERSION,
                         resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes));
 
         this.models = new DefaultModels(this);
         events.info(PlatformEvent.Type.PLATFORM_STARTED,
                 "CortexJ started on Java " + snapshot.environment.jvmFeatureVersion()
                         + " with " + runtimeProviders.size() + " runtime provider(s)");
+    }
+
+    List<io.cortexj.spi.conversion.ModelConverter> converters() {
+        return converters;
     }
 
     Configuration config() {
