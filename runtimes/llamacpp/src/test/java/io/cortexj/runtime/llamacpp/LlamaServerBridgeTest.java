@@ -50,6 +50,7 @@ class LlamaServerBridgeTest {
         server.createContext("/health", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 exchange.sendResponseHeaders(200, -1);
                 exchange.close();
             }
@@ -68,6 +69,7 @@ class LlamaServerBridgeTest {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            exchange.getResponseHeaders().add("Connection", "close");
             StringBuilder body = new StringBuilder();
             java.io.InputStream input = exchange.getRequestBody();
             byte[] buffer = new byte[4096];

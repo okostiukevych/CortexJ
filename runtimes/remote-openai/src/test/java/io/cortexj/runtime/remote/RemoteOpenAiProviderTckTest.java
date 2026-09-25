@@ -125,6 +125,7 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
 
     private static void respond(HttpExchange exchange, int status, String contentType, byte[] payload) throws IOException {
         drain(exchange);
+        exchange.getResponseHeaders().add("Connection", "close");
         exchange.getResponseHeaders().add("Content-Type", contentType);
         exchange.sendResponseHeaders(status, payload.length);
         OutputStream output = exchange.getResponseBody();

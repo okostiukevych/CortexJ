@@ -114,6 +114,7 @@ class DownloadResumeTest {
         server.createContext("/models/model.bin", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 String range = exchange.getRequestHeaders().getFirst("Range");
                 if (range != null) {
                     rangeHeaders.add(range);
@@ -163,6 +164,7 @@ class DownloadResumeTest {
         server.createContext("/models/model.bin", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 exchange.sendResponseHeaders(200, fullPayload.length);
                 try (OutputStream out = exchange.getResponseBody()) {
                     for (int i = 0; i < fullPayload.length; i += 512) {
@@ -215,6 +217,7 @@ class DownloadResumeTest {
         server.createContext("/models/model.bin", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 targetHits.incrementAndGet();
                 exchange.sendResponseHeaders(200, fullPayload.length);
                 try (OutputStream out = exchange.getResponseBody()) {
@@ -228,6 +231,7 @@ class DownloadResumeTest {
         proxy.createContext("/", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
                 proxyHits.incrementAndGet();
                 java.io.InputStream body = exchange.getRequestBody();
                 while (body.read() >= 0) {
