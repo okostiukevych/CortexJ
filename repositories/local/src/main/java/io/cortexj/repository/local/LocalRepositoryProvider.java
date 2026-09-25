@@ -47,10 +47,15 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
     @Override
     public boolean supports(ModelReference reference) {
         String value = reference.value();
-        return value.startsWith("file:")
+        if (value.startsWith("file:")
                 || value.startsWith("/")
                 || value.startsWith("./")
-                || value.startsWith("~");
+                || value.startsWith("~")) {
+            return true;
+        }
+        // Windows drive-letter paths (C:\... or C:/...) and UNC paths (\\server\share)
+        return value.length() >= 2 && Character.isLetter(value.charAt(0)) && value.charAt(1) == ':'
+                || value.startsWith("\\\\");
     }
 
     @Override
