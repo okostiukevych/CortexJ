@@ -19,6 +19,7 @@ public final class PlatformEvent {
         RUNTIME_OPENED,
         MODEL_LOADED,
         FALLBACK_APPLIED,
+        INFERENCE_FIRST_TOKEN,
         INFERENCE_COMPLETED
     }
 

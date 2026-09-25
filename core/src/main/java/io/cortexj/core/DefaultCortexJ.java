@@ -85,7 +85,8 @@ public final class DefaultCortexJ implements CortexJ {
             this.ownsExecutor = true;
         }
 
-        this.downloadManager = new io.cortexj.core.download.DownloadManager(events);
+        this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
+                resolved.proxyHost, resolved.proxyPort);
 
         io.cortexj.spi.policy.PlanningContext.CacheLookup cacheLookup = new io.cortexj.spi.policy.PlanningContext.CacheLookup() {
             @Override

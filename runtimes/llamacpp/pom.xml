@@ -23,6 +23,10 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-tck</artifactId>
       <version>${project.version}</version>

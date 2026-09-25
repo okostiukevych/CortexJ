@@ -12,6 +12,8 @@ public final class Configuration {
     public final String remoteApiKey;
     public final boolean remoteRuntimeAllowed;
     public final io.cortexj.model.TrustPolicy trustPolicy;
+    public final String proxyHost;
+    public final String proxyPort;
 
     private static final String SYSPROP_PREFIX = "cortexj.";
 
@@ -21,7 +23,9 @@ public final class Configuration {
                         String remoteBaseUrl,
                         String remoteApiKey,
                         boolean remoteRuntimeAllowed,
-                        io.cortexj.model.TrustPolicy trustPolicy) {
+                        io.cortexj.model.TrustPolicy trustPolicy,
+                        String proxyHost,
+                        String proxyPort) {
         this.offline = offline;
         this.workingDirectory = workingDirectory;
         this.memoryLimitBytes = memoryLimitBytes;
@@ -30,6 +34,12 @@ public final class Configuration {
         this.remoteRuntimeAllowed = remoteRuntimeAllowed;
         this.trustPolicy = trustPolicy == null
                 ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING : trustPolicy;
+        this.proxyHost = emptyToNull(proxyHost);
+        this.proxyPort = emptyToNull(proxyPort);
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
     }
 
     public static Configuration from(io.cortexj.CortexJBuilder builder, EnvironmentSnapshot snapshot) {
@@ -70,8 +80,14 @@ public final class Configuration {
                 env("CORTEXJ_REMOTE_API_KEY"),
                 env("OPENAI_API_KEY"));
 
+        String proxyHost = firstNonEmpty(builder.proxyHost(),
+                System.getProperty("cortexj.proxy.host"),
+                env("CORTEXJ_PROXY_HOST"));
+        String proxyPort = firstNonEmpty(builder.proxyPort(),
+                System.getProperty("cortexj.proxy.port"),
+                env("CORTEXJ_PROXY_PORT"));
         return new Configuration(offline, workingDirectory, memoryLimit, remoteBaseUrl, remoteApiKey,
-                builder.isRemoteRuntimeAllowed(), builder.trustPolicy());
+                builder.isRemoteRuntimeAllowed(), builder.trustPolicy(), proxyHost, proxyPort);
     }
 
     public java.util.Map<String, String> runtimeConfiguration() {
@@ -85,6 +101,10 @@ public final class Configuration {
         }
         if (memoryLimitBytes != null) {
             config.put("memoryLimitBytes", String.valueOf(memoryLimitBytes));
+        }
+        if (proxyHost != null && proxyPort != null) {
+            config.put("proxy.host", proxyHost);
+            config.put("proxy.port", proxyPort);
         }
         return config;
     }

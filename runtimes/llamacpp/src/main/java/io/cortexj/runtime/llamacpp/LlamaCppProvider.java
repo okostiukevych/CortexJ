@@ -25,6 +25,22 @@ public final class LlamaCppProvider implements RuntimeProvider {
 
     public static final String LIB_ENV = "CORTEXJ_LLAMACPP_LIB";
     public static final String LIB_PROPERTY = "cortexj.llamacpp.lib";
+    public static final String SERVER_ENV = "CORTEXJ_LLAMACPP_SERVER";
+    public static final String SERVER_PROPERTY = "cortexj.llamacpp.server";
+    static final long SERVER_STARTUP_TIMEOUT_MILLIS = 180_000L;
+
+    private final LlamaServerLauncher launcher;
+    private final LlamaServerLauncher overrideLauncher;
+
+    public LlamaCppProvider() {
+        this.launcher = null;
+        this.overrideLauncher = null;
+    }
+
+    LlamaCppProvider(LlamaServerLauncher testLauncher) {
+        this.launcher = null;
+        this.overrideLauncher = testLauncher;
+    }
 
     private final RuntimeId id = RuntimeId.of("llamacpp");
     private final RuntimeDescriptor descriptor = RuntimeDescriptor.builder(id)
@@ -62,17 +78,51 @@ public final class LlamaCppProvider implements RuntimeProvider {
                         "llama.cpp native library found: " + candidate);
             }
         }
+        String serverBinary = llamaServerBinary();
+        if (serverBinary != null) {
+            return RuntimeProbeResult.available(
+                    "llama-server found at " + serverBinary
+                            + "; GGUF models will be executed by a managed llama-server process");
+        }
         NativeRuntimeException failure = new NativeRuntimeException(ErrorCode.NATIVE_LIBRARY_MISSING,
                 nativeMissingMessage(candidates),
                 "Alternatives:\n"
-                        + "1. build llama.cpp and point " + LIB_ENV + " to libllama\n"
-                        + "2. run 'llama-server' locally and use the openai-remote runtime "
-                        + "(set CORTEXJ_REMOTE_BASE_URL=http://localhost:8080)\n"
+                        + "1. install llama.cpp's llama-server and point " + SERVER_ENV
+                        + " at the binary (models run through the managed process bridge)\n"
+                        + "2. build llama.cpp and point " + LIB_ENV + " to libllama (JNI bridge)\n"
                         + "3. use the ONNX runtime for embedding workloads");
         failure.detail("runtime", id.value());
         failure.detail("probedPaths", String.valueOf(candidates));
+        failure.detail("serverBinary", String.valueOf(serverBinary));
         return RuntimeProbeResult.unavailable(
-                "llama.cpp native library (JNI binding) is not installed on this machine", failure);
+                "neither llama-server nor the llama.cpp JNI library is installed on this machine",
+                failure);
+    }
+
+    static String llamaServerBinary() {
+        String explicit = System.getProperty(SERVER_PROPERTY);
+        if (explicit != null && !explicit.trim().isEmpty()) {
+            return explicit.trim();
+        }
+        String fromEnv = System.getenv(SERVER_ENV);
+        if (fromEnv != null && !fromEnv.trim().isEmpty()) {
+            return fromEnv.trim();
+        }
+        String home = System.getProperty("user.home", ".");
+        String[] candidates = {
+                home + "/.cortexj/native/llama-server",
+                home + "/.cortexj/bin/llama-server",
+                "/usr/local/bin/llama-server",
+                "/opt/homebrew/bin/llama-server",
+                "/usr/bin/llama-server",
+        };
+        for (String candidate : candidates) {
+            java.io.File file = new java.io.File(candidate);
+            if (file.isFile() && file.canExecute()) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private static String nativeMissingMessage(List<String> probed) {
@@ -120,15 +170,83 @@ public final class LlamaCppProvider implements RuntimeProvider {
 
     @Override
     public ModelRuntime open(RuntimeOpenRequest request) {
-        RuntimeProbeResult probe = probe(new RuntimeProbeContext(
-                request.environment(), request.hardware(), false, request.platformConfiguration()));
-        if (!probe.isUsable()) {
-            throw probe.error() == null
-                    ? new NativeRuntimeException(ErrorCode.NATIVE_LIBRARY_MISSING, probe.message(),
-                            "Build llama.cpp and point CORTEXJ_LLAMACPP_LIB at the native library.")
-                    : probe.error();
+        if (overrideLauncher == null) {
+            RuntimeProbeResult probe = probe(new RuntimeProbeContext(
+                    request.environment(), request.hardware(), false, request.platformConfiguration()));
+            if (!probe.isUsable()) {
+                throw probe.error() == null
+                        ? new NativeRuntimeException(ErrorCode.NATIVE_LIBRARY_MISSING, probe.message(),
+                                "Install llama-server and point CORTEXJ_LLAMACPP_SERVER at it.")
+                        : probe.error();
+            }
+        }
+        boolean hasNativeLib = overrideLauncher == null && existsFirstCandidateLibrary(request);
+        if (!hasNativeLib || overrideLauncher != null) {
+            LlamaServerLauncher effective = overrideLauncher != null
+                    ? overrideLauncher
+                    : new ProcessLlamaServerLauncher(llamaServerBinary(),
+                            SERVER_STARTUP_TIMEOUT_MILLIS, request.eventListener());
+            return new LlamaServerModelRuntime(effective, request.executor());
         }
         return new LlamaCppModelRuntime();
+    }
+
+    private static boolean existsFirstCandidateLibrary(RuntimeOpenRequest request) {
+        for (String candidate : candidateLibraries(new RuntimeProbeContext(
+                request.environment(), request.hardware(), false, request.platformConfiguration()))) {
+            if (new java.io.File(candidate).isFile()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    final class LlamaServerModelRuntime implements ModelRuntime {
+
+        private final LlamaServerLauncher launcher;
+        private final java.util.concurrent.ExecutorService executor;
+
+        LlamaServerModelRuntime(LlamaServerLauncher launcher,
+                                java.util.concurrent.ExecutorService executor) {
+            this.launcher = launcher;
+            this.executor = executor;
+        }
+
+        @Override
+        public RuntimeId runtimeId() {
+            return id;
+        }
+
+        @Override
+        public io.cortexj.spi.runtime.RuntimeModel load(
+                io.cortexj.spi.runtime.RuntimeModelRequest request) {
+            Path artifactPath = request.artifactPath();
+            if (artifactPath == null || !java.nio.file.Files.isRegularFile(artifactPath)) {
+                io.cortexj.error.ModelLoadException failure = new io.cortexj.error.ModelLoadException(
+                        ErrorCode.LOAD_FAILED,
+                        "GGUF artifact not found: " + artifactPath,
+                        "Pull the model first or check the file path.");
+                failure.detail("path", String.valueOf(artifactPath));
+                throw failure;
+            }
+            try {
+                LlamaServerEndpoint endpoint = launcher.launch(artifactPath);
+                return new LlamaServerModel(endpoint, executor);
+            } catch (java.io.IOException e) {
+                io.cortexj.error.ModelLoadException failure = new io.cortexj.error.ModelLoadException(
+                        ErrorCode.NATIVE_LOAD_FAILED,
+                        "llama-server could not be started for " + artifactPath + ": "
+                                + e.getMessage(),
+                        "Verify the llama-server binary, the GGUF file and available memory; "
+                                + "check llama-server logs printed to the console.");
+                failure.detail("path", String.valueOf(artifactPath));
+                throw failure;
+            }
+        }
+
+        @Override
+        public void close() {
+        }
     }
 
     final class LlamaCppModelRuntime implements ModelRuntime {

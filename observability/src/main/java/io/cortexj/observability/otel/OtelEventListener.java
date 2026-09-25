@@ -66,12 +66,16 @@ public final class OtelEventListener implements PlatformEventListener {
         Attributes attributes = attributes(event);
         eventCounter.add(1, attributes);
         String durationMillis = event.attributes().get("durationMillis");
-        if (durationMillis != null) {
-            try {
+        String firstTokenMillis = event.attributes().get("firstTokenMillis");
+        try {
+            if (durationMillis != null) {
                 inferenceHistogram.record(Double.parseDouble(durationMillis), attributes);
-            } catch (NumberFormatException ignored) {
-                return;
             }
+            if (firstTokenMillis != null) {
+                inferenceHistogram.record(Double.parseDouble(firstTokenMillis), attributes);
+            }
+        } catch (NumberFormatException ignored) {
+            return;
         }
         switch (event.type()) {
             case MODEL_RESOLUTION_STARTED:

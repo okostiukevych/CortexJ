@@ -49,10 +49,12 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
     private final ExecutorService executor;
     private final boolean ownsExecutor;
     private final PlatformEventListener eventListener;
-    private final HttpJsonClient client = new HttpJsonClient();
 
-    RemoteOpenAiRuntime(RuntimeId runtimeId, String baseUrl, String apiKey, ExecutorService executor, PlatformEventListener eventListener) {
+    private final HttpJsonClient client;
+
+    RemoteOpenAiRuntime(RuntimeId runtimeId, String baseUrl, String apiKey, ExecutorService executor, PlatformEventListener eventListener, HttpJsonClient client) {
         this.runtimeId = runtimeId;
+        this.client = client == null ? new HttpJsonClient() : client;
         this.baseUrl = HttpJsonClient.trimSlash(baseUrl);
         this.apiKey = apiKey;
         this.ownsExecutor = executor == null;

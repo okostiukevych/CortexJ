@@ -63,7 +63,7 @@ public final class RemoteOpenAiProvider implements RuntimeProvider {
                     "remote endpoint configured (" + baseUrl + ") but unreachable in offline mode");
         }
         try {
-            HttpJsonClient client = new HttpJsonClient();
+            HttpJsonClient client = HttpJsonClient.fromConfiguration(context.configuration());
             HttpJsonClient.Response response = client.get(baseUrl, "/v1/models", null);
             if (response.isOk()) {
                 return RuntimeProbeResult.available("openai-compatible endpoint reachable: " + baseUrl);
@@ -102,7 +102,8 @@ public final class RemoteOpenAiProvider implements RuntimeProvider {
                 optionAsString(request, "apiKey"),
                 System.getenv("CORTEXJ_REMOTE_API_KEY"),
                 System.getenv("OPENAI_API_KEY"));
-        return new RemoteOpenAiRuntime(id, baseUrl, apiKey, request.executor(), request.eventListener());
+        return new RemoteOpenAiRuntime(id, baseUrl, apiKey, request.executor(), request.eventListener(),
+                HttpJsonClient.fromConfiguration(request.platformConfiguration()));
     }
 
     private static String optionAsString(RuntimeOpenRequest request, String key) {
