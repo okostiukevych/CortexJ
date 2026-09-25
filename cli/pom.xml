@@ -71,6 +71,11 @@
       <artifactId>cortexj-runtime-llamacpp</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-djl</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
   <build>
     <plugins>

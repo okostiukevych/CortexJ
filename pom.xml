@@ -46,6 +46,7 @@
     <module>runtimes/remote-openai</module>
     <module>runtimes/onnx</module>
     <module>runtimes/llamacpp</module>
+    <module>runtimes/djl</module>
     <module>platform/java8</module>
     <module>starters/java8</module>
     <module>tck</module>
