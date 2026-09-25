@@ -51,6 +51,7 @@
     <module>converters/gguf</module>
     <module>server</module>
     <module>maven-plugin</module>
+    <module>examples</module>
     <module>platform/java8</module>
     <module>starters/java8</module>
     <module>tck</module>
@@ -97,6 +98,7 @@
         <module>starters/java17</module>
         <module>integrations/spring-ai</module>
         <module>integrations/langchain4j</module>
+        <module>examples/spring-ai</module>
       </modules>
     </profile>
     <profile>

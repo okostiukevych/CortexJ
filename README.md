@@ -128,6 +128,8 @@ Layering rules (enforced by module boundaries):
 | `cortexj-convert-gguf` | Deterministic GGUF F32↔F16 converter (Level C, provenance manifests) |
 | `cortexj-server` | Optional OpenAI-compatible embedded server (spec 60) |
 | `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
+| `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
+| `cortexj-examples-spring-ai` | Spring AI bean wiring example (spec 83, Java 17+) |
 | `integrations/spring-ai` | Spring AI adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
@@ -170,9 +172,10 @@ adapter (spec 37.3), duration/token metrics on PLAN_CREATED / DOWNLOAD_COMPLETED
 INFERENCE_COMPLETED events surfaced through the OTel histogram (spec 57.1), and the
 documentation set required by spec 101/102 under `docs/`.
 
-Current test matrix: **35 suites / 162 tests green on JDK 25** (full reactor incl. adapter
-modules), shared core verified on real JDK 8/11/17/21; GitHub Actions CI matrix runs
-JDK 8/11/17/21/25 on ubuntu/macos/windows plus a JPMS lane (`mvn -Pjpms`).
+Current test matrix: **37 suites / 164 tests green on JDK 25** (full reactor incl. adapter
+modules), **33 suites / 151 tests green on real JDK 8**; GitHub Actions CI matrix runs
+JDK 8/11/17/21/25 on ubuntu/macos/windows (15/15 lanes green) plus JPMS lanes
+(`mvn -Pjpms`).
 
 llama.cpp execution is real: the provider manages a `llama-server` process (health
 polling, blocking + SSE streaming, graceful shutdown) when

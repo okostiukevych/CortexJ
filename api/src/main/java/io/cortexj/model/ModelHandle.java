@@ -30,4 +30,21 @@ public interface ModelHandle extends AutoCloseable {
     static TextGenerationCapability asGenerator(ModelHandle handle) {
         return handle.capability(TextGenerationCapability.class);
     }
+
+    /**
+     * Convenience shortcut (spec 12.2): delegates to the text generation capability.
+     * The domain capability API remains the primary interface (spec 43).
+     */
+    default io.cortexj.inference.GenerationResponse generate(
+            io.cortexj.inference.GenerationRequest request) {
+        return capability(io.cortexj.inference.TextGenerationCapability.class).generate(request);
+    }
+
+    /**
+     * Convenience shortcut for embeddings (spec 45): delegates to the embedding capability.
+     */
+    default io.cortexj.inference.EmbeddingResponse embed(
+            io.cortexj.inference.EmbeddingRequest request) {
+        return capability(io.cortexj.inference.EmbeddingCapability.class).embed(request);
+    }
 }
