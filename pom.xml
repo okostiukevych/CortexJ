@@ -50,6 +50,7 @@
     <module>runtimes/djl</module>
     <module>converters/gguf</module>
     <module>server</module>
+    <module>maven-plugin</module>
     <module>platform/java8</module>
     <module>starters/java8</module>
     <module>tck</module>
