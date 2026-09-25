@@ -12,7 +12,7 @@ public final class EnvironmentSnapshot {
     }
 
     public static EnvironmentSnapshot probe() {
-        io.cortexj.hardware.PlatformProbes probes = new io.cortexj.hardware.PlatformProbes();
+        io.cortexj.hardware.probe.PlatformProbes probes = new io.cortexj.hardware.probe.PlatformProbes();
         io.cortexj.hardware.EnvironmentProfile environment = probes.environment();
         return new EnvironmentSnapshot(environment, probes.hardware(environment));
     }

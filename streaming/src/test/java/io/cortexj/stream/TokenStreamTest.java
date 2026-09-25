@@ -2,6 +2,7 @@ package io.cortexj.stream;
 
 import io.cortexj.error.InferenceException;
 import io.cortexj.inference.FinishReason;
+import io.cortexj.stream.internal.TokenStreamPublisher;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

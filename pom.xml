@@ -120,7 +120,69 @@
         <module>cli</module>
       </modules>
     </profile>
-  </profiles>
+  
+  <profile>
+    <id>jpms</id>
+    <activation>
+      <os>
+        <family>unix</family>
+      </os>
+    </activation>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>3.6.1</version>
+          <executions>
+            <execution>
+              <id>jpms-classpath</id>
+              <phase>generate-sources</phase>
+              <goals>
+                <goal>build-classpath</goal>
+              </goals>
+              <configuration>
+                <outputFile>${project.build.directory}/jpms-classpath.txt</outputFile>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+          <version>3.1.0</version>
+          <executions>
+            <execution>
+              <id>compile-module-info</id>
+              <phase>process-classes</phase>
+              <goals>
+                <goal>exec</goal>
+              </goals>
+              <configuration>
+                <executable>/bin/sh</executable>
+                <arguments>
+                  <argument>-c</argument>
+                  <argument>test -r ${project.basedir}/src/main/jpms/module-info.java || exit 0; mod=$(sed -n 's/^\(open \)\{0,1\}module \([a-zA-Z0-9._]*\).*/\2/p' ${project.basedir}/src/main/jpms/module-info.java); test -n "$mod" || exit 0; mkdir -p ${project.build.outputDirectory}/META-INF/versions/9; MP=$(cat ${project.build.directory}/jpms-classpath.txt); if test -n "$MP"; then MPFLAG="--module-path $MP"; else MPFLAG=""; fi; ${java.home}/bin/javac --release 9 -d ${project.build.outputDirectory}/META-INF/versions/9 --patch-module "$mod=${project.build.outputDirectory}" $MPFLAG ${project.basedir}/src/main/jpms/module-info.java</argument>
+                </arguments>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <configuration>
+            <archive>
+              <manifestEntries>
+                <Multi-Release>true</Multi-Release>
+              </manifestEntries>
+            </archive>
+          </configuration>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
+</profiles>
 
   <dependencyManagement>
     <dependencies>

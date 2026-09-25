@@ -1,5 +1,7 @@
 package io.cortexj.hardware;
 
+import io.cortexj.hardware.probe.PlatformProbes;
+
 import io.cortexj.hardware.internal.EnvironmentProbe;
 import org.junit.jupiter.api.Test;
 
