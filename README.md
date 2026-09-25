@@ -125,6 +125,9 @@ Layering rules (enforced by module boundaries):
 | `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
 | `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/histograms/spans |
 | `cortexj-streaming-flow` | Java `Flow.Publisher` streaming adapter (Java 11+) |
+| `cortexj-convert-gguf` | Deterministic GGUF F32↔F16 converter (Level C, provenance manifests) |
+| `cortexj-server` | Optional OpenAI-compatible embedded server (spec 60) |
+| `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
 | `integrations/spring-ai` | Spring AI adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
@@ -156,7 +159,8 @@ Layering rules (enforced by module boundaries):
 - **M9** — conversion subsystem (spec §31 Level C, §32): `ConversionStep` in candidates,
   planner proposes deterministic conversions when no direct artifact is viable, core
   materializes conversions into the cache with a provenance manifest (§32.4), original
-  artifacts stay immutable
+  artifacts stay immutable; a production converter ships: `cortexj-convert-gguf`
+  (deterministic F32↔F16, `cortexj convert` CLI, spec 71/72 perf smoke tests)
 
 Full spec-conformance pass additionally delivered: cache eviction policies
 (pinned/age-cap/manual + `cache list/clean` CLI, plus a fix for in-progress downloads
@@ -166,8 +170,16 @@ adapter (spec 37.3), duration/token metrics on PLAN_CREATED / DOWNLOAD_COMPLETED
 INFERENCE_COMPLETED events surfaced through the OTel histogram (spec 57.1), and the
 documentation set required by spec 101/102 under `docs/`.
 
-Current test matrix: **30 suites / 140 tests green on JDK 25** (full reactor incl. adapter
-modules), **26 suites / 127 tests green on real JDK 8** (shared core + providers + TCK).
+Current test matrix: **35 suites / 162 tests green on JDK 25** (full reactor incl. adapter
+modules), shared core verified on real JDK 8/11/17/21; GitHub Actions CI matrix runs
+JDK 8/11/17/21/25 on ubuntu/macos/windows plus a JPMS lane (`mvn -Pjpms`).
+
+llama.cpp execution is real: the provider manages a `llama-server` process (health
+polling, blocking + SSE streaming, graceful shutdown) when
+`CORTEXJ_LLAMACPP_SERVER` points at the binary. §95 JPMS is implemented as the
+`jpms` build profile (multi-release module-info jars, verified with
+`jar --describe-module`); §60 server mode ships as `cortexj-server` +
+`cortexj server` CLI; §93/94 ship as `cortexj-maven-plugin` (`cortexj:verify`).
 
 Known follow-ups (explicit non-goals of this drop, tracked by the spec's v1.0 scope):
 llama.cpp JNI bridge, Safetensors direct execution, real format converters (the conversion
