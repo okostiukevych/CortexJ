@@ -59,12 +59,20 @@ java -jar cli/target/cortexj-cli-*.jar plan Qwen/Qwen3-8B --offline
 java -jar cli/target/cortexj-cli-*.jar plan Qwen/Qwen3-8B --runtime llamacpp
 java -jar cli/target/cortexj-cli-*.jar pull Qwen/Qwen3-8B
 java -jar cli/target/cortexj-cli-*.jar run Qwen/Qwen3-8B --prompt "Explain MVCC"
+
+# reproducible deployments (spec 63/91)
+java -jar cli/target/cortexj-cli-*.jar plan Qwen/Qwen3-8B --lockfile-out release.lock
+java -jar cli/target/cortexj-cli-*.jar run Qwen/Qwen3-8B --lockfile release.lock
+
+# air-gap bundles (spec 62)
+java -jar cli/target/cortexj-cli-*.jar bundle create Qwen/Qwen3-8B --out ./bundle
+java -jar cli/target/cortexj-cli-*.jar bundle verify ./bundle
 ```
 
 ## Architecture
 
 ```text
-            Direct CortexJ API          Spring AI / LangChain4j (adapters, planned)
+            Direct CortexJ API          Spring AI / LangChain4j / OpenTelemetry adapters
                     │
                  CORTEXJ
    Model Resolver │ Capability/Hardware │ Diagnostics
@@ -106,10 +114,14 @@ Layering rules (enforced by module boundaries):
 | `cortexj-runtime-remote-openai` | OpenAI-compatible remote provider (vLLM, llama-server, gateways) |
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
 | `cortexj-runtime-llamacpp` | llama.cpp provider (probe + honest diagnostics; JNI bridge is a later milestone) |
+| `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
+| `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/spans |
+| `integrations/spring-ai` | Spring AI adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
+| `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |
 | `cortexj-tck` | Technology compatibility kit for runtime/repository providers |
-| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run` |
+| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / bundle` |
 
 ## Status (milestones from the spec)
 
@@ -124,10 +136,26 @@ Layering rules (enforced by module boundaries):
   wrong-JVM detection
 - **M6** — legacy support: verified by building and testing the full shared core on real
   JDK 8 and JDK 11 (M6 acceptance: starter-java8/java11 present, 87 tests green on both)
+- **M7** — production integration: `ModelLockfile` (PINNED_MODEL/PINNED_PLAN enforcement,
+  `--lockfile-out`/`--lockfile` CLI flags), air-gap bundles (`cortexj bundle create/verify`,
+  sha256 manifests, verified offline re-resolution), OpenTelemetry adapter
+  (`cortexj-observability`), Spring AI adapter, LangChain4j adapter
+- **M8** — extended runtimes: DJL provider (`cortexj-runtime-djl`, honest probe — engine
+  artifacts stay optional per the spec); JInfer verified **absent from Maven Central**
+  (spec DoD §107.5 explicitly requires MVP to work without JInfer — no adapter is possible
+  against a non-published artifact); OpenAI-compatible remote provider covers vendor endpoints
+- **M9** — conversion subsystem (spec §31 Level C, §32): `ConversionStep` in candidates,
+  planner proposes deterministic conversions when no direct artifact is viable, core
+  materializes conversions into the cache with a provenance manifest (§32.4), original
+  artifacts stay immutable
+
+Current test matrix: **26 suites / 127 tests green on JDK 25** (full reactor incl. adapter
+modules), **23 suites / 116 tests green on real JDK 8** (shared core + providers + TCK).
 
 Known follow-ups (explicit non-goals of this drop, tracked by the spec's v1.0 scope):
-llama.cpp JNI bridge, Safetensors direct execution, conversion subsystem, lockfile/air-gap
-bundle, Spring AI/LangChain4j adapters, JInfer/DJL providers, server mode.
+llama.cpp JNI bridge, Safetensors direct execution, real format converters (the conversion
+machinery is in place — SPI, planning, materialization, provenance — but no production
+converter ships yet), JInfer (not on Central), server mode.
 
 ## Build
 
