@@ -64,6 +64,14 @@ public final class CortexJMain {
             if (command.equals("convert")) {
                 return convert(args);
             }
+            if (command.equals("server")) {
+                try {
+                    return server(args, platform);
+                } catch (java.io.IOException e) {
+                    System.err.println("server failed: " + e.getMessage());
+                    return 2;
+                }
+            }
             if (command.equals("cache")) {
                 return cache(args);
             }
@@ -90,6 +98,9 @@ public final class CortexJMain {
         System.out.println("Cache management:");
         System.out.println("  cortexj cache list                    list cached artifacts");
         System.out.println("  cortexj cache clean                   remove all cached artifacts");
+        System.out.println();
+        System.out.println("Server mode (spec 60):");
+        System.out.println("  cortexj server <model> [--port <n>]   OpenAI-compatible local endpoint");
         System.out.println();
         System.out.println("Conversion:");
         System.out.println("  cortexj convert <model> --to f16 --out <dir>  convert GGUF float width");
@@ -294,6 +305,33 @@ public final class CortexJMain {
         }
         System.err.println("Unknown cache action: " + action + " (use list or clean)");
         return 1;
+    }
+
+    private static int server(String[] args, CortexJ platform) throws java.io.IOException {
+        if (args.length < 2) {
+            usage();
+            return 1;
+        }
+        String model = args[1];
+        String portOption = optionValue(args, "--port");
+        int port = portOption == null ? 8080 : Integer.parseInt(portOption);
+        io.cortexj.server.CortexJServer cortexjServer =
+                new io.cortexj.server.CortexJServer(platform, model);
+        int bound = cortexjServer.start(port);
+        System.out.println("cortexj-server listening on http://127.0.0.1:" + bound);
+        System.out.println("endpoints: /v1/models, /v1/chat/completions (stream), /v1/embeddings");
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                cortexjServer.stop();
+            }
+        }));
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return 0;
     }
 
     private static int convert(String[] args) {
