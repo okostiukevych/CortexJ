@@ -181,6 +181,47 @@
       </plugins>
     </build>
   </profile>
+  <profile>
+    <id>compat</id>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>com.github.siom79.japicmp</groupId>
+          <artifactId>japicmp-maven-plugin</artifactId>
+          <version>0.23.1</version>
+          <configuration>
+            <oldVersion>
+              <dependency>
+                <groupId>io.cortexj</groupId>
+                <artifactId>cortexj-api</artifactId>
+                <version>${cortexj.api.baseline}</version>
+              </dependency>
+            </oldVersion>
+            <newVersion>
+              <file>
+                <path>${project.build.directory}/${project.build.finalName}.jar</path>
+              </file>
+            </newVersion>
+            <parameter>
+              <onlyBinaryIncompatible>true</onlyBinaryIncompatible>
+              <excludes>
+                <exclude>io.cortexj.*.internal</exclude>
+              </excludes>
+            </parameter>
+            <skip>${cortexj.compat.skip}</skip>
+          </configuration>
+          <executions>
+            <execution>
+              <phase>verify</phase>
+              <goals>
+                <goal>cmp</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
 </profiles>
 
   <dependencyManagement>
