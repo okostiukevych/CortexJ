@@ -112,7 +112,8 @@ public final class DefaultCortexJ implements CortexJ {
                         resolved.offline,
                         resolved.remoteRuntimeAllowed,
                         CortexJInfo.VERSION,
-                        resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes));
+                        resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes,
+                        resolved.runtimeConfiguration()));
 
         this.models = new DefaultModels(this);
         events.info(PlatformEvent.Type.PLATFORM_STARTED,

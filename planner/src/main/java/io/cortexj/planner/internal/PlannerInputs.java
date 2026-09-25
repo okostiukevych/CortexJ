@@ -38,6 +38,8 @@ public final class PlannerInputs {
     public final String platformVersion;
     public final long defaultMemoryLimitBytes;
 
+    private final Map<String, String> runtimeConfiguration;
+
     public PlannerInputs(List<RuntimeProvider> runtimeProviders,
                         List<ModelRepositoryProvider> repositoryProviders,
                         List<ModelConverter> converters,
@@ -53,6 +55,28 @@ public final class PlannerInputs {
                         boolean remoteAllowed,
                         String platformVersion,
                         long defaultMemoryLimitBytes) {
+        this(runtimeProviders, repositoryProviders, converters, policies, inspector, environment,
+                hardware, cacheLookup, tokenSupplier, executor, eventListener, offline, remoteAllowed,
+                platformVersion, defaultMemoryLimitBytes,
+                java.util.Collections.<String, String>emptyMap());
+    }
+
+    public PlannerInputs(List<RuntimeProvider> runtimeProviders,
+                        List<ModelRepositoryProvider> repositoryProviders,
+                        List<ModelConverter> converters,
+                        List<ExecutionPolicy> policies,
+                        ArtifactInspector inspector,
+                        EnvironmentProfile environment,
+                        HardwareProfile hardware,
+                        PlanningContext.CacheLookup cacheLookup,
+                        io.cortexj.spi.repository.TokenSupplier tokenSupplier,
+                        java.util.concurrent.ExecutorService executor,
+                        PlatformEventListener eventListener,
+                        boolean offline,
+                        boolean remoteAllowed,
+                        String platformVersion,
+                        long defaultMemoryLimitBytes,
+                        Map<String, String> runtimeConfiguration) {
         this.runtimeProviders = immutable(runtimeProviders);
         this.repositoryProviders = immutable(repositoryProviders);
         this.converters = immutable(converters);
@@ -68,6 +92,10 @@ public final class PlannerInputs {
         this.remoteAllowed = remoteAllowed;
         this.platformVersion = platformVersion;
         this.defaultMemoryLimitBytes = defaultMemoryLimitBytes;
+        this.runtimeConfiguration = runtimeConfiguration == null
+                ? java.util.Collections.<String, String>emptyMap()
+                : java.util.Collections.unmodifiableMap(
+                        new LinkedHashMap<String, String>(runtimeConfiguration));
     }
 
     public PlanningContext toPlanningContext(io.cortexj.planner.ExecutionRequest request) {
@@ -104,7 +132,7 @@ public final class PlannerInputs {
     }
 
     public Map<String, String> runtimeConfiguration() {
-        Map<String, String> config = new LinkedHashMap<String, String>();
+        Map<String, String> config = new LinkedHashMap<String, String>(runtimeConfiguration);
         config.put("offline", String.valueOf(offline));
         config.put("remoteAllowed", String.valueOf(remoteAllowed));
         return config;
