@@ -121,11 +121,13 @@ Layering rules (enforced by module boundaries):
 | `cortexj-repository-http` | Plain HTTP(S) URL references (ETag revisions, trust notes) |
 | `cortexj-runtime-remote-openai` | OpenAI-compatible remote provider (vLLM, llama-server, gateways) |
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
-| `cortexj-runtime-llamacpp` | llama.cpp provider (probe + honest diagnostics; JNI bridge is a later milestone) |
+| `cortexj-runtime-llamacpp` | llama.cpp provider: probe, **managed llama-server process bridge** (blocking + SSE execution), honest diagnostics |
 | `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
 | `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/histograms/spans |
 | `cortexj-streaming-flow` | Java `Flow.Publisher` streaming adapter (Java 11+) |
 | `cortexj-convert-gguf` | Deterministic GGUF F32↔F16 converter (Level C, provenance manifests) |
+| `cortexj-convert-safetensors` | Deterministic Safetensors→GGUF re-containerization (config.json metadata, Level C) |
+| `cortexj-declarative` | Declarative interface API: `@ModelPrompt` + dynamic proxy, `JsonPromptDecoder` (spec 49) |
 | `cortexj-server` | Optional OpenAI-compatible embedded server (spec 60) |
 | `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
 | `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
@@ -135,7 +137,7 @@ Layering rules (enforced by module boundaries):
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |
 | `cortexj-tck` | Technology compatibility kit for runtime/repository providers |
-| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / cache list/clean / bundle create/verify` |
+| `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / server / convert / cache list,clean / bundle create,verify` |
 
 ## Status (milestones from the spec)
 
@@ -144,8 +146,9 @@ Layering rules (enforced by module boundaries):
 - **M4** — execution planner: candidates, hard constraints, scoring, memory estimates,
   explainable deterministic plans: done
 - **M2** — runtime SPI registry, core platform, OpenAI-compatible remote provider: done
-- **M3** — ONNX provider (probe/load/tokenizer/embeddings); llama.cpp probe + actionable
-  diagnostics (JNI execution bridge intentionally deferred)
+- **M3** — ONNX provider (probe/load/tokenizer/embeddings); llama.cpp provider with
+  probe + actionable diagnostics and **real local execution** via the managed
+  llama-server process bridge
 - **M5** — platform modules for Java 8/11/17/21/25 + starters for all five LTS lines with
   wrong-JVM detection
 - **M6** — legacy support: verified by building and testing the full shared core on real
@@ -161,21 +164,28 @@ Layering rules (enforced by module boundaries):
 - **M9** — conversion subsystem (spec §31 Level C, §32): `ConversionStep` in candidates,
   planner proposes deterministic conversions when no direct artifact is viable, core
   materializes conversions into the cache with a provenance manifest (§32.4), original
-  artifacts stay immutable; a production converter ships: `cortexj-convert-gguf`
-  (deterministic F32↔F16, `cortexj convert` CLI, spec 71/72 perf smoke tests)
+  artifacts stay immutable; production converters ship: `cortexj-convert-gguf`
+  (deterministic F32↔F16, `cortexj convert` CLI) and `cortexj-convert-safetensors`
+  (Safetensors→GGUF re-containerization with config.json metadata — verified end-to-end
+  through Level C planning); multimodal/task planning (§47): a runtime must support at
+  least one task the model offers; spec 78-84 examples are compilable
+  (`cortexj-examples`); declarative API ships (`cortexj-declarative`)
 
-Full spec-conformance pass additionally delivered: cache eviction policies
-(pinned/age-cap/manual + `cache list/clean` CLI, plus a fix for in-progress downloads
-participating in LRU eviction), trust policies (TRUSTED_ONLY / ALLOW_UNSIGNED_WITH_WARNING /
-CUSTOM, spec 35.2), a plain HTTP repository provider (spec 14.3), the Java Flow streaming
-adapter (spec 37.3), duration/token metrics on PLAN_CREATED / DOWNLOAD_COMPLETED /
-INFERENCE_COMPLETED events surfaced through the OTel histogram (spec 57.1), and the
-documentation set required by spec 101/102 under `docs/`.
+Full spec-conformance passes additionally delivered: cache eviction policies
+(pinned/age-cap/manual + `cache list/clean` CLI), trust policies (TRUSTED_ONLY /
+ALLOW_UNSIGNED_WITH_WARNING / CUSTOM, spec 35.2), a plain HTTP repository provider
+(spec 14.3), the Java Flow streaming adapter (spec 37.3), duration/token metrics
+(PLAN_CREATED / DOWNLOAD_COMPLETED / INFERENCE_COMPLETED + first-token latency and
+queue wait, surfaced through the OTel histogram, spec 57.1), download resume
+(HTTP Range), cancellation and proxy support (spec 34), the documentation set required
+by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
+(spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
+GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **37 suites / 164 tests green on JDK 25** (full reactor incl. adapter
-modules), **33 suites / 151 tests green on real JDK 8**; GitHub Actions CI matrix runs
-JDK 8/11/17/21/25 on ubuntu/macos/windows (15/15 lanes green) plus JPMS lanes
-(`mvn -Pjpms`).
+Current test matrix: **41 suites / 177 tests green on JDK 25**, **37 suites / 164 tests
+green on real JDK 8** (verified locally); GitHub Actions CI matrix runs
+JDK 8/11/17/21/25 on ubuntu/macos/windows (15/15 lanes green), JPMS lanes
+(`mvn -Pjpms`), and gated self-hosted GPU lanes (CUDA/Metal per spec 70).
 
 llama.cpp execution is real: the provider manages a `llama-server` process (health
 polling, blocking + SSE streaming, graceful shutdown) when
@@ -184,10 +194,14 @@ polling, blocking + SSE streaming, graceful shutdown) when
 `jar --describe-module`); §60 server mode ships as `cortexj-server` +
 `cortexj server` CLI; §93/94 ship as `cortexj-maven-plugin` (`cortexj:verify`).
 
-Known follow-ups (explicit non-goals of this drop, tracked by the spec's v1.0 scope):
-llama.cpp JNI bridge, Safetensors direct execution, real format converters (the conversion
-machinery is in place — SPI, planning, materialization, provenance — but no production
-converter ships yet), JInfer (not on Central), server mode.
+Everything required by the spec's v1.0 scope (§105) and DoD (§107/108) is implemented.
+Remaining items are only what the spec itself marks as impossible, optional, or future:
+JInfer (artifact absent from Maven Central — §107.5 requires MVP to work without it),
+GPU CI lanes (require self-hosted CUDA/Metal runners — prepared and gated), server
+multimodal endpoints (§60 "future"), and the `cortexj-declarative` evolution beyond
+prompt+validation (§48/§49). Before a public 1.0 release: Maven Central publishing,
+the API stability freeze process (§73/74 — tiers documented, `compat` profile ready),
+and a signed-off production security review cycle on top of the recorded one.
 
 ## Build
 
