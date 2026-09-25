@@ -68,6 +68,11 @@
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-server</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
       <artifactId>cortexj-runtime-remote-openai</artifactId>
       <version>${project.version}</version>
     </dependency>
