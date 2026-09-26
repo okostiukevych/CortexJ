@@ -72,3 +72,16 @@ In the private CortexJ repository:
 - Local: render the page in a browser (serve via `python3 -m http.server` from the site directory) before pushing; check desktop + mobile widths.
 - After push: Pages workflow green on GitHub (checked via API); live URL returns 200; anchor navigation works; no dead links (the page is self-contained — every link is an anchor).
 - No claims on the page that the README does not make (accuracy pass against README before commit).
+
+## Revision 2 — "big framework" landing upgrade (2026-09-26, approved)
+
+Selected by the user: docs integration, copy buttons + LTS tabs, status section, FAQ, SEO (JSON-LD + og:image), comparison table. Dark theme explicitly deferred.
+
+- **Docs integration:** hero CTA "Get started" → `/docs/quickstart/`; quick-start section gains a 4-card link row (Installation, Quickstart, Concepts, CLI); footer rebuilt as a sitemap (brand block + Docs column + Project column).
+- **Copy buttons** on both code cards (vanilla JS, clipboard API, transient "Copied" state).
+- **LTS tabs** in Quick start: Java 8/11/17/21/25 switch the `cortexj-starter-*` artifactId inside the pom snippet (data-attribute swap; Java 21 default).
+- **Status section** ("What ships today") between Who it's for and Quick start: 4 stat cards (177 tests/41 suites on JDK 25; 164 tests on JDK 8; 15/15 CI lanes ubuntu/macos/windows; 5 LTS starters) + 6 milestone cards (M1, M4, M3, M5, M7, M9 — wording from README Status). The "0.1.0-SNAPSHOT · Maven Central release coming" pill moves here from Quick start.
+- **FAQ** section after Quick start: 5 native `<details>` accordions (Java versions; Python needed?; GPU honesty; Spring AI/LangChain4j positioning — frameworks vs runtime layer, adapters export CortexJ models as their models; Maven Central timing — publishing + API stability freeze + security review sign-off per README).
+- **Comparison table** in Why: Hand-rolled bindings vs CortexJ across 5 rows (model source, runtime choice, memory, Java versions, reproducibility). Generic pain wording, no named competitors.
+- **SEO:** JSON-LD `SoftwareApplication`; og:image — branded 1200×630 SVG rasterized via macOS `qlmanage`; if rasterization fails, og:image is deferred and JSON-LD alone ships.
+- New page order: nav → hero → why(+compare) → how → runtimes → who → status → quick start(+tabs+links) → faq → footer v2.
