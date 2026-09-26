@@ -18,3 +18,4 @@ replay_pid*
 .settings/
 .mtj.tmp/
 *.ctxt
+.superpowers/
