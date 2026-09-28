@@ -223,9 +223,7 @@ public final class DefaultCortexJ implements CortexJ {
         for (RuntimeProvider provider : runtimeProviders) {
             io.cortexj.spi.runtime.RuntimeProbeResult result;
             try {
-                result = provider.probe(new io.cortexj.spi.runtime.RuntimeProbeContext(
-                        snapshot.environment, snapshot.hardware, config().offline,
-                        config().runtimeConfiguration()));
+                result = planner.probeShared(provider);
             } catch (RuntimeException probeFailure) {
                 result = io.cortexj.spi.runtime.RuntimeProbeResult.unavailable(
                         "probe failed: " + probeFailure.getMessage());
@@ -233,6 +231,7 @@ public final class DefaultCortexJ implements CortexJ {
             reports.add(new io.cortexj.runtime.RuntimeHealthReport(
                     provider.id(), result.health(), result.message()));
         }
+        planner.invalidateProbeCache();
         return reports;
     }
 
