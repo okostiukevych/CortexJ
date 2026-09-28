@@ -50,7 +50,10 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     LlamaServerModel(LlamaServerEndpoint endpoint, ExecutorService executor) {
         this.endpoint = endpoint;
         this.ownsExecutor = executor == null;
-        this.sseExecutor = executor == null ? Executors.newSingleThreadExecutor() : executor;
+        this.sseExecutor = executor == null
+                ? Executors.newSingleThreadExecutor(
+                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-llama-sse"))
+                : executor;
     }
 
     @Override

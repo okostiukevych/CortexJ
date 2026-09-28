@@ -36,4 +36,18 @@ public interface PlatformModule {
             }
         };
     }
+
+    static java.util.concurrent.ThreadFactory daemonThreadFactory(final String prefix) {
+        return new java.util.concurrent.ThreadFactory() {
+            private final java.util.concurrent.atomic.AtomicInteger counter =
+                    new java.util.concurrent.atomic.AtomicInteger();
+
+            @Override
+            public Thread newThread(Runnable runnable) {
+                Thread thread = new Thread(runnable, prefix + "-" + counter.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+            }
+        };
+    }
 }
