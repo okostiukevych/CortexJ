@@ -23,9 +23,13 @@ public final class CacheStorage {
 
     public static final long DEFAULT_MAX_SIZE_BYTES = 10L * 1024L * 1024L * 1024L;
 
+    private static final int LOCK_STRIPES = 16;
+
     private final Path root;
     private final long maxSizeBytes;
-    private PlatformEventListener eventListener = PlatformEventListener.NOOP;
+    private final Object[] keyLocks = new Object[LOCK_STRIPES];
+    private final Object evictionLock = new Object();
+    private volatile PlatformEventListener eventListener = PlatformEventListener.NOOP;
 
     public CacheStorage(Path root) {
         this(root, DEFAULT_MAX_SIZE_BYTES);
@@ -34,6 +38,9 @@ public final class CacheStorage {
     public CacheStorage(Path root, long maxSizeBytes) {
         this.root = root;
         this.maxSizeBytes = maxSizeBytes;
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            this.keyLocks[i] = new Object();
+        }
     }
 
     public Path root() {
@@ -66,10 +73,23 @@ public final class CacheStorage {
             return null;
         }
         if (expectedChecksum != null && !manifestMatches(path, expectedChecksum)) {
-            verifyFullyAndRecord(path, repositoryId, revision, artifactId, expectedChecksum);
+            synchronized (keyLock(path)) {
+                // re-check under the per-key lock: a concurrent put() may have
+                // already replaced the artifact and its manifest since the
+                // unlocked manifest read above - never verify-and-delete the
+                // freshly written artifact because of that race (audit M-5a)
+                if (Files.isRegularFile(path) && !manifestMatches(path, expectedChecksum)) {
+                    verifyFullyAndRecord(path, repositoryId, revision, artifactId, expectedChecksum);
+                }
+            }
         }
         touch(path);
         return path;
+    }
+
+    private Object keyLock(Path artifact) {
+        int index = (artifact.hashCode() & 0x7fffffff) % LOCK_STRIPES;
+        return keyLocks[index];
     }
 
     /**
@@ -174,15 +194,32 @@ public final class CacheStorage {
         if (maxSizeBytes > 0) {
             evictToFit(bytesCopied);
         }
-        if (Files.exists(target)) {
-            Files.delete(target);
+        synchronized (keyLock(target)) {
+            // atomic replace first: no delete->move window where concurrent
+            // get()/contains() would report "not cached" (audit M-5b); the
+            // delete+move ladder stays as the fallback for filesystems that
+            // reject an atomic replace, and the manifest write happens under
+            // the same lock so a concurrent get() can never pair the new
+            // artifact with the stale manifest and verify-and-delete it
+            boolean moved = false;
+            try {
+                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                moved = true;
+            } catch (IOException atomicReplaceUnsupported) {
+                // fall through to the delete+move ladder
+            }
+            if (!moved) {
+                if (Files.exists(target)) {
+                    Files.delete(target);
+                }
+                try {
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
+                } catch (IOException atomicFailed) {
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
         }
-        try {
-            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException atomicFailed) {
-            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
-        }
-        writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
         eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
                 PlatformEvent.Level.INFO,
                 "artifact stored: " + artifactId,
@@ -243,21 +280,23 @@ public final class CacheStorage {
     }
 
     public long evictOlderThan(long cutoffEpochMillis) throws IOException {
-        List<CacheEntry> entries = list();
-        long freed = 0L;
-        for (CacheEntry entry : entries) {
-            if (entry.lastModifiedMillis() >= cutoffEpochMillis) {
-                continue;
+        synchronized (evictionLock) {
+            List<CacheEntry> entries = list();
+            long freed = 0L;
+            for (CacheEntry entry : entries) {
+                if (entry.lastModifiedMillis() >= cutoffEpochMillis) {
+                    continue;
+                }
+                if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                    continue;
+                }
+                if (Files.deleteIfExists(entry.path())) {
+                    deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                    freed += entry.sizeBytes();
+                }
             }
-            if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
-                continue;
-            }
-            if (Files.deleteIfExists(entry.path())) {
-                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
-                freed += entry.sizeBytes();
-            }
+            return freed;
         }
-        return freed;
     }
 
     public long clear() throws IOException {
@@ -274,34 +313,36 @@ public final class CacheStorage {
     }
 
     public long evictToFit(long incomingBytes) throws IOException {
-        List<CacheEntry> entries = list();
-        long total = 0L;
-        for (CacheEntry entry : entries) {
-            total += entry.sizeBytes();
+        synchronized (evictionLock) {
+            List<CacheEntry> entries = list();
+            long total = 0L;
+            for (CacheEntry entry : entries) {
+                total += entry.sizeBytes();
+            }
+            if (total + incomingBytes <= maxSizeBytes) {
+                return 0L;
+            }
+            entries.sort(new Comparator<CacheEntry>() {
+                @Override
+                public int compare(CacheEntry a, CacheEntry b) {
+                    return Long.compare(a.lastModifiedMillis(), b.lastModifiedMillis());
+                }
+            });
+            long freed = 0L;
+            for (CacheEntry entry : entries) {
+                if (total + incomingBytes - freed <= maxSizeBytes) {
+                    break;
+                }
+                if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                    continue;
+                }
+                if (Files.deleteIfExists(entry.path())) {
+                    deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                    freed += entry.sizeBytes();
+                }
+            }
+            return freed;
         }
-        if (total + incomingBytes <= maxSizeBytes) {
-            return 0L;
-        }
-        entries.sort(new Comparator<CacheEntry>() {
-            @Override
-            public int compare(CacheEntry a, CacheEntry b) {
-                return Long.compare(a.lastModifiedMillis(), b.lastModifiedMillis());
-            }
-        });
-        long freed = 0L;
-        for (CacheEntry entry : entries) {
-            if (total + incomingBytes - freed <= maxSizeBytes) {
-                break;
-            }
-            if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
-                continue;
-            }
-            if (Files.deleteIfExists(entry.path())) {
-                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
-                freed += entry.sizeBytes();
-            }
-        }
-        return freed;
     }
 
     public long purge() throws IOException {
