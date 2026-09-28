@@ -34,8 +34,10 @@ public final class CortexJBuilder {
     private String remoteModelPrefix;
     private ExecutorService executor;
     private boolean allowRemoteRuntime = true;
+    private volatile boolean frozen;
 
     public CortexJBuilder runtimeProvider(RuntimeProvider provider) {
+        ensureMutable();
         if (provider != null) {
             runtimeProviders.add(provider);
         }
@@ -43,6 +45,7 @@ public final class CortexJBuilder {
     }
 
     public CortexJBuilder repositoryProvider(ModelRepositoryProvider provider) {
+        ensureMutable();
         if (provider != null) {
             repositoryProviders.add(provider);
         }
@@ -50,6 +53,7 @@ public final class CortexJBuilder {
     }
 
     public CortexJBuilder executionPolicy(ExecutionPolicy policy) {
+        ensureMutable();
         if (policy != null) {
             executionPolicies.add(policy);
         }
@@ -57,6 +61,7 @@ public final class CortexJBuilder {
     }
 
     public CortexJBuilder eventListener(PlatformEventListener listener) {
+        ensureMutable();
         if (listener != null) {
             eventListeners.add(listener);
         }
@@ -64,56 +69,67 @@ public final class CortexJBuilder {
     }
 
     public CortexJBuilder offlineMode(boolean offline) {
+        ensureMutable();
         this.offline = offline;
         return this;
     }
 
     public CortexJBuilder workingDirectory(Path directory) {
+        ensureMutable();
         this.workingDirectory = directory;
         return this;
     }
 
     public CortexJBuilder memoryLimitBytes(long bytes) {
+        ensureMutable();
         this.memoryLimitBytes = Long.valueOf(bytes);
         return this;
     }
 
     public CortexJBuilder tokenSupplier(TokenSupplier supplier) {
+        ensureMutable();
         this.tokenSupplier = supplier;
         return this;
     }
 
     public CortexJBuilder remoteBaseUrl(String baseUrl) {
+        ensureMutable();
         this.remoteBaseUrl = baseUrl;
         return this;
     }
 
     public CortexJBuilder remoteApiKey(String apiKey) {
+        ensureMutable();
         this.remoteApiKey = apiKey;
         return this;
     }
 
     public CortexJBuilder remoteModelPrefix(String prefix) {
+        ensureMutable();
         this.remoteModelPrefix = prefix;
         return this;
     }
 
     public CortexJBuilder executor(ExecutorService executor) {
+        ensureMutable();
         this.executor = executor;
         return this;
     }
 
     public CortexJBuilder allowRemoteRuntime(boolean allow) {
+        ensureMutable();
         this.allowRemoteRuntime = allow;
         return this;
     }
 
     public CortexJBuilder trustPolicy(io.cortexj.model.TrustPolicy policy) {
+        ensureMutable();
         this.trustPolicy = policy == null ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING : policy;
         return this;
     }
 
     public CortexJBuilder proxy(String host, int port) {
+        ensureMutable();
         if (host == null || host.trim().isEmpty()) {
             this.proxyHost = null;
             this.proxyPort = null;
@@ -137,6 +153,7 @@ public final class CortexJBuilder {
     }
 
     public CortexJBuilder converter(io.cortexj.spi.conversion.ModelConverter converter) {
+        ensureMutable();
         if (converter != null) {
             converters.add(converter);
         }
@@ -200,12 +217,21 @@ public final class CortexJBuilder {
     }
 
     public CortexJ build() {
+        frozen = true;
         for (PlatformFactory factory : ServiceLoader.load(PlatformFactory.class, CortexJBuilder.class.getClassLoader())) {
             return factory.create(this);
         }
         throw new ConfigurationException(ErrorCode.CONF_BOOTSTRAP_MISSING,
                 "No CortexJ platform implementation found on the classpath.",
                 "Add the 'cortexj-core' dependency, or a 'cortexj-starter-java<version>' starter artifact.");
+    }
+
+    private void ensureMutable() {
+        if (frozen) {
+            throw new IllegalStateException(
+                    "CortexJBuilder is frozen: the platform was already built. "
+                            + "Create a new builder for a new configuration.");
+        }
     }
 
     private static boolean offlineFromEnvironment() {

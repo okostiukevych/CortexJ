@@ -26,7 +26,8 @@ import java.util.concurrent.TimeUnit;
 
 public final class DefaultCortexJ implements CortexJ {
 
-    private final CortexJBuilder configuration;
+    private final Configuration resolvedConfiguration;
+    private final ResolutionContext resolutionContext;
     private final EnvironmentSnapshot snapshot;
     private final PlatformModule platformModule;
     private final io.cortexj.core.EventBus events;
@@ -44,7 +45,6 @@ public final class DefaultCortexJ implements CortexJ {
     private final ExecutorService asyncExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
-        this.configuration = configuration;
         this.snapshot = EnvironmentSnapshot.probe();
         PlatformModuleSelector.validateStarters(snapshot);
         this.platformModule = PlatformModuleSelector.select(snapshot);
@@ -123,6 +123,9 @@ public final class DefaultCortexJ implements CortexJ {
                         resolved.runtimeConfiguration()));
 
         this.models = new DefaultModels(this);
+        this.resolvedConfiguration = resolved;
+        this.resolutionContext = ResolutionContext.create(resolved.offline,
+                configuration.tokenSupplier(), ioExecutor, events.asListener());
         events.info(PlatformEvent.Type.PLATFORM_STARTED,
                 "CortexJ started on Java " + snapshot.environment.jvmFeatureVersion()
                         + " with " + runtimeProviders.size() + " runtime provider(s)");
@@ -133,7 +136,7 @@ public final class DefaultCortexJ implements CortexJ {
     }
 
     Configuration config() {
-        return Configuration.from(configuration, snapshot);
+        return resolvedConfiguration;
     }
 
     EnvironmentSnapshot snapshot() {
@@ -239,8 +242,7 @@ public final class DefaultCortexJ implements CortexJ {
     }
 
     ResolutionContext resolutionContext() {
-        final CortexJBuilder captured = configuration;
-        return ResolutionContext.create(config().offline, captured.tokenSupplier(), ioExecutor, events.asListener());
+        return resolutionContext;
     }
 
     @Override
