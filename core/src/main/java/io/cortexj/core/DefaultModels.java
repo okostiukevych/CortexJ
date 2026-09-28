@@ -159,6 +159,12 @@ public final class DefaultModels implements io.cortexj.Models {
 
         DefaultModelHandle handle = new DefaultModelHandle(
                 resolved.descriptor(), plan, model, runtime, platform, candidate);
+        handle.onClose(new java.util.function.Consumer<DefaultModelHandle>() {
+            @Override
+            public void accept(DefaultModelHandle closedHandle) {
+                openHandles.remove(closedHandle);
+            }
+        });
         openHandles.add(handle);
         return handle;
     }
@@ -492,6 +498,10 @@ public final class DefaultModels implements io.cortexj.Models {
 
     void unregister(DefaultModelHandle handle) {
         openHandles.remove(handle);
+    }
+
+    int openHandleCount() {
+        return openHandles.size();
     }
 
     void handleClosed(DefaultModelHandle handle) {

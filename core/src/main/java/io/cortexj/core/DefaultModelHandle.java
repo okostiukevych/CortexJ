@@ -31,6 +31,7 @@ public final class DefaultModelHandle implements ModelHandle {
     private final ExecutionCandidate candidate;
     private final ReentrantLock sessionLock = new ReentrantLock();
     private final boolean serializeAccess;
+    private volatile java.util.function.Consumer<DefaultModelHandle> closeCallback;
 
     private final java.util.concurrent.atomic.AtomicReference<ModelLifecycleState> state =
             new java.util.concurrent.atomic.AtomicReference<ModelLifecycleState>(ModelLifecycleState.LOADING);
@@ -64,6 +65,10 @@ public final class DefaultModelHandle implements ModelHandle {
 
     void markFallback(String fromRuntime, String toRuntime) {
         this.fallbackNote = "load fell back from " + fromRuntime + " to " + toRuntime;
+    }
+
+    void onClose(java.util.function.Consumer<DefaultModelHandle> callback) {
+        this.closeCallback = callback;
     }
 
     @Override
@@ -382,6 +387,10 @@ public final class DefaultModelHandle implements ModelHandle {
             }
         }
         transitionTo(ModelLifecycleState.CLOSED);
+        java.util.function.Consumer<DefaultModelHandle> callback = closeCallback;
+        if (callback != null) {
+            callback.accept(this);
+        }
         platform.events().info(io.cortexj.observability.PlatformEvent.Type.PLATFORM_CLOSED,
                 "model handle closed: " + descriptor.canonicalId());
     }
