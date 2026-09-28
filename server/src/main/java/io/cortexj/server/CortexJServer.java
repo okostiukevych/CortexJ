@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class CortexJServer {
 
     private static final long DEFAULT_STREAM_AWAIT_MILLIS = 120_000L;
+    private static final long DEFAULT_MAX_BODY_BYTES = 8L * 1024L * 1024L;
 
     private final CortexJ platform;
     private final ModelHandle model;
@@ -180,6 +181,10 @@ public final class CortexJServer {
             return;
         }
         JsonNode body = readBody(exchange);
+        if (body == null) {
+            // 413 already sent by readBody
+            return;
+        }
         boolean stream = body.path("stream").asBoolean(false);
         TextGenerationCapability generator = model.capability(TextGenerationCapability.class);
 
@@ -297,6 +302,10 @@ public final class CortexJServer {
             return;
         }
         JsonNode body = readBody(exchange);
+        if (body == null) {
+            // 413 already sent by readBody
+            return;
+        }
         EmbeddingCapability embeddings = model.capability(EmbeddingCapability.class);
         java.util.List<String> inputs = new java.util.ArrayList<String>();
         JsonNode inputNode = body.path("input");
@@ -360,15 +369,55 @@ public final class CortexJServer {
     }
 
     private JsonNode readBody(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+        // audit H-11: cap the request body - a multi-GB POST (chunked or with a
+        // huge Content-Length) must not OOM the process
+        String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (contentLength != null) {
+            try {
+                if (Long.parseLong(contentLength.trim()) > maxBodyBytes()) {
+                    rejectTooLarge(exchange);
+                    return null;
+                }
+            } catch (NumberFormatException ignored) {
+                // fall through to the streaming cap
+            }
+        }
         try (InputStream input = exchange.getRequestBody()) {
             java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
             byte[] chunk = new byte[4096];
+            long total = 0;
             int read;
             while ((read = input.read(chunk)) >= 0) {
+                total += read;
+                if (total > maxBodyBytes()) {
+                    rejectTooLarge(exchange);
+                    return null;
+                }
                 buffer.write(chunk, 0, read);
             }
             byte[] bytes = buffer.toByteArray();
             return bytes.length == 0 ? mapper.createObjectNode() : mapper.readTree(bytes);
+        }
+    }
+
+    private long maxBodyBytes() {
+        String property = System.getProperty("cortexj.server.maxBodyBytes");
+        if (property != null && !property.trim().isEmpty()) {
+            try {
+                return Long.parseLong(property.trim());
+            } catch (NumberFormatException ignored) {
+                // fall back to the default
+            }
+        }
+        return DEFAULT_MAX_BODY_BYTES;
+    }
+
+    private void rejectTooLarge(com.sun.net.httpserver.HttpExchange exchange) {
+        try {
+            respondJson(exchange, 413, errorPayload("CORTEXJ-SERVER-4130",
+                    "request body too large (max " + maxBodyBytes() + " bytes)"));
+        } catch (IOException ignored) {
+            // client gone
         }
     }
 
