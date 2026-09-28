@@ -284,4 +284,173 @@ class CortexJServerTest {
         assertEquals(0.2f, payload.path("data").path(1).path("embedding").path(1)
                 .asDouble(), 0.0001);
     }
+
+    @Test
+    void stalledStreamDoesNotBlockOtherEndpoints() throws Exception {
+        final int stalledPort;
+        final CortexJServer stalled;
+        {
+            CortexJ hangingPlatform = new CortexJ() {
+                @Override
+                public Models models() {
+                    return new Models() {
+                        @Override
+                        public ModelHandle load(ModelReference reference) {
+                            return hangingStreamHandle();
+                        }
+
+                        @Override
+                        public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
+                            return hangingStreamHandle();
+                        }
+                    };
+                }
+
+                @Override
+                public io.cortexj.planner.Planner planner() {
+                    return null;
+                }
+
+                @Override
+                public io.cortexj.diagnostics.Support support() {
+                    return null;
+                }
+
+                @Override
+                public io.cortexj.hardware.EnvironmentProfile environment() {
+                    return null;
+                }
+
+                @Override
+                public io.cortexj.hardware.HardwareProfile hardware() {
+                    return null;
+                }
+
+                @Override
+                public List<io.cortexj.runtime.RuntimeDescriptor> runtimes() {
+                    return new ArrayList<io.cortexj.runtime.RuntimeDescriptor>();
+                }
+
+                @Override
+                public List<io.cortexj.runtime.RuntimeHealthReport> runtimeHealth() {
+                    return new ArrayList<io.cortexj.runtime.RuntimeHealthReport>();
+                }
+
+                @Override
+                public String platformModule() {
+                    return "cortexj-core";
+                }
+
+                @Override
+                public void close() {
+                }
+            };
+            stalled = new CortexJServer(hangingPlatform, "server/test-model", 60_000L);
+            stalledPort = stalled.start(0);
+        }
+        try {
+            Thread requester = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        URL url = new URL("http://127.0.0.1:" + stalledPort + "/v1/chat/completions");
+                        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                        connection.setRequestMethod("POST");
+                        connection.setDoOutput(true);
+                        try (OutputStream output = connection.getOutputStream()) {
+                            output.write(("{\"model\":\"m\",\"stream\":true,\"messages\":"
+                                    + "[{\"role\":\"user\",\"content\":\"hi\"}]}")
+                                    .getBytes(StandardCharsets.UTF_8));
+                        }
+                        connection.getInputStream();
+                    } catch (IOException connectionClosedByStop) {
+                        // expected once the server stops
+                    }
+                }
+            });
+            requester.setDaemon(true);
+            requester.start();
+            Thread.sleep(400);
+
+            long started = System.nanoTime();
+            URL modelsUrl = new URL("http://127.0.0.1:" + stalledPort + "/v1/models");
+            HttpURLConnection modelsConnection = (HttpURLConnection) modelsUrl.openConnection();
+            modelsConnection.setConnectTimeout(2000);
+            modelsConnection.setReadTimeout(2000);
+            assertEquals(200, modelsConnection.getResponseCode(),
+                    "/v1/models must stay responsive while a stream is stalled");
+            long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+            assertTrue(elapsedMillis < 2000,
+                    "/v1/models answered in " + elapsedMillis + "ms - handlers must not serialize");
+            modelsConnection.disconnect();
+        } finally {
+            stalled.stop();
+        }
+    }
+
+
+    private ModelHandle hangingStreamHandle() {
+        return new ModelHandle() {
+            @Override
+            public ModelDescriptor descriptor() {
+                return ModelDescriptor.builder("server/test-model").build();
+            }
+
+            @Override
+            public io.cortexj.planner.ExecutionPlan plan() {
+                return null;
+            }
+
+            @Override
+            public io.cortexj.model.ModelCapabilities capabilities() {
+                return null;
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T> T capability(Class<T> capabilityType) {
+                if (capabilityType == TextGenerationCapability.class) {
+                    return (T) new TextGenerationCapability() {
+                        @Override
+                        public GenerationResponse generate(GenerationRequest request) {
+                            return new GenerationResponse("echo: " + request.prompt(),
+                                    io.cortexj.inference.FinishReason.STOP,
+                                    new io.cortexj.inference.TokenUsage(1L, 1L), null);
+                        }
+
+                        @Override
+                        public io.cortexj.stream.TokenStream stream(GenerationRequest request) {
+                            io.cortexj.stream.internal.PushTokenStream stream =
+                                    new io.cortexj.stream.internal.PushTokenStream();
+                            return stream;
+                        }
+                    };
+                }
+                throw new IllegalArgumentException("unsupported capability " + capabilityType);
+            }
+
+            @Override
+            public <T> java.util.Optional<T> capabilityIfSupported(Class<T> capabilityType) {
+                return java.util.Optional.empty();
+            }
+
+            @Override
+            public boolean supports(io.cortexj.model.TaskCapability task) {
+                return true;
+            }
+
+            @Override
+            public io.cortexj.model.ModelLifecycleState state() {
+                return io.cortexj.model.ModelLifecycleState.READY;
+            }
+
+            @Override
+            public void waitForReady() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
 }
