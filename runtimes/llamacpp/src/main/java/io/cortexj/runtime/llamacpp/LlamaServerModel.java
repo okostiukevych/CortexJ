@@ -117,6 +117,11 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         private final GenerationRequest request;
         private final AtomicBoolean subscribed = new AtomicBoolean(false);
         private final AtomicLong emitted = new AtomicLong();
+        // audit H-3: the cancelled flag is now actually read by the SSE loop,
+        // and cancel()/close() disconnect the in-flight connection so the
+        // single SSE thread is released instead of reading a dropped completion
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private volatile HttpURLConnection activeConnection;
 
         LlamaServerTokenStream(GenerationRequest request) {
             this.request = request;
@@ -137,18 +142,28 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 }
             });
             return new StreamSubscription() {
-                private final AtomicBoolean cancelled = new AtomicBoolean(false);
+                private final AtomicBoolean subscriptionCancelled = new AtomicBoolean(false);
 
                 @Override
                 public void cancel() {
-                    cancelled.set(true);
+                    if (subscriptionCancelled.compareAndSet(false, true)) {
+                        abort();
+                    }
                 }
 
                 @Override
                 public boolean isCancelled() {
-                    return cancelled.get();
+                    return subscriptionCancelled.get();
                 }
             };
+        }
+
+        private void abort() {
+            cancelled.set(true);
+            HttpURLConnection connection = activeConnection;
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
 
         private void runSse(TokenConsumer consumer) {
@@ -156,6 +171,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
             try {
                 URL url = new URL(endpoint.baseUrl() + "/v1/chat/completions");
                 connection = (HttpURLConnection) url.openConnection();
+                activeConnection = connection;
                 connection.setConnectTimeout(CONNECT_TIMEOUT);
                 connection.setReadTimeout(READ_TIMEOUT);
                 connection.setRequestMethod("POST");
@@ -175,7 +191,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                         connection.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
-                    while ((line = reader.readLine()) != null) {
+                    while (!cancelled.get() && (line = reader.readLine()) != null) {
                         if (!line.startsWith("data:")) {
                             continue;
                         }
@@ -203,8 +219,15 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                         }
                     }
                 }
+                if (cancelled.get()) {
+                    return;
+                }
                 consumer.onComplete(new StreamCompletion(finishReason, usage));
             } catch (Exception e) {
+                if (cancelled.get()) {
+                    // deliberately cancelled: no error delivery, thread released
+                    return;
+                }
                 CortexJException failure = e instanceof CortexJException
                         ? (CortexJException) e
                         : new InferenceException(ErrorCode.INFERENCE_FAILED,
@@ -213,6 +236,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 failure.detail("endpoint", endpoint.baseUrl());
                 consumer.onError(failure);
             } finally {
+                activeConnection = null;
                 if (connection != null) {
                     connection.disconnect();
                 }
@@ -221,7 +245,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
 
         @Override
         public void close() {
-            // SSE connection is closed by the reader loop or the HTTP client itself
+            abort();
         }
     }
 
