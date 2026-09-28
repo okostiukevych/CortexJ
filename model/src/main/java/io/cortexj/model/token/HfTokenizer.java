@@ -38,25 +38,36 @@ public final class HfTokenizer {
         return fallback();
     }
 
+    /**
+     * Whitespace/word fallback encoder used exactly when a model ships no
+     * tokenizer.json (audit H-12). IDs are derived deterministically from a
+     * 32-bit FNV-1a hash of each pre-token: no global lock on the embedding
+     * hot path (pure function, trivially thread-safe) and no token-retention
+     * map, so a distinct-token flood cannot grow the heap. Collisions across
+     * different tokens are possible and acceptable for a fallback tokenizer -
+     * the same token always maps to the same id, including across restarts.
+     */
     public static TokenEncoder fallback() {
         return new TokenEncoder() {
-            private final Map<String, Integer> observed = new LinkedHashMap<String, Integer>();
-
             @Override
-            public synchronized int[] encode(String text) {
+            public int[] encode(String text) {
                 List<String> tokens = preTokens(text.toLowerCase());
                 int[] ids = new int[tokens.size()];
                 for (int i = 0; i < tokens.size(); i++) {
-                    Integer id = observed.get(tokens.get(i));
-                    if (id == null) {
-                        id = Integer.valueOf(observed.size());
-                        observed.put(tokens.get(i), id);
-                    }
-                    ids[i] = id.intValue();
+                    ids[i] = stableId(tokens.get(i));
                 }
                 return ids;
             }
         };
+    }
+
+    static int stableId(String token) {
+        int hash = 0x811c9dc5;
+        for (int i = 0; i < token.length(); i++) {
+            hash ^= token.charAt(i);
+            hash *= 0x01000193;
+        }
+        return hash & 0x7fffffff;
     }
 
     private static final class WordPiece implements TokenEncoder {
