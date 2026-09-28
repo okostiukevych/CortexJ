@@ -57,6 +57,7 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         if (quantization != null) {
             metadata.put("quantization", quantization);
         }
+        metadata.put("integrity", "unverified");
         ModelArtifact artifact = new ModelArtifact.Abstract(
                 fileName, format, head.contentLength, null, metadata) {
         };

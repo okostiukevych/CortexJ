@@ -29,6 +29,17 @@ public final class Checksums {
         return toHex(digest.digest(bytes));
     }
 
+    /**
+     * Verifies the file against the expected hex digest.
+     *
+     * <p>Behavior when no checksum is declared ({@code expectedHex == null} or
+     * blank): returns {@code true} <b>by design</b> - the file is treated as
+     * <em>unverified</em>, not as trusted. Repository providers must attach a
+     * real checksum to {@link io.cortexj.model.ModelArtifact} whenever the
+     * repository publishes one (Hugging Face LFS sha256 via {@code ?blobs=true});
+     * providers that cannot know one mark the artifact metadata
+     * {@code integrity=unverified} so the gap is visible, not silent.</p>
+     */
     public static boolean verify(Path file, String algorithm, String expectedHex) throws IOException {
         if (expectedHex == null || expectedHex.trim().isEmpty()) {
             return true;
