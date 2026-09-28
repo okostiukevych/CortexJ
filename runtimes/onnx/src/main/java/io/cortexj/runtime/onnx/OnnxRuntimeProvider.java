@@ -183,7 +183,8 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         private final OrtSession session;
         private final io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer;
-        private volatile boolean closed;
+        private final java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean();
 
         OnnxModel(OrtSession session, io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer) {
             this.session = session;
@@ -215,7 +216,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         @Override
         public EmbeddingResponse embed(EmbeddingRequest request) {
-            if (closed) {
+            if (closed.get()) {
                 throw new InferenceException(ErrorCode.INFERENCE_FAILED, "model is closed", "Reopen the model handle.");
             }
             List<float[]> vectors = new ArrayList<float[]>();
@@ -270,7 +271,9 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         @Override
         public void close() {
-            closed = true;
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
             try {
                 session.close();
             } catch (Exception ignored) {

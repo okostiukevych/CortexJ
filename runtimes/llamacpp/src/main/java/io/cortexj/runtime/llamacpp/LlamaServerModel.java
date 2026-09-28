@@ -44,7 +44,8 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     private final ExecutorService sseExecutor;
     private final boolean ownsExecutor;
     private final ObjectMapper mapper = new ObjectMapper();
-    private volatile boolean closed;
+    private final java.util.concurrent.atomic.AtomicBoolean closed =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     LlamaServerModel(LlamaServerEndpoint endpoint, ExecutorService executor) {
         this.endpoint = endpoint;
@@ -315,7 +316,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     }
 
     private void requireOpen() {
-        if (closed) {
+        if (closed.get()) {
             throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                     "model is closed", "Reopen the model handle.");
         }
@@ -323,8 +324,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
 
     @Override
     public void close() {
-        if (!closed) {
-            closed = true;
+        if (closed.compareAndSet(false, true)) {
             endpoint.stop();
             if (ownsExecutor) {
                 sseExecutor.shutdown();
