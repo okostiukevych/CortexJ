@@ -87,6 +87,7 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public <T> T capability(Class<T> capabilityType) {
+        requireActive("capability");
         T capability = capabilityIfSupportedInternal(capabilityType);
         if (capability == null) {
             CortexJException failure = new InferenceException("CORTEXJ-INFER-9004",
@@ -278,6 +279,7 @@ public final class DefaultModelHandle implements ModelHandle {
     }
 
     public InferenceResponse execute(InferenceRequest request) {
+        requireActive("execute");
         if (serializeAccess) {
             long waitStartedNanos = System.nanoTime();
             sessionLock.lock();
@@ -286,6 +288,7 @@ public final class DefaultModelHandle implements ModelHandle {
                 if (queueWaitMillis > 0) {
                     publishQueueWait(queueWaitMillis);
                 }
+                requireActive("execute");
                 return model.execute(request);
             } finally {
                 sessionLock.unlock();
@@ -305,6 +308,7 @@ public final class DefaultModelHandle implements ModelHandle {
     }
 
     public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
+        requireActive("executeAsync");
         if (serializeAccess) {
             return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
                 @Override
@@ -329,6 +333,17 @@ public final class DefaultModelHandle implements ModelHandle {
         }
     }
 
+    private void requireActive(String operation) {
+        ModelLifecycleState current = state.get();
+        if (current == ModelLifecycleState.CLOSING || current.isTerminal()) {
+            InferenceException failure = new InferenceException(io.cortexj.ErrorCode.INFERENCE_FAILED,
+                    "Cannot " + operation + " on a model handle that is " + current,
+                    "Create a new handle via CortexJ.models().load(...).");
+            failure.detail("model", descriptor.canonicalId());
+            throw failure;
+        }
+    }
+
     private boolean beginClose() {
         for (;;) {
             ModelLifecycleState current = state.get();
@@ -346,13 +361,25 @@ public final class DefaultModelHandle implements ModelHandle {
         if (!beginClose()) {
             return;
         }
-        try {
-            model.close();
-        } catch (RuntimeException ignored) {
+        // close under the same session lock execute() uses for SESSION_SCOPED
+        // runtimes: close-during-execute waits for the in-flight call instead
+        // of tearing down the native session under it
+        if (serializeAccess) {
+            sessionLock.lock();
         }
         try {
-            runtime.close();
-        } catch (RuntimeException ignored) {
+            try {
+                model.close();
+            } catch (RuntimeException ignored) {
+            }
+            try {
+                runtime.close();
+            } catch (RuntimeException ignored) {
+            }
+        } finally {
+            if (serializeAccess) {
+                sessionLock.unlock();
+            }
         }
         transitionTo(ModelLifecycleState.CLOSED);
         platform.events().info(io.cortexj.observability.PlatformEvent.Type.PLATFORM_CLOSED,

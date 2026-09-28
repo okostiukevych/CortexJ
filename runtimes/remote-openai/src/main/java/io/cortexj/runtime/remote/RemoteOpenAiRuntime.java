@@ -151,6 +151,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
         @Override
         public GenerationResponse generate(GenerationRequest request) {
+            requireOpen("generate");
             Map<String, Object> payload = generationPayload(request, false);
             HttpJsonClient.Response response = postJson("/v1/chat/completions", payload);
             if (!response.isOk()) {
@@ -166,6 +167,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
         @Override
         public TokenStream stream(GenerationRequest request) {
+            requireOpen("stream");
             final Map<String, Object> payload = generationPayload(request, true);
             final io.cortexj.stream.internal.TokenStreamPublisher publisher = new io.cortexj.stream.internal.TokenStreamPublisher();
             final Runnable worker = new Runnable() {
@@ -263,6 +265,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
         @Override
         public EmbeddingResponse embed(EmbeddingRequest request) {
+            requireOpen("embed");
             Map<String, Object> payload = new LinkedHashMap<String, Object>();
             payload.put("model", modelId);
             payload.put("input", request.texts());
@@ -285,6 +288,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
         @Override
         public RerankingResponse rerank(RerankingRequest request) {
+            requireOpen("rerank");
             if (!rerankEnabled) {
                 throw new InferenceException(ErrorCode.INFERENCE_UNSUPPORTED_TASK,
                         "Reranking is disabled for this remote model.",
@@ -310,6 +314,14 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         @Override
         public void close() {
             closed = true;
+        }
+
+        private void requireOpen(String operation) {
+            if (closed) {
+                throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "Cannot " + operation + " on a closed remote model handle.",
+                        "Create a new handle via CortexJ.models().load(...).");
+            }
         }
 
         private Map<String, Object> generationPayload(GenerationRequest request, boolean stream) {

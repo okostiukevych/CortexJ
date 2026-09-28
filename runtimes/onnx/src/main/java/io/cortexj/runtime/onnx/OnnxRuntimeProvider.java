@@ -185,6 +185,9 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
         private final io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        // guards native session use against close(): close-during-embed waits
+        // for the in-flight session.run() instead of tearing it down (TOCTOU fix, audit H-1)
+        private final Object nativeSessionLock = new Object();
 
         OnnxModel(OrtSession session, io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer) {
             this.session = session;
@@ -235,20 +238,26 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             for (int i = 0; i < ids.length; i++) {
                 longIds[i] = ids[i];
             }
-            try (OnnxTensor input = OnnxTensor.createTensor(environment(),
-                    LongBuffer.wrap(longIds), new long[]{1, longIds.length})) {
-                String inputName = session.getInputNames().iterator().next();
-                Map<String, OnnxTensor> inputs = new LinkedHashMap<String, OnnxTensor>();
-                inputs.put(inputName, input);
-                try (OrtSession.Result result = session.run(inputs)) {
-                    float[][] raw = (float[][]) result.get(0).getValue();
-                    return meanPool(raw);
+            synchronized (nativeSessionLock) {
+                if (closed.get()) {
+                    throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "model is closed", "Reopen the model handle.");
                 }
-            } catch (Exception e) {
-                InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
-                        "ONNX inference failed: " + e.getMessage(), e);
-                failure.detail("runtime", id.value());
-                throw failure;
+                try (OnnxTensor input = OnnxTensor.createTensor(environment(),
+                        LongBuffer.wrap(longIds), new long[]{1, longIds.length})) {
+                    String inputName = session.getInputNames().iterator().next();
+                    Map<String, OnnxTensor> inputs = new LinkedHashMap<String, OnnxTensor>();
+                    inputs.put(inputName, input);
+                    try (OrtSession.Result result = session.run(inputs)) {
+                        float[][] raw = (float[][]) result.get(0).getValue();
+                        return meanPool(raw);
+                    }
+                } catch (Exception e) {
+                    InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "ONNX inference failed: " + e.getMessage(), e);
+                    failure.detail("runtime", id.value());
+                    throw failure;
+                }
             }
         }
 
@@ -274,9 +283,11 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            try {
-                session.close();
-            } catch (Exception ignored) {
+            synchronized (nativeSessionLock) {
+                try {
+                    session.close();
+                } catch (Exception ignored) {
+                }
             }
         }
     }
