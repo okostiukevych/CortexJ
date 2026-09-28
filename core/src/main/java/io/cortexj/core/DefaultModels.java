@@ -34,6 +34,8 @@ public final class DefaultModels implements io.cortexj.Models {
 
     private final DefaultCortexJ platform;
     private final List<DefaultModelHandle> openHandles = new CopyOnWriteArrayList<DefaultModelHandle>();
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightDownloads =
+            new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>>();
 
     DefaultModels(DefaultCortexJ platform) {
         this.platform = platform;
@@ -46,6 +48,10 @@ public final class DefaultModels implements io.cortexj.Models {
 
     @Override
     public ModelHandle load(ExecutionRequest request) {
+        return loadWithFallbacks(request);
+    }
+
+    private ModelHandle loadWithFallbacks(ExecutionRequest request) {
         ExecutionPlan plan = platform.planner().plan(request);
         List<ExecutionCandidate> chain = new ArrayList<ExecutionCandidate>();
         chain.add(plan.selected());
@@ -191,13 +197,59 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
                         .detail("artifact", artifact.id());
             }
-            return platform.downloads().download(resolvedArtifact,
-                    resolved.repository().value(), resolved.revision(), cache, 0L);
+            return downloadOnce(resolvedArtifact, resolved.repository().value(),
+                    resolved.revision(), cache);
         }
         throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
                 "Resolved model does not contain artifact " + artifact.id(),
                 "The selected artifact vanished during resolution; re-run the plan.")
                 .detail("artifact", artifact.id());
+    }
+
+    private Path downloadOnce(ResolvedArtifact resolvedArtifact, String repositoryId, String revision,
+                               io.cortexj.cache.CacheStorage cache) {
+        String key = repositoryId + "~" + revision + "~" + resolvedArtifact.artifact().id();
+        java.util.concurrent.CompletableFuture<Path> claim =
+                new java.util.concurrent.CompletableFuture<Path>();
+        java.util.concurrent.CompletableFuture<Path> inFlight = inFlightDownloads.putIfAbsent(key, claim);
+        if (inFlight != null) {
+            return awaitInFlight(inFlight);
+        }
+        try {
+            Path cached = cache.get(repositoryId, revision, resolvedArtifact.artifact().id(),
+                    resolvedArtifact.artifact().checksum());
+            if (cached != null) {
+                claim.complete(cached);
+                return cached;
+            }
+            Path downloaded = platform.downloads().download(resolvedArtifact, repositoryId,
+                    revision, cache, 0L);
+            claim.complete(downloaded);
+            return downloaded;
+        } catch (RuntimeException failure) {
+            claim.completeExceptionally(failure);
+            throw failure;
+        } finally {
+            inFlightDownloads.remove(key, claim);
+        }
+    }
+
+    private Path awaitInFlight(java.util.concurrent.CompletableFuture<Path> inFlight) {
+        try {
+            return inFlight.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "Interrupted while waiting for a concurrent download of the same artifact",
+                    "Retry the model load.");
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "Concurrent download of the same artifact failed: " + cause.getMessage(), cause);
+        }
     }
 
     private void enforceTrustPolicy(ResolvedModel resolved) {
@@ -261,11 +313,18 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Converter " + step.converterId() + " is not registered on this platform",
                         "Add the converter module to the assembly or re-plan without conversion.");
             }
-            io.cortexj.spi.conversion.ConversionResult result = converter.convert(
-                    new io.cortexj.spi.conversion.ConversionRequest(
-                            source.artifact(), sourcePath, step.targetFormat(),
-                            step.targetQuantization(), outputDirectory,
-                            java.util.Collections.<String, Object>emptyMap()));
+            io.cortexj.spi.conversion.ConversionResult result;
+            try {
+                result = converter.convert(
+                        new io.cortexj.spi.conversion.ConversionRequest(
+                                source.artifact(), sourcePath, step.targetFormat(),
+                                step.targetQuantization(), outputDirectory,
+                                java.util.Collections.<String, Object>emptyMap()));
+            } catch (RuntimeException e) {
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Converter " + step.converterId() + " failed on "
+                                + step.sourceArtifactId() + ": " + e.getMessage(), e);
+            }
             Path outputPath = result.outputPath();
             if (outputPath == null || !java.nio.file.Files.isRegularFile(outputPath)) {
                 throw new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -294,6 +353,34 @@ public final class DefaultModels implements io.cortexj.Models {
         } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
             throw new ModelLoadException(ErrorCode.LOAD_FAILED,
                     "Conversion of " + step.sourceArtifactId() + " failed: " + e.getMessage(), e);
+        } finally {
+            deleteRecursively(outputDirectory);
+        }
+    }
+
+    private static void deleteRecursively(Path directory) {
+        if (directory == null) {
+            return;
+        }
+        try {
+            java.nio.file.Files.walkFileTree(directory, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                                                                java.nio.file.attribute.BasicFileAttributes attrs)
+                        throws java.io.IOException {
+                    java.nio.file.Files.deleteIfExists(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path dir, java.io.IOException failure)
+                        throws java.io.IOException {
+                    java.nio.file.Files.deleteIfExists(dir);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (java.io.IOException ignored) {
+            // best-effort cleanup of the temporary conversion workspace
         }
     }
 
@@ -315,8 +402,7 @@ public final class DefaultModels implements io.cortexj.Models {
                     "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
                     .detail("artifact", source.artifact().id());
         }
-        return platform.downloads().download(source, resolved.repository().value(),
-                resolved.revision(), cache, 0L);
+        return downloadOnce(source, resolved.repository().value(), resolved.revision(), cache);
     }
 
     private io.cortexj.spi.conversion.ModelConverter converterById(String converterId) {
