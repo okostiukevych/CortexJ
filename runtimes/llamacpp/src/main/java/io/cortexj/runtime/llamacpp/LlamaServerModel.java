@@ -40,14 +40,14 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     private static final int CONNECT_TIMEOUT = 15_000;
     private static final int READ_TIMEOUT = 300_000;
 
-    private final LlamaServerEndpoint endpoint;
+    private final SharedEndpointRegistry.SharedEndpoint endpoint;
     private final ExecutorService sseExecutor;
     private final boolean ownsExecutor;
     private final ObjectMapper mapper = new ObjectMapper();
     private final java.util.concurrent.atomic.AtomicBoolean closed =
             new java.util.concurrent.atomic.AtomicBoolean();
 
-    LlamaServerModel(LlamaServerEndpoint endpoint, ExecutorService executor) {
+    LlamaServerModel(SharedEndpointRegistry.SharedEndpoint endpoint, ExecutorService executor) {
         this.endpoint = endpoint;
         this.ownsExecutor = executor == null;
         this.sseExecutor = executor == null
@@ -328,7 +328,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            endpoint.stop();
+            endpoint.release();
             if (ownsExecutor) {
                 sseExecutor.shutdown();
             }
