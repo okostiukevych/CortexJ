@@ -58,7 +58,10 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         this.baseUrl = HttpJsonClient.trimSlash(baseUrl);
         this.apiKey = apiKey;
         this.ownsExecutor = executor == null;
-        this.executor = executor == null ? Executors.newFixedThreadPool(4) : executor;
+        this.executor = executor == null
+                ? Executors.newFixedThreadPool(4,
+                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-remote-io"))
+                : executor;
         this.eventListener = eventListener == null ? PlatformEventListener.NOOP : eventListener;
     }
 
