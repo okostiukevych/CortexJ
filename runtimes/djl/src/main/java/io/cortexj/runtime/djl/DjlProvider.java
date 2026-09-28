@@ -209,7 +209,8 @@ public final class DjlProvider implements RuntimeProvider {
 
         private final Model model;
         private final HfTokenizer.TokenEncoder tokenizer;
-        private volatile boolean closed;
+        private final java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean();
 
         DjlModel(Model model, HfTokenizer.TokenEncoder tokenizer) {
             this.model = model;
@@ -241,7 +242,7 @@ public final class DjlProvider implements RuntimeProvider {
 
         @Override
         public EmbeddingResponse embed(EmbeddingRequest request) {
-            if (closed) {
+            if (closed.get()) {
                 throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                         "model is closed", "Reopen the model handle.");
             }
@@ -298,10 +299,10 @@ public final class DjlProvider implements RuntimeProvider {
 
         @Override
         public void close() {
-            if (!closed) {
-                closed = true;
-                model.close();
+            if (!closed.compareAndSet(false, true)) {
+                return;
             }
+            model.close();
         }
     }
 }

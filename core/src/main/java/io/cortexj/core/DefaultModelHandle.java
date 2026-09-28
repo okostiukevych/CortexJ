@@ -32,7 +32,8 @@ public final class DefaultModelHandle implements ModelHandle {
     private final ReentrantLock sessionLock = new ReentrantLock();
     private final boolean serializeAccess;
 
-    private volatile ModelLifecycleState state = ModelLifecycleState.LOADING;
+    private final java.util.concurrent.atomic.AtomicReference<ModelLifecycleState> state =
+            new java.util.concurrent.atomic.AtomicReference<ModelLifecycleState>(ModelLifecycleState.LOADING);
     private volatile String fallbackNote;
 
     DefaultModelHandle(ModelDescriptor descriptor,
@@ -49,7 +50,7 @@ public final class DefaultModelHandle implements ModelHandle {
         this.candidate = candidate;
         this.serializeAccess = runtime != null
                 && runtimeSupportDescriptor() == io.cortexj.runtime.ThreadSafety.SESSION_SCOPED;
-        this.state = ModelLifecycleState.READY;
+        this.state.set(ModelLifecycleState.READY);
     }
 
     private io.cortexj.runtime.ThreadSafety runtimeSupportDescriptor() {
@@ -265,13 +266,14 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public ModelLifecycleState state() {
-        return state;
+        return state.get();
     }
 
     @Override
     public void waitForReady() throws InterruptedException {
-        if (state.isTerminal()) {
-            throw new IllegalStateException("Model handle is already " + state);
+        ModelLifecycleState current = state.get();
+        if (current.isTerminal()) {
+            throw new IllegalStateException("Model handle is already " + current);
         }
     }
 
@@ -315,19 +317,35 @@ public final class DefaultModelHandle implements ModelHandle {
     }
 
     private void transitionTo(ModelLifecycleState next) {
-        if (!state.canTransitionTo(next)) {
-            throw new IllegalStateException(
-                    "Illegal model lifecycle transition " + state + " -> " + next);
+        for (;;) {
+            ModelLifecycleState current = state.get();
+            if (!current.canTransitionTo(next)) {
+                throw new IllegalStateException(
+                        "Illegal model lifecycle transition " + current + " -> " + next);
+            }
+            if (state.compareAndSet(current, next)) {
+                return;
+            }
         }
-        state = next;
+    }
+
+    private boolean beginClose() {
+        for (;;) {
+            ModelLifecycleState current = state.get();
+            if (current == ModelLifecycleState.CLOSING || current.isTerminal()) {
+                return false;
+            }
+            if (state.compareAndSet(current, ModelLifecycleState.CLOSING)) {
+                return true;
+            }
+        }
     }
 
     @Override
     public void close() {
-        if (state == ModelLifecycleState.CLOSED) {
+        if (!beginClose()) {
             return;
         }
-        transitionTo(ModelLifecycleState.CLOSING);
         try {
             model.close();
         } catch (RuntimeException ignored) {
