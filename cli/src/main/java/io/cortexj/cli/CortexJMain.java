@@ -100,7 +100,7 @@ public final class CortexJMain {
         System.out.println("  cortexj cache clean                   remove all cached artifacts");
         System.out.println();
         System.out.println("Server mode (spec 60):");
-        System.out.println("  cortexj server <model> [--port <n>]   OpenAI-compatible local endpoint");
+        System.out.println("  cortexj server <model> [--port <n>] [--bind <addr>] [--auth <token>]");
         System.out.println();
         System.out.println("Conversion:");
         System.out.println("  cortexj convert <model> --to f16 --out <dir>  convert GGUF float width");
@@ -315,10 +315,24 @@ public final class CortexJMain {
         String model = args[1];
         String portOption = optionValue(args, "--port");
         int port = portOption == null ? 8080 : Integer.parseInt(portOption);
+        String bindOption = optionValue(args, "--bind");
+        if (bindOption != null) {
+            // explicit opt-in to listen beyond loopback (security default is 127.0.0.1)
+            System.setProperty("cortexj.server.bind", bindOption.trim());
+        }
+        String authOption = optionValue(args, "--auth");
+        if (authOption != null) {
+            System.setProperty("cortexj.server.auth", authOption.trim());
+        }
         io.cortexj.server.CortexJServer cortexjServer =
                 new io.cortexj.server.CortexJServer(platform, model);
         int bound = cortexjServer.start(port);
-        System.out.println("cortexj-server listening on http://127.0.0.1:" + bound);
+        System.out.println("cortexj-server listening on "
+                + (cortexjServer.boundAddress().getHostAddress()) + ":" + bound);
+        if (System.getProperty("cortexj.server.bind") != null) {
+            System.out.println("warning: server is exposed beyond loopback - set --auth <token> "
+                    + "to require bearer authentication");
+        }
         System.out.println("endpoints: /v1/models, /v1/chat/completions (stream), /v1/embeddings");
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override

@@ -37,6 +37,7 @@ public final class CortexJServer {
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final long streamAwaitMillis;
+    private final String authToken;
     private com.sun.net.httpserver.HttpServer httpServer;
     private java.util.concurrent.ExecutorService requestExecutor;
 
@@ -45,22 +46,55 @@ public final class CortexJServer {
     }
 
     public CortexJServer(CortexJ platform, String modelReference, long streamAwaitMillis) {
+        this(platform, modelReference, streamAwaitMillis, defaultAuthToken());
+    }
+
+    /**
+     * @param authToken optional bearer token enforced on every /v1/* route;
+     *                  when {@code null} no auth is required (loopback-only
+     *                  bind remains the network guard)
+     */
+    public CortexJServer(CortexJ platform, String modelReference, long streamAwaitMillis,
+                         String authToken) {
         this.platform = platform;
         this.model = platform.models().load(ModelReference.of(modelReference));
         this.streamAwaitMillis = streamAwaitMillis > 0 ? streamAwaitMillis : DEFAULT_STREAM_AWAIT_MILLIS;
+        this.authToken = authToken == null || authToken.trim().isEmpty() ? null : authToken.trim();
+    }
+
+    private static String defaultAuthToken() {
+        String env = System.getenv("CORTEXJ_SERVER_AUTH");
+        if (env != null && !env.trim().isEmpty()) {
+            return env.trim();
+        }
+        String property = System.getProperty("cortexj.server.auth");
+        return property == null || property.trim().isEmpty() ? null : property.trim();
     }
 
     public synchronized int start(int port) throws IOException {
         if (running.get()) {
             throw new IllegalStateException("server is already running");
         }
-        httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(port), 0);
+        // security default (audit H-10): loopback only; listening on all
+        // interfaces requires an explicit opt-in via -Dcortexj.server.bind=...
+        String bindAddress = System.getProperty("cortexj.server.bind");
+        InetSocketAddress address = bindAddress != null && !bindAddress.trim().isEmpty()
+                ? new InetSocketAddress(bindAddress.trim(), port)
+                : new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port);
+        httpServer = com.sun.net.httpserver.HttpServer.create(address, 0);
         requestExecutor = java.util.concurrent.Executors.newCachedThreadPool(
                 io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server"));
         httpServer.setExecutor(requestExecutor);
-        httpServer.createContext("/v1/models", exchange -> respondJson(exchange, 200,
-                modelsPayload()));
+        httpServer.createContext("/v1/models", exchange -> {
+            if (!authorized(exchange)) {
+                return;
+            }
+            respondJson(exchange, 200, modelsPayload());
+        });
         httpServer.createContext("/v1/chat/completions", exchange -> {
+            if (!authorized(exchange)) {
+                return;
+            }
             try {
                 handleChat(exchange);
             } catch (CortexJException failure) {
@@ -70,6 +104,9 @@ public final class CortexJServer {
             }
         });
         httpServer.createContext("/v1/embeddings", exchange -> {
+            if (!authorized(exchange)) {
+                return;
+            }
             try {
                 handleEmbeddings(exchange);
             } catch (CortexJException failure) {
@@ -99,6 +136,31 @@ public final class CortexJServer {
 
     public int port() {
         return httpServer == null ? -1 : httpServer.getAddress().getPort();
+    }
+
+    public java.net.InetAddress boundAddress() {
+        return httpServer == null ? null : httpServer.getAddress().getAddress();
+    }
+
+    private boolean authorized(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+        if (authToken == null) {
+            return true;
+        }
+        String header = exchange.getRequestHeaders().getFirst("Authorization");
+        if (header != null && header.startsWith("Bearer ")
+                && constantTimeEquals(header.substring(7).trim(), authToken)) {
+            return true;
+        }
+        exchange.getResponseHeaders().add("WWW-Authenticate", "Bearer realm=\"cortexj\"");
+        respondJson(exchange, 401, errorPayload("CORTEXJ-SERVER-4010",
+                "unauthorized: a valid bearer token is required"));
+        return false;
+    }
+
+    private static boolean constantTimeEquals(String left, String right) {
+        return java.security.MessageDigest.isEqual(
+                left.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                right.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private ObjectNode modelsPayload() {
@@ -320,14 +382,18 @@ public final class CortexJServer {
         }
     }
 
+    private ObjectNode errorPayload(String code, String message) {
+        ObjectNode payload = mapper.createObjectNode();
+        ObjectNode error = payload.putObject("error");
+        error.put("code", code);
+        error.put("message", message == null ? "unknown error" : message);
+        return payload;
+    }
+
     private void respondError(com.sun.net.httpserver.HttpExchange exchange, String code,
                              String message) {
         try {
-            ObjectNode payload = mapper.createObjectNode();
-            ObjectNode error = payload.putObject("error");
-            error.put("code", code);
-            error.put("message", message == null ? "unknown error" : message);
-            respondJson(exchange, 500, payload);
+            respondJson(exchange, 500, errorPayload(code, message));
         } catch (IOException ignored) {
             // client gone
         }
