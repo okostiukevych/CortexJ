@@ -30,15 +30,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class CortexJServer {
 
+    private static final long DEFAULT_STREAM_AWAIT_MILLIS = 120_000L;
+
     private final CortexJ platform;
     private final ModelHandle model;
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final long streamAwaitMillis;
     private com.sun.net.httpserver.HttpServer httpServer;
+    private java.util.concurrent.ExecutorService requestExecutor;
 
     public CortexJServer(CortexJ platform, String modelReference) {
+        this(platform, modelReference, DEFAULT_STREAM_AWAIT_MILLIS);
+    }
+
+    public CortexJServer(CortexJ platform, String modelReference, long streamAwaitMillis) {
         this.platform = platform;
         this.model = platform.models().load(ModelReference.of(modelReference));
+        this.streamAwaitMillis = streamAwaitMillis > 0 ? streamAwaitMillis : DEFAULT_STREAM_AWAIT_MILLIS;
     }
 
     public synchronized int start(int port) throws IOException {
@@ -46,6 +55,9 @@ public final class CortexJServer {
             throw new IllegalStateException("server is already running");
         }
         httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(port), 0);
+        requestExecutor = java.util.concurrent.Executors.newCachedThreadPool(
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server"));
+        httpServer.setExecutor(requestExecutor);
         httpServer.createContext("/v1/models", exchange -> respondJson(exchange, 200,
                 modelsPayload()));
         httpServer.createContext("/v1/chat/completions", exchange -> {
@@ -74,6 +86,10 @@ public final class CortexJServer {
     public synchronized void stop() {
         if (running.compareAndSet(true, false) && httpServer != null) {
             httpServer.stop(0);
+        }
+        if (requestExecutor != null) {
+            requestExecutor.shutdownNow();
+            requestExecutor = null;
         }
     }
 
@@ -201,7 +217,7 @@ public final class CortexJServer {
                 }
             });
             // hold the exchange open until the stream terminates
-            finished.await(10, java.util.concurrent.TimeUnit.MINUTES);
+            finished.await(streamAwaitMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
