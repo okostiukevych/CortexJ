@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -159,11 +160,21 @@ class DownloadManagerTest {
 
         io.cortexj.model.Checksum wrong = io.cortexj.model.Checksum.sha256(
                 sha256Hex(payload("expected-different")));
-        assertThrows(ArtifactIntegrityException.class, () -> manager.download(
-                resolvedArtifact("model.gguf", bytes.length, wrong,
-                        URI.create("http://127.0.0.1:" + port + "/bad/model.gguf")),
-                "test-repo", "rev1", cache, 0L));
-        assertTrue(tempDir.toAbsolutePath().toString().length() > 0);
+        ArtifactIntegrityException exception = assertThrows(ArtifactIntegrityException.class,
+                () -> manager.download(
+                        resolvedArtifact("model.gguf", bytes.length, wrong,
+                                URI.create("http://127.0.0.1:" + port + "/bad/model.gguf")),
+                        "test-repo", "rev1", cache, 0L));
+        assertEquals("CORTEXJ-ARTIFACT-2003", exception.code(),
+                "tampered bytes must fail with the integrity error");
+        assertFalse(cache.contains("test-repo", "rev1", "model.gguf"),
+                "nothing may be cached for a tampered download");
+        assertEquals(null, cache.get("test-repo", "rev1", "model.gguf", wrong));
+        try (java.nio.file.DirectoryStream<Path> leftovers = java.nio.file.Files.newDirectoryStream(
+                cache.root(), "*.part-*")) {
+            assertFalse(leftovers.iterator().hasNext(),
+                    "no partial files may remain after a rejected download");
+        }
     }
 
     @Test

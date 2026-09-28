@@ -128,17 +128,40 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                 continue;
             }
             long size = sibling.path("size").asLong(0L);
-            if (size <= 0 && sibling.has("blob")) {
-                size = sibling.path("blob").asLong(0L);
+            io.cortexj.model.Checksum checksum = null;
+            JsonNode blob = sibling.path("blob");
+            if (blob.isObject()) {
+                if (size <= 0) {
+                    size = blob.path("size").asLong(0L);
+                }
+                String sha256 = blob.path("sha256").asText(null);
+                if (sha256 != null && !sha256.trim().isEmpty()) {
+                    checksum = io.cortexj.model.Checksum.sha256(sha256);
+                }
+            } else if (size <= 0 && sibling.has("blob")) {
+                size = blob.asLong(0L);
+            }
+            if (checksum == null) {
+                JsonNode lfs = sibling.path("lfs");
+                if (lfs.isObject()) {
+                    String sha256 = lfs.path("sha256").asText(null);
+                    if (sha256 != null && !sha256.trim().isEmpty()) {
+                        checksum = io.cortexj.model.Checksum.sha256(sha256);
+                        if (size <= 0) {
+                            size = lfs.path("size").asLong(0L);
+                        }
+                    }
+                }
             }
             String quantization = io.cortexj.model.descriptor.DescriptorEnricher.quantizationFromFileName(fileName);
             Map<String, String> metadata = new LinkedHashMap<String, String>();
             if (quantization != null) {
                 metadata.put("quantization", quantization);
             }
+            metadata.put("integrity", checksum != null ? "sha256-verified" : "unverified");
             String downloadUrl = apiBase + "/" + slug + "/resolve/" + (revision == null ? "main" : revision) + "/" + fileName;
 
-            HfArtifact artifact = new HfArtifact(canonicalId + "/" + fileName, format, size, null, metadata);
+            HfArtifact artifact = new HfArtifact(canonicalId + "/" + fileName, format, size, checksum, metadata);
             Map<String, String> headers = new LinkedHashMap<String, String>();
             artifacts.add(new HfResolvedArtifact(artifact, URI.create(downloadUrl), headers));
         }
