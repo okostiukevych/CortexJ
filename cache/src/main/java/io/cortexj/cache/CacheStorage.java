@@ -65,24 +65,86 @@ public final class CacheStorage {
         if (!Files.isRegularFile(path)) {
             return null;
         }
-        if (expectedChecksum != null) {
-            try {
-                if (!Checksums.verify(path, expectedChecksum.algorithm(), expectedChecksum.value())) {
-                    Files.deleteIfExists(path);
-                    ArtifactIntegrityException failure = new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
-                            "Cached artifact failed checksum validation and was removed: " + artifactId,
-                            "The cache entry was corrupted; retry the download.");
-                    failure.detail("artifact", artifactId);
-                    failure.detail("expected", expectedChecksum.value());
-                    throw failure;
-                }
-            } catch (IOException e) {
-                throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
-                        "Cannot validate cached artifact " + artifactId + ": " + e.getMessage(), e);
-            }
+        if (expectedChecksum != null && !manifestMatches(path, expectedChecksum)) {
+            verifyFullyAndRecord(path, repositoryId, revision, artifactId, expectedChecksum);
         }
         touch(path);
         return path;
+    }
+
+    /**
+     * On-demand paranoid verification: always reads and hashes the full file,
+     * regardless of the cache manifest. The normal get() path trusts the
+     * manifest recorded at put() time (verify-once-then-trust, audit H-13) and
+     * only re-hashes when the manifest does not match the expected checksum or
+     * the file size drifted - this method is the explicit escape hatch.
+     */
+    public void verifyIntegrity(String repositoryId, String revision, String artifactId,
+                                Checksum expectedChecksum) {
+        Path path = artifactPath(repositoryId, revision, artifactId);
+        if (!Files.isRegularFile(path)) {
+            throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                    "Cached artifact does not exist: " + artifactId,
+                    "Download the artifact before verifying it.");
+        }
+        verifyFullyAndRecord(path, repositoryId, revision, artifactId, expectedChecksum);
+    }
+
+    private void verifyFullyAndRecord(Path path, String repositoryId, String revision,
+                                     String artifactId, Checksum expectedChecksum) {
+        try {
+            if (!Checksums.verify(path, expectedChecksum.algorithm(), expectedChecksum.value())) {
+                Files.deleteIfExists(path);
+                ArtifactIntegrityException failure = new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                        "Cached artifact failed checksum validation and was removed: " + artifactId,
+                        "The cache entry was corrupted; retry the download.");
+                failure.detail("artifact", artifactId);
+                failure.detail("expected", expectedChecksum.value());
+                throw failure;
+            }
+        } catch (IOException e) {
+            throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                    "Cannot validate cached artifact " + artifactId + ": " + e.getMessage(), e);
+        }
+        // verified now: record it so subsequent gets skip the full-file hash
+        try {
+            writeManifest(path, repositoryId, revision, artifactId, expectedChecksum, Files.size(path));
+        } catch (IOException ignored) {
+            // manifest is an optimization; a missing manifest just means re-verify next time
+        }
+    }
+
+    /**
+     * Verify-once-then-trust check (audit H-13): the artifact was hashed when it
+     * was written (put() verifies before the atomic move) and the manifest
+     * recorded the checksum and size. A cheap manifest+size comparison replaces
+     * re-reading and re-hashing a 10 GB file on every cache hit.
+     */
+    private boolean manifestMatches(Path path, Checksum expectedChecksum) {
+        Path manifestPath = path.resolveSibling(path.getFileName() + ".manifest");
+        if (!Files.isRegularFile(manifestPath)) {
+            return false;
+        }
+        Properties manifest = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(manifestPath)) {
+            manifest.load(in);
+        } catch (IOException e) {
+            return false;
+        }
+        if (!expectedChecksum.value().equals(manifest.getProperty("checksum", ""))) {
+            return false;
+        }
+        long recordedSize;
+        try {
+            recordedSize = Long.parseLong(manifest.getProperty("sizeBytes", "-1"));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        try {
+            return recordedSize == Files.size(path);
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     public Path put(String repositoryId, String revision, String artifactId, Checksum expectedChecksum, InputStream content) throws IOException {
