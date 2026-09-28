@@ -7,17 +7,36 @@ import java.util.concurrent.TimeUnit;
 
 final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
 
+    interface ProcessStarter {
+
+        Process start(ProcessBuilder builder) throws IOException;
+    }
+
     private final String serverBinary;
     private final long startupTimeoutMillis;
     private final io.cortexj.observability.PlatformEventListener eventListener;
+    private final ProcessStarter processStarter;
 
     ProcessLlamaServerLauncher(String serverBinary,
                                 long startupTimeoutMillis,
                                 io.cortexj.observability.PlatformEventListener eventListener) {
+        this(serverBinary, startupTimeoutMillis, eventListener, new ProcessStarter() {
+            @Override
+            public Process start(ProcessBuilder builder) throws IOException {
+                return builder.start();
+            }
+        });
+    }
+
+    ProcessLlamaServerLauncher(String serverBinary,
+                                long startupTimeoutMillis,
+                                io.cortexj.observability.PlatformEventListener eventListener,
+                                ProcessStarter processStarter) {
         this.serverBinary = serverBinary;
         this.startupTimeoutMillis = startupTimeoutMillis;
         this.eventListener = eventListener == null
                 ? io.cortexj.observability.PlatformEventListener.NOOP : eventListener;
+        this.processStarter = processStarter;
     }
 
     @Override
@@ -32,7 +51,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
                 "--host", "127.0.0.1",
                 "--port", String.valueOf(port));
         builder.redirectErrorStream(true);
-        final Process process = builder.start();
+        final Process process = processStarter.start(builder);
 
         Thread drain = new Thread(new Runnable() {
             @Override
@@ -56,18 +75,11 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
             LlamaServerLauncher.awaitHealthy(baseUrl, startupTimeoutMillis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            process.destroy();
+            killProcess(process);
             throw new IOException("interrupted while waiting for llama-server to start");
         } catch (IOException unhealthy) {
-            process.destroy();
-            boolean exited;
-            try {
-                exited = process.waitFor(3, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                exited = false;
-            }
-            if (exited || !isAlive(process)) {
+            killProcess(process);
+            if (!isAlive(process)) {
                 throw new IOException("llama-server exited during startup (exit code "
                         + exitCode(process) + "); check the model file and llama.cpp build: "
                         + unhealthy.getMessage());
@@ -93,18 +105,22 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
 
             @Override
             public void stop() {
-                process.destroy();
-                try {
-                    if (!process.waitFor(10, TimeUnit.SECONDS)) {
-                        process.destroyForcibly();
-                        process.waitFor(5, TimeUnit.SECONDS);
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    process.destroyForcibly();
-                }
+                killProcess(process);
             }
         };
+    }
+
+    private static void killProcess(Process process) {
+        process.destroy();
+        try {
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
     }
 
     private static boolean isAlive(Process process) {
