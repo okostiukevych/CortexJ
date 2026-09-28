@@ -10,6 +10,9 @@ import java.util.List;
 
 public final class EventBus {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(EventBus.class.getName());
+
     private final List<PlatformEventListener> listeners = new CopyOnWriteArrayList<PlatformEventListener>();
 
     public EventBus(List<PlatformEventListener> registered) {
@@ -26,12 +29,7 @@ public final class EventBus {
                 ? new LinkedHashMap<String, String>()
                 : new LinkedHashMap<String, String>(attributes);
         PlatformEvent event = new PlatformEvent(type, level, message, safeAttributes, System.currentTimeMillis());
-        for (PlatformEventListener listener : listeners) {
-            try {
-                listener.onEvent(event);
-            } catch (RuntimeException ignored) {
-            }
-        }
+        dispatch(event);
     }
 
     public void info(PlatformEvent.Type type, String message) {
@@ -50,10 +48,19 @@ public final class EventBus {
         return new PlatformEventListener() {
             @Override
             public void onEvent(PlatformEvent event) {
-                for (PlatformEventListener listener : listeners) {
-                    listener.onEvent(event);
-                }
+                dispatch(event);
             }
         };
+    }
+
+    private void dispatch(PlatformEvent event) {
+        for (PlatformEventListener listener : listeners) {
+            try {
+                listener.onEvent(event);
+            } catch (RuntimeException failure) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "event listener threw on " + event.type() + "; isolated", failure);
+            }
+        }
     }
 }
