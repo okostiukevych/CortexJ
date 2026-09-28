@@ -34,6 +34,8 @@ public final class DefaultCortexJ implements CortexJ {
     private final List<ModelRepositoryProvider> repositoryProviders;
     private final List<io.cortexj.spi.conversion.ModelConverter> converters;
     private final io.cortexj.cache.CacheStorage cache;
+    private final java.util.concurrent.atomic.AtomicBoolean platformClosed =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private final io.cortexj.core.download.DownloadManager downloadManager;
     private final io.cortexj.planner.internal.DefaultExecutionPlanner planner;
     private final io.cortexj.core.DefaultModels models;
@@ -243,6 +245,9 @@ public final class DefaultCortexJ implements CortexJ {
 
     @Override
     public void close() {
+        if (!platformClosed.compareAndSet(false, true)) {
+            return;
+        }
         models.closeAll();
         events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
         shutdownExecutor(ownsExecutor ? ioExecutor : null);

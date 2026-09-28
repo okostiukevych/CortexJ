@@ -36,6 +36,9 @@ public final class DefaultModels implements io.cortexj.Models {
     private final List<DefaultModelHandle> openHandles = new CopyOnWriteArrayList<DefaultModelHandle>();
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightDownloads =
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>>();
+    private final java.util.concurrent.locks.ReentrantReadWriteLock loadLock =
+            new java.util.concurrent.locks.ReentrantReadWriteLock();
+    private volatile boolean closed;
 
     DefaultModels(DefaultCortexJ platform) {
         this.platform = platform;
@@ -48,7 +51,17 @@ public final class DefaultModels implements io.cortexj.Models {
 
     @Override
     public ModelHandle load(ExecutionRequest request) {
-        return loadWithFallbacks(request);
+        loadLock.readLock().lock();
+        try {
+            if (closed) {
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Model load rejected: the CortexJ platform is closed.",
+                        "Create a new CortexJ instance to load models after shutdown.");
+            }
+            return loadWithFallbacks(request);
+        } finally {
+            loadLock.readLock().unlock();
+        }
     }
 
     private ModelHandle loadWithFallbacks(ExecutionRequest request) {
@@ -462,13 +475,19 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     void closeAll() {
-        for (DefaultModelHandle handle : openHandles) {
-            try {
-                handle.close();
-            } catch (RuntimeException ignored) {
+        loadLock.writeLock().lock();
+        try {
+            closed = true;
+            for (DefaultModelHandle handle : openHandles) {
+                try {
+                    handle.close();
+                } catch (RuntimeException ignored) {
+                }
             }
+            openHandles.clear();
+        } finally {
+            loadLock.writeLock().unlock();
         }
-        openHandles.clear();
     }
 
     void unregister(DefaultModelHandle handle) {
