@@ -22,6 +22,7 @@ public final class Java8PlatformModule implements PlatformModule {
     @Override
     public java.util.concurrent.ExecutorService createIoExecutor() {
         return java.util.concurrent.Executors.newFixedThreadPool(
-                Math.max(2, Runtime.getRuntime().availableProcessors()));
+                Math.max(8, Runtime.getRuntime().availableProcessors() * 2),
+                PlatformModule.daemonThreadFactory("cortexj-io"));
     }
 }

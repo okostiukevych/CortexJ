@@ -39,6 +39,7 @@ public final class DefaultCortexJ implements CortexJ {
     private final io.cortexj.core.DefaultModels models;
     private final ExecutorService ioExecutor;
     private final boolean ownsExecutor;
+    private final ExecutorService asyncExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
         this.configuration = configuration;
@@ -84,6 +85,9 @@ public final class DefaultCortexJ implements CortexJ {
             this.ioExecutor = platformModule.createIoExecutor();
             this.ownsExecutor = true;
         }
+        this.asyncExecutor = java.util.concurrent.Executors.newFixedThreadPool(
+                Math.max(2, Runtime.getRuntime().availableProcessors()),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"));
 
         this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
                 resolved.proxyHost, resolved.proxyPort);
@@ -148,6 +152,10 @@ public final class DefaultCortexJ implements CortexJ {
 
     ExecutorService executor() {
         return ioExecutor;
+    }
+
+    ExecutorService asyncExecutor() {
+        return asyncExecutor;
     }
 
     List<RuntimeProvider> runtimeProviders() {
@@ -237,16 +245,22 @@ public final class DefaultCortexJ implements CortexJ {
     public void close() {
         models.closeAll();
         events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
-        if (ownsExecutor) {
-            ioExecutor.shutdown();
-            try {
-                if (!ioExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    ioExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                ioExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
+        shutdownExecutor(ownsExecutor ? ioExecutor : null);
+        shutdownExecutor(asyncExecutor);
+    }
+
+    private static void shutdownExecutor(ExecutorService executor) {
+        if (executor == null) {
+            return;
+        }
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
             }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 }
