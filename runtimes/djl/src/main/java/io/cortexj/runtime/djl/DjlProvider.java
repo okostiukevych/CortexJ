@@ -211,6 +211,8 @@ public final class DjlProvider implements RuntimeProvider {
         private final HfTokenizer.TokenEncoder tokenizer;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        // guards native predictor use against close() (TOCTOU fix, audit H-1)
+        private final Object nativeSessionLock = new Object();
 
         DjlModel(Model model, HfTokenizer.TokenEncoder tokenizer) {
             this.model = model;
@@ -259,26 +261,32 @@ public final class DjlProvider implements RuntimeProvider {
             for (int i = 0; i < ids.length; i++) {
                 longIds[i] = ids[i];
             }
-            try (NDManager manager = model.getNDManager().newSubManager()) {
-                NDArray input = manager.create(longIds, new ai.djl.ndarray.types.Shape(1, longIds.length));
-                input.setName("input_ids");
-                NDList inputList = new NDList(input);
-                try (ai.djl.inference.Predictor<NDList, NDList> predictor =
-                             model.newPredictor(new NoopTranslator())) {
-                    NDList output = predictor.predict(inputList);
-                    NDArray embedding = output.get(0);
-                    float[] flat = embedding.toFloatArray();
-                    long[] shape = embedding.getShape().getShape();
-                    int dimension = shape.length >= 2 ? (int) shape[1] : (int) shape[0];
-                    return meanPool(flat, dimension);
+            synchronized (nativeSessionLock) {
+                if (closed.get()) {
+                    throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "model is closed", "Reopen the model handle.");
                 }
-            } catch (InferenceException e) {
-                throw e;
-            } catch (Exception e) {
-                InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
-                        "DJL inference failed: " + e.getMessage(), e);
-                failure.detail("runtime", id.value());
-                throw failure;
+                try (NDManager manager = model.getNDManager().newSubManager()) {
+                    NDArray input = manager.create(longIds, new ai.djl.ndarray.types.Shape(1, longIds.length));
+                    input.setName("input_ids");
+                    NDList inputList = new NDList(input);
+                    try (ai.djl.inference.Predictor<NDList, NDList> predictor =
+                                 model.newPredictor(new NoopTranslator())) {
+                        NDList output = predictor.predict(inputList);
+                        NDArray embedding = output.get(0);
+                        float[] flat = embedding.toFloatArray();
+                        long[] shape = embedding.getShape().getShape();
+                        int dimension = shape.length >= 2 ? (int) shape[1] : (int) shape[0];
+                        return meanPool(flat, dimension);
+                    }
+                } catch (InferenceException e) {
+                    throw e;
+                } catch (Exception e) {
+                    InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "DJL inference failed: " + e.getMessage(), e);
+                    failure.detail("runtime", id.value());
+                    throw failure;
+                }
             }
         }
 
@@ -302,7 +310,9 @@ public final class DjlProvider implements RuntimeProvider {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            model.close();
+            synchronized (nativeSessionLock) {
+                model.close();
+            }
         }
     }
 }
