@@ -42,6 +42,40 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     private final ObjectMapper mapper = new ObjectMapper();
     private final String apiBase;
     private final TokenSupplier defaultTokenSupplier;
+    // short-TTL metadata cache (audit H-14): repeated plan()/load() of the
+    // same reference must not pay a blocking HF API round-trip every time
+    private final java.util.concurrent.ConcurrentHashMap<String, CachedMetadata> metadataCache =
+            new java.util.concurrent.ConcurrentHashMap<String, CachedMetadata>();
+
+    private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
+    private static final String METADATA_TTL_PROPERTY = "cortexj.hf.metadata.ttlMillis";
+
+    private static final class CachedMetadata {
+        final JsonNode node;
+        final long fetchedAtMillis;
+
+        CachedMetadata(JsonNode node, long fetchedAtMillis) {
+            this.node = node;
+            this.fetchedAtMillis = fetchedAtMillis;
+        }
+    }
+
+    private static long metadataTtlMillis() {
+        String property = System.getProperty(METADATA_TTL_PROPERTY);
+        if (property != null && !property.trim().isEmpty()) {
+            try {
+                return Long.parseLong(property.trim());
+            } catch (NumberFormatException ignored) {
+                // fall back to the default
+            }
+        }
+        return DEFAULT_METADATA_TTL_MILLIS;
+    }
+
+    /** Explicit invalidation: drops all cached HF metadata (next resolve refetches). */
+    public void invalidateCachedMetadata() {
+        metadataCache.clear();
+    }
 
     public HuggingFaceRepositoryProvider() {
         this(DEFAULT_API_BASE, null);
@@ -175,6 +209,21 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     }
 
     private JsonNode fetchModelInfo(String slug, String token) {
+        long ttl = metadataTtlMillis();
+        if (ttl > 0) {
+            CachedMetadata cached = metadataCache.get(slug);
+            if (cached != null && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
+                return cached.node;
+            }
+        }
+        JsonNode response = fetchModelInfoFromApi(slug, token);
+        if (ttl > 0) {
+            metadataCache.put(slug, new CachedMetadata(response, System.currentTimeMillis()));
+        }
+        return response;
+    }
+
+    private JsonNode fetchModelInfoFromApi(String slug, String token) {
         HttpURLConnection connection = null;
         try {
             URL url = new URL(apiBase + "/api/models/" + slug + "?blobs=true");
