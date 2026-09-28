@@ -31,6 +31,7 @@ public final class LlamaCppProvider implements RuntimeProvider {
 
     private final LlamaServerLauncher launcher;
     private final LlamaServerLauncher overrideLauncher;
+    private final SharedEndpointRegistry sharedEndpoints = new SharedEndpointRegistry();
 
     public LlamaCppProvider() {
         this.launcher = null;
@@ -230,7 +231,9 @@ public final class LlamaCppProvider implements RuntimeProvider {
                 throw failure;
             }
             try {
-                LlamaServerEndpoint endpoint = launcher.launch(artifactPath);
+                SharedEndpointRegistry.SharedEndpoint endpoint =
+                        sharedEndpoints.acquire(artifactPath.toAbsolutePath().toString(),
+                                launcher, artifactPath);
                 return new LlamaServerModel(endpoint, executor);
             } catch (java.io.IOException e) {
                 io.cortexj.error.ModelLoadException failure = new io.cortexj.error.ModelLoadException(
