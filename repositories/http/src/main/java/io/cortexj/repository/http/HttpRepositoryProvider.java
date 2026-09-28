@@ -27,8 +27,41 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
 
     private static final int CONNECT_TIMEOUT = 15_000;
     private static final int READ_TIMEOUT = 30_000;
+    private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
+    private static final String METADATA_TTL_PROPERTY = "cortexj.http.metadata.ttlMillis";
 
     private final RepositoryId id = RepositoryId.of("http");
+    // short-TTL HEAD cache (audit H-14): repeated resolve() of the same URL
+    // must not pay a blocking HEAD round-trip every time
+    private final java.util.concurrent.ConcurrentHashMap<String, CachedHead> headCache =
+            new java.util.concurrent.ConcurrentHashMap<String, CachedHead>();
+
+    private static final class CachedHead {
+        final HeadInfo info;
+        final long fetchedAtMillis;
+
+        CachedHead(HeadInfo info, long fetchedAtMillis) {
+            this.info = info;
+            this.fetchedAtMillis = fetchedAtMillis;
+        }
+    }
+
+    private static long metadataTtlMillis() {
+        String property = System.getProperty(METADATA_TTL_PROPERTY);
+        if (property != null && !property.trim().isEmpty()) {
+            try {
+                return Long.parseLong(property.trim());
+            } catch (NumberFormatException ignored) {
+                // fall back to the default
+            }
+        }
+        return DEFAULT_METADATA_TTL_MILLIS;
+    }
+
+    /** Explicit invalidation: drops all cached HEAD metadata (next resolve refetches). */
+    public void invalidateCachedMetadata() {
+        headCache.clear();
+    }
 
     @Override
     public RepositoryId id() {
@@ -48,7 +81,7 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         if (context.isOffline()) {
             throw offline(url);
         }
-        HeadInfo head = head(url);
+        HeadInfo head = resolveHead(url);
         String fileName = fileNameOf(url);
         ArtifactFormat format = ArtifactFormat.fromFileName(fileName);
         Map<String, String> metadata = new LinkedHashMap<String, String>();
@@ -71,6 +104,21 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
                 new SimpleResolvedArtifact(artifact, java.net.URI.create(url),
                         Collections.<String, String>emptyMap()));
         return new ResolvedModel(descriptor, head.revision, id, artifacts);
+    }
+
+    private HeadInfo resolveHead(String url) {
+        long ttl = metadataTtlMillis();
+        if (ttl > 0) {
+            CachedHead cached = headCache.get(url);
+            if (cached != null && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
+                return cached.info;
+            }
+        }
+        HeadInfo fresh = head(url);
+        if (ttl > 0) {
+            headCache.put(url, new CachedHead(fresh, System.currentTimeMillis()));
+        }
+        return fresh;
     }
 
     private static ModelResolutionException offline(String url) {
