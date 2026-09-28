@@ -311,7 +311,7 @@ public final class DefaultModelHandle implements ModelHandle {
                 public InferenceResponse get() {
                     return execute(request);
                 }
-            }, platform.executor());
+            }, platform.asyncExecutor());
         }
         return model.executeAsync(request);
     }
