@@ -170,14 +170,37 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             requireOpen("stream");
             final Map<String, Object> payload = generationPayload(request, true);
             final io.cortexj.stream.internal.TokenStreamPublisher publisher = new io.cortexj.stream.internal.TokenStreamPublisher();
+            // audit H-4: per-stream cancel plumbing - the cancel action wired into
+            // the publisher disconnects the in-flight connection so the worker
+            // stops reading (and the remote endpoint stops billing) immediately
+            final java.util.concurrent.atomic.AtomicBoolean cancelled =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            final java.util.concurrent.atomic.AtomicReference<HttpURLConnection> activeConnection =
+                    new java.util.concurrent.atomic.AtomicReference<HttpURLConnection>();
+            publisher.onCancel(new Runnable() {
+                @Override
+                public void run() {
+                    cancelled.set(true);
+                    HttpURLConnection connection = activeConnection.get();
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
+                }
+            });
             final Runnable worker = new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        streamSse(publisher, payload);
+                        streamSse(publisher, payload, cancelled, activeConnection);
                     } catch (final io.cortexj.error.CortexJException e) {
+                        if (cancelled.get()) {
+                            return;
+                        }
                         publisher.fail(e);
                     } catch (final Exception e) {
+                        if (cancelled.get()) {
+                            return;
+                        }
                         publisher.fail(new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
                                 "remote stream failed: " + e.getMessage(), e));
                     }
@@ -191,9 +214,12 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             return publisher.stream();
         }
 
-        private void streamSse(io.cortexj.stream.internal.TokenStreamPublisher publisher, Map<String, Object> payload) throws IOException {
+        private void streamSse(io.cortexj.stream.internal.TokenStreamPublisher publisher, Map<String, Object> payload,
+                               java.util.concurrent.atomic.AtomicBoolean cancelled,
+                               java.util.concurrent.atomic.AtomicReference<HttpURLConnection> activeConnection) throws IOException {
             URL url = new URL(baseUrl + "/v1/chat/completions");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            activeConnection.set(connection);
             try {
                 connection.setRequestMethod("POST");
                 connection.setConnectTimeout(30_000);
@@ -219,20 +245,22 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                             "Check the remote endpoint health and model id.")
                             .detail("status", String.valueOf(status));
                 }
-                readSseStream(connection.getInputStream(), publisher);
+                readSseStream(connection.getInputStream(), publisher, cancelled);
             } finally {
+                activeConnection.set(null);
                 connection.disconnect();
             }
         }
 
-        private void readSseStream(InputStream stream, io.cortexj.stream.internal.TokenStreamPublisher publisher) throws IOException {
+        private void readSseStream(InputStream stream, io.cortexj.stream.internal.TokenStreamPublisher publisher,
+                                   java.util.concurrent.atomic.AtomicBoolean cancelled) throws IOException {
             BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
             StringBuilder content = new StringBuilder();
             String line;
             FinishReason finish = FinishReason.STOP;
             long inputTokens = -1;
             long outputTokens = -1;
-            while ((line = reader.readLine()) != null) {
+            while (!cancelled.get() && (line = reader.readLine()) != null) {
                 if (line.isEmpty()) {
                     continue;
                 }
@@ -260,6 +288,10 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 }
             }
             reader.close();
+            if (cancelled.get()) {
+                // deliberately cancelled: no terminal delivery, stop billing/reading
+                return;
+            }
             publisher.complete(finish, inputTokens, outputTokens);
         }
 
