@@ -388,6 +388,75 @@ class CortexJServerTest {
         }
     }
 
+    @Test
+    void shutdownHookSequenceStopsServerThenClosesPlatform() throws Exception {
+        final java.util.concurrent.atomic.AtomicInteger platformCloses =
+                new java.util.concurrent.atomic.AtomicInteger();
+        CortexJ countingPlatform = new CortexJ() {
+            @Override
+            public Models models() {
+                return new Models() {
+                    @Override
+                    public ModelHandle load(ModelReference reference) {
+                        return new FakeModelHandle();
+                    }
+
+                    @Override
+                    public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
+                        return new FakeModelHandle();
+                    }
+                };
+            }
+
+            @Override
+            public io.cortexj.planner.Planner planner() {
+                return null;
+            }
+
+            @Override
+            public io.cortexj.diagnostics.Support support() {
+                return null;
+            }
+
+            @Override
+            public io.cortexj.hardware.EnvironmentProfile environment() {
+                return null;
+            }
+
+            @Override
+            public io.cortexj.hardware.HardwareProfile hardware() {
+                return null;
+            }
+
+            @Override
+            public List<io.cortexj.runtime.RuntimeDescriptor> runtimes() {
+                return new ArrayList<io.cortexj.runtime.RuntimeDescriptor>();
+            }
+
+            @Override
+            public List<io.cortexj.runtime.RuntimeHealthReport> runtimeHealth() {
+                return new ArrayList<io.cortexj.runtime.RuntimeHealthReport>();
+            }
+
+            @Override
+            public String platformModule() {
+                return "cortexj-core";
+            }
+
+            @Override
+            public void close() {
+                platformCloses.incrementAndGet();
+            }
+        };
+        CortexJServer server = new CortexJServer(countingPlatform, "server/test-model");
+        Thread hook = io.cortexj.server.CortexJServerMain.shutdownHook(server, countingPlatform);
+        hook.start();
+        hook.join(5_000);
+        assertEquals(1, platformCloses.get(),
+                "the shutdown hook must close the platform (and thereby model handles and any "
+                        + "llama-server process) on SIGTERM/SIGINT - not just the HTTP layer");
+        assertTrue(!server.isRunning(), "the shutdown hook must stop the HTTP server too");
+    }
 
     private ModelHandle hangingStreamHandle() {
         return new ModelHandle() {

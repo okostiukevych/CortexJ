@@ -31,17 +31,22 @@ public final class CortexJServerMain {
             int bound = server.start(port);
             System.out.println("cortexj-server listening on http://127.0.0.1:" + bound
                     + " (model: " + modelReference + ")");
-            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    server.stop();
-                }
-            }));
+            Runtime.getRuntime().addShutdownHook(shutdownHook(server, platform));
             CountDownLatch keepAlive = new CountDownLatch(1);
             keepAlive.await();
         } finally {
             platform.close();
         }
+    }
+
+    public static Thread shutdownHook(final CortexJServer server, final CortexJ platform) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                server.stop();
+                platform.close();
+            }
+        });
     }
 
     private CortexJServerMain() {
