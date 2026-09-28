@@ -60,8 +60,12 @@ public final class DefaultExecutionPlanner implements Planner {
     private final MemoryEstimator memoryEstimator;
     private final List<HardConstraint> constraints;
     private final List<ScoringRules.ScoringRule> scoringRules;
-    private final java.util.Map<String, io.cortexj.spi.runtime.RuntimeProbeResult> probeCache =
-            new java.util.concurrent.ConcurrentHashMap<String, io.cortexj.spi.runtime.RuntimeProbeResult>();
+    private static final long DEFAULT_POSITIVE_PROBE_TTL_MILLIS = 60_000L;
+    private static final long DEFAULT_NEGATIVE_PROBE_TTL_MILLIS = 10_000L;
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<CachedProbe>> probeFutures =
+            new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<CachedProbe>>();
+    private volatile long positiveProbeTtlMillis = DEFAULT_POSITIVE_PROBE_TTL_MILLIS;
+    private volatile long negativeProbeTtlMillis = DEFAULT_NEGATIVE_PROBE_TTL_MILLIS;
 
     public DefaultExecutionPlanner(PlannerInputs inputs) {
         this.inputs = inputs;
@@ -404,10 +408,46 @@ public final class DefaultExecutionPlanner implements Planner {
 
     private RuntimeProbeResult probeCached(RuntimeProvider provider) {
         String key = provider.id().value();
-        io.cortexj.spi.runtime.RuntimeProbeResult cached = probeCache.get(key);
-        if (cached != null) {
-            return cached;
+        for (int attempt = 0; attempt < 4; attempt++) {
+            long now = System.currentTimeMillis();
+            java.util.concurrent.CompletableFuture<CachedProbe> seen = probeFutures.get(key);
+            if (seen != null) {
+                CachedProbe cached = seen.getNow(null);
+                if (cached != null && now < cached.expiresAtMillis) {
+                    return cached.result;
+                }
+            }
+            java.util.concurrent.CompletableFuture<CachedProbe> claim =
+                    new java.util.concurrent.CompletableFuture<CachedProbe>();
+            java.util.concurrent.CompletableFuture<CachedProbe> racing = probeFutures.putIfAbsent(key, claim);
+            if (racing == null) {
+                boolean completed = false;
+                try {
+                    CachedProbe probed = probeOnce(provider);
+                    claim.complete(probed);
+                    completed = true;
+                    return probed.result;
+                } finally {
+                    if (!completed) {
+                        claim.completeExceptionally(new IllegalStateException(
+                                "probe aborted for " + key));
+                        probeFutures.remove(key, claim);
+                    }
+                }
+            }
+            CachedProbe cached = racing.getNow(null);
+            if (cached == null) {
+                return awaitProbeResult(provider, key, racing);
+            }
+            if (now < cached.expiresAtMillis) {
+                return cached.result;
+            }
+            probeFutures.remove(key, racing);
         }
+        return probeOnce(provider).result;
+    }
+
+    private CachedProbe probeOnce(RuntimeProvider provider) {
         RuntimeProbeResult result;
         try {
             result = provider.probe(new RuntimeProbeContext(
@@ -416,8 +456,44 @@ public final class DefaultExecutionPlanner implements Planner {
             result = io.cortexj.spi.runtime.RuntimeProbeResult.unavailable(
                     "probe threw: " + probeFailure.getMessage());
         }
-        probeCache.put(key, result);
-        return result;
+        long ttl = result.isUsable() ? positiveProbeTtlMillis : negativeProbeTtlMillis;
+        return new CachedProbe(result, System.currentTimeMillis() + ttl);
+    }
+
+    private RuntimeProbeResult awaitProbeResult(RuntimeProvider provider, String key,
+                                                java.util.concurrent.CompletableFuture<CachedProbe> inFlight) {
+        try {
+            return inFlight.get().result;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return probeOnce(provider).result;
+        } catch (java.util.concurrent.ExecutionException e) {
+            probeFutures.remove(key, inFlight);
+            return probeOnce(provider).result;
+        }
+    }
+
+    public io.cortexj.spi.runtime.RuntimeProbeResult probeShared(RuntimeProvider provider) {
+        return probeCached(provider);
+    }
+
+    public void invalidateProbeCache() {
+        probeFutures.clear();
+    }
+
+    void setProbeTtlsForTesting(long positiveMillis, long negativeMillis) {
+        this.positiveProbeTtlMillis = positiveMillis;
+        this.negativeProbeTtlMillis = negativeMillis;
+    }
+
+    private static final class CachedProbe {
+        final RuntimeProbeResult result;
+        final long expiresAtMillis;
+
+        CachedProbe(RuntimeProbeResult result, long expiresAtMillis) {
+            this.result = result;
+            this.expiresAtMillis = expiresAtMillis;
+        }
     }
 
     private boolean isRemoteSyntheticBlocked(ExecutionRequest request) {
