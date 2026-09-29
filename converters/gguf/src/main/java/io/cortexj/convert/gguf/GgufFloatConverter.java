@@ -83,6 +83,8 @@ public final class GgufFloatConverter implements ModelConverter {
                 ? Direction.TO_F32
                 : Direction.TO_F16;
         Path source = request.sourcePath();
+        Path temp = null;
+        boolean moved = false;
         try {
             GgufDocument document = GgufDocument.read(source);
             long f32Tensors = 0;
@@ -103,8 +105,9 @@ public final class GgufFloatConverter implements ModelConverter {
 
             Path output = request.outputDirectory().resolve(outputName(source, direction));
             Files.createDirectories(request.outputDirectory());
-            Path temp = output.resolveSibling(output.getFileName() + ".part");
+            temp = output.resolveSibling(output.getFileName() + ".part");
             long converted = 0L;
+
             try (InputStream input = new BufferedInputStream(Files.newInputStream(source), 1 << 16);
                  OutputStream out = new BufferedOutputStream(Files.newOutputStream(temp), 1 << 16)) {
                 GgufBinaryReader reader = new GgufBinaryReader(input);
@@ -160,6 +163,7 @@ public final class GgufFloatConverter implements ModelConverter {
             } catch (IOException atomicFailed) {
                 Files.move(temp, output, StandardCopyOption.REPLACE_EXISTING);
             }
+            moved = true;
 
             String sha256 = sha256Hex(output);
             Map<String, String> provenance = new LinkedHashMap<String, String>();
@@ -185,6 +189,15 @@ public final class GgufFloatConverter implements ModelConverter {
                     io.cortexj.ErrorCode.CONVERSION_FAILED,
                     "GGUF " + direction.label + " conversion failed: " + e.getMessage(),
                     "Verify the source file is a valid GGUF container with F32/F16 tensors.");
+        } finally {
+            if (!moved && temp != null) {
+                // audit M-11: a mid-conversion failure must not strand a
+                // model-sized partial next to the output
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 

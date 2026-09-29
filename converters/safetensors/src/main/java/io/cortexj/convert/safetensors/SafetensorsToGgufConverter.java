@@ -69,6 +69,8 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
     @Override
     public ConversionResult convert(ConversionRequest request) {
         Path source = request.sourcePath();
+        Path temp = null;
+        boolean moved = false;
         try {
             SafetensorsFile file = SafetensorsFile.read(source);
             Map<String, String> config = readAdjacentConfig(source);
@@ -106,7 +108,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
 
             Path output = request.outputDirectory().resolve(name + ".gguf");
             Files.createDirectories(request.outputDirectory());
-            Path temp = output.resolveSibling(output.getFileName() + ".part");
+            temp = output.resolveSibling(output.getFileName() + ".part");
             try (InputStream input = new BufferedInputStream(
                     Files.newInputStream(source), 1 << 16);
                  OutputStream out = new BufferedOutputStream(
@@ -125,6 +127,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             } catch (IOException atomicFailed) {
                 Files.move(temp, output, StandardCopyOption.REPLACE_EXISTING);
             }
+            moved = true;
 
             String sha256 = sha256Hex(output);
             Map<String, String> provenance = new LinkedHashMap<String, String>();
@@ -150,6 +153,15 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                     io.cortexj.ErrorCode.CONVERSION_FAILED,
                     "safetensors to GGUF conversion failed: " + e.getMessage(),
                     "Verify the source file is a valid safetensors container.");
+        } finally {
+            if (!moved && temp != null) {
+                // audit M-11: a mid-conversion failure must not strand a
+                // model-sized partial next to the output
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
