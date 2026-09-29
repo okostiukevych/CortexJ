@@ -245,6 +245,16 @@ public final class CacheStorage {
                 entries.add(new CacheEntry(root.relativize(file).toString(), file, size, lastModified));
                 return FileVisitResult.CONTINUE;
             }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException error) {
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException error) {
+                return FileVisitResult.CONTINUE;
+            }
         });
         return entries;
     }
