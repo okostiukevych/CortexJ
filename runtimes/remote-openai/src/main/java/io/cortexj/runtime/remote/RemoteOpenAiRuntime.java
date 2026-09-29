@@ -43,6 +43,9 @@ import java.util.concurrent.Executors;
 
 public final class RemoteOpenAiRuntime implements ModelRuntime {
 
+    private static final int SSE_POLL_MILLIS = 2_000;
+    private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
+
     private final RuntimeId runtimeId;
     private final String baseUrl;
     private final String apiKey;
@@ -51,6 +54,11 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
     private final PlatformEventListener eventListener;
 
     private final HttpJsonClient client;
+    private final java.util.concurrent.atomic.AtomicBoolean runtimeClosed =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.Set<HttpURLConnection> liveStreams =
+            java.util.Collections.newSetFromMap(
+                    new java.util.concurrent.ConcurrentHashMap<HttpURLConnection, Boolean>());
 
     RemoteOpenAiRuntime(RuntimeId runtimeId, String baseUrl, String apiKey, ExecutorService executor, PlatformEventListener eventListener, HttpJsonClient client) {
         this.runtimeId = runtimeId;
@@ -92,6 +100,17 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
     @Override
     public void close() {
+        // audit M-8: disconnect every in-flight SSE connection first - socket
+        // reads never respond to interrupts, so shutdownNow alone would leave
+        // workers blocked for the full read timeout while the remote endpoint
+        // keeps generating (and billing) server-side
+        runtimeClosed.set(true);
+        for (HttpURLConnection connection : liveStreams) {
+            try {
+                connection.disconnect();
+            } catch (RuntimeException ignored) {
+            }
+        }
         if (ownsExecutor) {
             executor.shutdown();
             try {
@@ -193,12 +212,12 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     try {
                         streamSse(publisher, payload, cancelled, activeConnection);
                     } catch (final io.cortexj.error.CortexJException e) {
-                        if (cancelled.get()) {
+                        if (cancelled.get() || runtimeClosed.get()) {
                             return;
                         }
                         publisher.fail(e);
                     } catch (final Exception e) {
-                        if (cancelled.get()) {
+                        if (cancelled.get() || runtimeClosed.get()) {
                             return;
                         }
                         publisher.fail(new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
@@ -217,13 +236,21 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         private void streamSse(io.cortexj.stream.internal.TokenStreamPublisher publisher, Map<String, Object> payload,
                                java.util.concurrent.atomic.AtomicBoolean cancelled,
                                java.util.concurrent.atomic.AtomicReference<HttpURLConnection> activeConnection) throws IOException {
+            if (cancelled.get() || runtimeClosed.get()) {
+                return;
+            }
             URL url = new URL(baseUrl + "/v1/chat/completions");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            activeConnection.set(connection);
+            liveStreams.add(connection);
             try {
                 connection.setRequestMethod("POST");
                 connection.setConnectTimeout(30_000);
-                connection.setReadTimeout(300_000);
+                // poll-style read timeout: a blocked socket read cannot be
+                // interrupted by close()/cancel() (fd close does not wake a
+                // blocked reader), so the loop wakes at short intervals and
+                // re-checks the cancel/close flags - the 300s ceiling below
+                // still bounds a silent-but-open stream
+                connection.setReadTimeout(SSE_POLL_MILLIS);
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Accept", "text/event-stream");
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -247,6 +274,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 }
                 readSseStream(connection.getInputStream(), publisher, cancelled);
             } finally {
+                liveStreams.remove(connection);
                 activeConnection.set(null);
                 connection.disconnect();
             }
@@ -256,11 +284,25 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                                    java.util.concurrent.atomic.AtomicBoolean cancelled) throws IOException {
             BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
             StringBuilder content = new StringBuilder();
-            String line;
             FinishReason finish = FinishReason.STOP;
             long inputTokens = -1;
             long outputTokens = -1;
-            while (!cancelled.get() && (line = reader.readLine()) != null) {
+            long lastActivity = System.currentTimeMillis();
+            while (!cancelled.get() && !runtimeClosed.get()) {
+                String line;
+                try {
+                    line = reader.readLine();
+                } catch (java.net.SocketTimeoutException idle) {
+                    if (System.currentTimeMillis() - lastActivity >= SSE_IDLE_CEILING_MILLIS) {
+                        throw new IOException("remote stream produced no data for "
+                                + SSE_IDLE_CEILING_MILLIS + " ms");
+                    }
+                    continue;
+                }
+                if (line == null) {
+                    break;
+                }
+                lastActivity = System.currentTimeMillis();
                 if (line.isEmpty()) {
                     continue;
                 }
@@ -288,8 +330,8 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 }
             }
             reader.close();
-            if (cancelled.get()) {
-                // deliberately cancelled: no terminal delivery, stop billing/reading
+            if (cancelled.get() || runtimeClosed.get()) {
+                // deliberately cancelled or closed: no terminal delivery
                 return;
             }
             publisher.complete(finish, inputTokens, outputTokens);
