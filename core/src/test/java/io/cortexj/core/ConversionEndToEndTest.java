@@ -52,7 +52,7 @@ class ConversionEndToEndTest {
 
     static final class RecordingRuntimeProvider implements RuntimeProvider {
 
-        final List<Path> loadedPaths = new ArrayList<Path>();
+        final List<Path> loadedPaths = Collections.synchronizedList(new ArrayList<Path>());
 
         @Override
         public io.cortexj.runtime.RuntimeId id() {

@@ -46,7 +46,7 @@ public enum ModelLifecycleState {
             case DOWNLOADING:
                 return next == PREPARING || next == LOADING || next == FAILED;
             case PREPARING:
-                return next == LOADING || next == FAILED;
+                return next == LOADING || next == DOWNLOADING || next == FAILED;
             case LOADING:
                 return next == READY || next == FAILED;
             case READY:

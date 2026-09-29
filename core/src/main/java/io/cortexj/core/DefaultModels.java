@@ -121,52 +121,60 @@ public final class DefaultModels implements io.cortexj.Models {
                     "This is an internal contract violation; report it to the platform maintainers.");
         }
 
-        enforceTrustPolicy(resolved);
-
-        Path artifactPath = ensureArtifact(plan, resolved, candidate);
-
-        ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
-                resolved.descriptor(),
-                candidate.artifact(),
-                artifactPath,
-                candidate.device(),
-                planOptions(request, candidate),
-                platform.config().runtimeConfiguration(),
-                platform.environment(),
-                platform.hardware(),
-                platform.executor(),
-                platform.events().asListener()));
-
-        RuntimeModel model;
-        try {
-            model = runtime.load(new RuntimeModelRequest(
-                    resolved.descriptor(),
-                    candidate.artifact(),
-                    artifactPath,
-                    candidate.device(),
-                    planOptions(request, candidate)));
-        } catch (RuntimeException e) {
-            try {
-                runtime.close();
-            } catch (RuntimeException closeError) {
-            }
-            throw e instanceof ModelLoadException ? e : new ModelLoadException(ErrorCode.LOAD_FAILED,
-                    "runtime " + candidate.runtimeId() + " failed to load the model: " + e.getMessage(), e);
-        }
-
-        platform.events().info(PlatformEvent.Type.MODEL_LOADED,
-                "model loaded via " + candidate.runtimeId() + " on " + candidate.device());
-
-        DefaultModelHandle handle = new DefaultModelHandle(
-                resolved.descriptor(), plan, model, runtime, platform, candidate);
+        final DefaultModelHandle handle = new DefaultModelHandle(
+                resolved.descriptor(), plan, null, null, platform, candidate);
         handle.onClose(new java.util.function.Consumer<DefaultModelHandle>() {
             @Override
             public void accept(DefaultModelHandle closedHandle) {
                 openHandles.remove(closedHandle);
             }
         });
-        openHandles.add(handle);
-        return handle;
+        handle.lifecycleTo(ModelLifecycleState.RESOLVING);
+        try {
+            enforceTrustPolicy(resolved);
+
+            Path artifactPath = ensureArtifact(plan, resolved, candidate, handle);
+
+            ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
+                    resolved.descriptor(),
+                    candidate.artifact(),
+                    artifactPath,
+                    candidate.device(),
+                    planOptions(request, candidate),
+                    platform.config().runtimeConfiguration(),
+                    platform.environment(),
+                    platform.hardware(),
+                    platform.executor(),
+                    platform.events().asListener()));
+
+            handle.lifecycleTo(ModelLifecycleState.LOADING);
+            RuntimeModel model;
+            try {
+                model = runtime.load(new RuntimeModelRequest(
+                        resolved.descriptor(),
+                        candidate.artifact(),
+                        artifactPath,
+                        candidate.device(),
+                        planOptions(request, candidate)));
+            } catch (RuntimeException e) {
+                try {
+                    runtime.close();
+                } catch (RuntimeException closeError) {
+                }
+                throw e instanceof ModelLoadException ? e : new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "runtime " + candidate.runtimeId() + " failed to load the model: " + e.getMessage(), e);
+            }
+            handle.attach(model, runtime);
+
+            platform.events().info(PlatformEvent.Type.MODEL_LOADED,
+                    "model loaded via " + candidate.runtimeId() + " on " + candidate.device());
+
+            openHandles.add(handle);
+            return handle;
+        } catch (RuntimeException e) {
+            handle.lifecycleTo(ModelLifecycleState.FAILED);
+            throw e;
+        }
     }
 
     private java.util.Map<String, Object> planOptions(ExecutionRequest request, ExecutionCandidate candidate) {
@@ -187,14 +195,15 @@ public final class DefaultModels implements io.cortexj.Models {
                 .detail("runtime", runtimeId);
     }
 
-    private Path ensureArtifact(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate) {
+    private Path ensureArtifact(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
+                                DefaultModelHandle handle) {
         ModelArtifact artifact = candidate.artifact();
         if (artifact == null || artifact.format() == io.cortexj.model.ArtifactFormat.REMOTE
                 || candidate.device() == DeviceType.REMOTE) {
             return null;
         }
         if (candidate.requiresConversion()) {
-            return materializeConversion(plan, resolved, candidate);
+            return materializeConversion(plan, resolved, candidate, handle);
         }
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
             if (!resolvedArtifact.artifact().id().equals(artifact.id())) {
@@ -217,7 +226,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         .detail("artifact", artifact.id());
             }
             return downloadOnce(resolvedArtifact, resolved.repository().value(),
-                    resolved.revision(), cache);
+                    resolved.revision(), cache, handle);
         }
         throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
                 "Resolved model does not contain artifact " + artifact.id(),
@@ -245,7 +254,7 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     private Path downloadOnce(ResolvedArtifact resolvedArtifact, String repositoryId, String revision,
-                               io.cortexj.cache.CacheStorage cache) {
+                               io.cortexj.cache.CacheStorage cache, final DefaultModelHandle handle) {
         String key = repositoryId + "~" + revision + "~" + resolvedArtifact.artifact().id();
         return oncePerKey(key, new java.util.function.Supplier<Path>() {
             @Override
@@ -255,6 +264,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 if (cached != null) {
                     return cached;
                 }
+                handle.lifecycleTo(ModelLifecycleState.DOWNLOADING);
                 return platform.downloads().download(resolvedArtifact, repositoryId,
                         revision, cache, 0L);
             }
@@ -299,7 +309,8 @@ public final class DefaultModels implements io.cortexj.Models {
         }
     }
 
-    private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate) {
+    private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
+                                        DefaultModelHandle handle) {
         io.cortexj.planner.ConversionStep step = candidate.conversion();
         ResolvedArtifact source = null;
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
@@ -325,13 +336,14 @@ public final class DefaultModels implements io.cortexj.Models {
             return cached;
         }
 
+        handle.lifecycleTo(ModelLifecycleState.PREPARING);
         final ResolvedArtifact conversionSource = source;
         String conversionKey = repositoryId + "~" + revision + "~" + convertedId + "~conversion";
         return oncePerKey(conversionKey, new java.util.function.Supplier<Path>() {
             @Override
             public Path get() {
                 return runConversion(plan, resolved, candidate, step, conversionSource,
-                        repositoryId, revision, convertedId, cache);
+                        repositoryId, revision, convertedId, cache, handle);
             }
         });
     }
@@ -339,8 +351,9 @@ public final class DefaultModels implements io.cortexj.Models {
     private Path runConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
                                io.cortexj.planner.ConversionStep step, ResolvedArtifact source,
                                String repositoryId, String revision, String convertedId,
-                               io.cortexj.cache.CacheStorage cache) {
-        Path sourcePath = ensureSourceArtifact(resolved, source);
+                               io.cortexj.cache.CacheStorage cache, DefaultModelHandle handle) {
+        Path sourcePath = ensureSourceArtifact(resolved, source, handle);
+        handle.lifecycleTo(ModelLifecycleState.PREPARING);
         Path outputDirectory;
         try {
             outputDirectory = java.nio.file.Files.createTempDirectory("cortexj-conversion");
@@ -426,7 +439,7 @@ public final class DefaultModels implements io.cortexj.Models {
         }
     }
 
-    private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source) {
+    private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source, DefaultModelHandle handle) {
         String scheme = source.location() == null ? "" : source.location().getScheme();
         if (scheme.equals("file")) {
             return Paths.get(source.location());
@@ -444,7 +457,7 @@ public final class DefaultModels implements io.cortexj.Models {
                     "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
                     .detail("artifact", source.artifact().id());
         }
-        return downloadOnce(source, resolved.repository().value(), resolved.revision(), cache);
+        return downloadOnce(source, resolved.repository().value(), resolved.revision(), cache, handle);
     }
 
     private io.cortexj.spi.conversion.ModelConverter converterById(String converterId) {

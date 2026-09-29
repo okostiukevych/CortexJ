@@ -22,6 +22,13 @@ public interface ModelHandle extends AutoCloseable {
 
     ModelLifecycleState state();
 
+    /**
+     * Blocks until the handle reaches a usable state (READY or DEGRADED) or
+     * throws on a terminal one (CLOSED/FAILED). {@code Models.load()} is
+     * synchronous: a handle returned by it is already READY when load()
+     * returns, so this method returns immediately for it. The blocking
+     * contract is real for any future asynchronous load path.
+     */
     void waitForReady() throws InterruptedException;
 
     @Override
