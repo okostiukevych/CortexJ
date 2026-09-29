@@ -34,7 +34,7 @@ public final class DefaultModels implements io.cortexj.Models {
 
     private final DefaultCortexJ platform;
     private final List<DefaultModelHandle> openHandles = new CopyOnWriteArrayList<DefaultModelHandle>();
-    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightDownloads =
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightWork =
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>>();
     private final java.util.concurrent.locks.ReentrantReadWriteLock loadLock =
             new java.util.concurrent.locks.ReentrantReadWriteLock();
@@ -225,32 +225,40 @@ public final class DefaultModels implements io.cortexj.Models {
                 .detail("artifact", artifact.id());
     }
 
-    private Path downloadOnce(ResolvedArtifact resolvedArtifact, String repositoryId, String revision,
-                               io.cortexj.cache.CacheStorage cache) {
-        String key = repositoryId + "~" + revision + "~" + resolvedArtifact.artifact().id();
+    private Path oncePerKey(String key, java.util.function.Supplier<Path> work) {
         java.util.concurrent.CompletableFuture<Path> claim =
                 new java.util.concurrent.CompletableFuture<Path>();
-        java.util.concurrent.CompletableFuture<Path> inFlight = inFlightDownloads.putIfAbsent(key, claim);
+        java.util.concurrent.CompletableFuture<Path> inFlight = inFlightWork.putIfAbsent(key, claim);
         if (inFlight != null) {
             return awaitInFlight(inFlight);
         }
         try {
-            Path cached = cache.get(repositoryId, revision, resolvedArtifact.artifact().id(),
-                    resolvedArtifact.artifact().checksum());
-            if (cached != null) {
-                claim.complete(cached);
-                return cached;
-            }
-            Path downloaded = platform.downloads().download(resolvedArtifact, repositoryId,
-                    revision, cache, 0L);
-            claim.complete(downloaded);
-            return downloaded;
+            Path result = work.get();
+            claim.complete(result);
+            return result;
         } catch (RuntimeException failure) {
             claim.completeExceptionally(failure);
             throw failure;
         } finally {
-            inFlightDownloads.remove(key, claim);
+            inFlightWork.remove(key, claim);
         }
+    }
+
+    private Path downloadOnce(ResolvedArtifact resolvedArtifact, String repositoryId, String revision,
+                               io.cortexj.cache.CacheStorage cache) {
+        String key = repositoryId + "~" + revision + "~" + resolvedArtifact.artifact().id();
+        return oncePerKey(key, new java.util.function.Supplier<Path>() {
+            @Override
+            public Path get() {
+                Path cached = cache.get(repositoryId, revision, resolvedArtifact.artifact().id(),
+                        resolvedArtifact.artifact().checksum());
+                if (cached != null) {
+                    return cached;
+                }
+                return platform.downloads().download(resolvedArtifact, repositoryId,
+                        revision, cache, 0L);
+            }
+        });
     }
 
     private Path awaitInFlight(java.util.concurrent.CompletableFuture<Path> inFlight) {
@@ -317,6 +325,21 @@ public final class DefaultModels implements io.cortexj.Models {
             return cached;
         }
 
+        final ResolvedArtifact conversionSource = source;
+        String conversionKey = repositoryId + "~" + revision + "~" + convertedId + "~conversion";
+        return oncePerKey(conversionKey, new java.util.function.Supplier<Path>() {
+            @Override
+            public Path get() {
+                return runConversion(plan, resolved, candidate, step, conversionSource,
+                        repositoryId, revision, convertedId, cache);
+            }
+        });
+    }
+
+    private Path runConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
+                               io.cortexj.planner.ConversionStep step, ResolvedArtifact source,
+                               String repositoryId, String revision, String convertedId,
+                               io.cortexj.cache.CacheStorage cache) {
         Path sourcePath = ensureSourceArtifact(resolved, source);
         Path outputDirectory;
         try {
