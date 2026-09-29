@@ -39,6 +39,8 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
 
     private static final int CONNECT_TIMEOUT = 15_000;
     private static final int READ_TIMEOUT = 300_000;
+    private static final int SSE_POLL_MILLIS = 2_000;
+    private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
 
     private final SharedEndpointRegistry.SharedEndpoint endpoint;
     private final ExecutorService sseExecutor;
@@ -46,6 +48,9 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     private final ObjectMapper mapper = new ObjectMapper();
     private final java.util.concurrent.atomic.AtomicBoolean closed =
             new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.Set<LlamaServerTokenStream> liveStreams =
+            java.util.Collections.newSetFromMap(
+                    new java.util.concurrent.ConcurrentHashMap<LlamaServerTokenStream, Boolean>());
 
     LlamaServerModel(SharedEndpointRegistry.SharedEndpoint endpoint, ExecutorService executor) {
         this.endpoint = endpoint;
@@ -135,6 +140,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
             if (!subscribed.compareAndSet(false, true)) {
                 throw new IllegalStateException("Token stream supports a single subscription");
             }
+            liveStreams.add(LlamaServerTokenStream.this);
             sseExecutor.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -169,11 +175,19 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         private void runSse(TokenConsumer consumer) {
             HttpURLConnection connection = null;
             try {
+                if (cancelled.get() || closed.get()) {
+                    return;
+                }
                 URL url = new URL(endpoint.baseUrl() + "/v1/chat/completions");
                 connection = (HttpURLConnection) url.openConnection();
                 activeConnection = connection;
                 connection.setConnectTimeout(CONNECT_TIMEOUT);
-                connection.setReadTimeout(READ_TIMEOUT);
+                // poll-style read timeout: a blocked socket read cannot be
+                // interrupted by cancel()/close() (fd close does not wake a
+                // blocked reader), so the loop wakes at short intervals and
+                // re-checks the cancel/close flags - the ceiling below still
+                // bounds a silent-but-open stream
+                connection.setReadTimeout(SSE_POLL_MILLIS);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -190,8 +204,22 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 FinishReason finishReason = FinishReason.STOP;
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                         connection.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while (!cancelled.get() && (line = reader.readLine()) != null) {
+                    long lastActivity = System.currentTimeMillis();
+                    while (!cancelled.get() && !closed.get()) {
+                        String line;
+                        try {
+                            line = reader.readLine();
+                        } catch (java.net.SocketTimeoutException idle) {
+                            if (System.currentTimeMillis() - lastActivity >= SSE_IDLE_CEILING_MILLIS) {
+                                throw new IOException("llama-server stream produced no data for "
+                                        + SSE_IDLE_CEILING_MILLIS + " ms");
+                            }
+                            continue;
+                        }
+                        if (line == null) {
+                            break;
+                        }
+                        lastActivity = System.currentTimeMillis();
                         if (!line.startsWith("data:")) {
                             continue;
                         }
@@ -219,13 +247,13 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                         }
                     }
                 }
-                if (cancelled.get()) {
+                if (cancelled.get() || closed.get()) {
                     return;
                 }
                 consumer.onComplete(new StreamCompletion(finishReason, usage));
             } catch (Exception e) {
-                if (cancelled.get()) {
-                    // deliberately cancelled: no error delivery, thread released
+                if (cancelled.get() || closed.get()) {
+                    // deliberately cancelled or closed: no error delivery, thread released
                     return;
                 }
                 CortexJException failure = e instanceof CortexJException
@@ -236,6 +264,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 failure.detail("endpoint", endpoint.baseUrl());
                 consumer.onError(failure);
             } finally {
+                liveStreams.remove(LlamaServerTokenStream.this);
                 activeConnection = null;
                 if (connection != null) {
                     connection.disconnect();
@@ -352,9 +381,24 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
+            // audit M-8: abort every in-flight SSE stream first - socket reads
+            // never respond to interrupts, so a plain shutdown would leave the
+            // single SSE thread blocked for the full read timeout (and the
+            // server-side generation running) when the endpoint is shared
+            for (LlamaServerTokenStream stream : liveStreams) {
+                stream.abort();
+            }
             endpoint.release();
             if (ownsExecutor) {
                 sseExecutor.shutdown();
+                try {
+                    if (!sseExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        sseExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    sseExecutor.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
             }
         }
     }
