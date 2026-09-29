@@ -225,6 +225,7 @@ public final class ModelBundler {
         Path temp = target.resolveSibling(target.getFileName() + ".part-" + Long.toHexString(System.nanoTime()));
         URL url = new URL(artifact.location().toString());
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        boolean moved = false;
         try {
             connection.setConnectTimeout(CONNECT_TIMEOUT);
             connection.setReadTimeout(READ_TIMEOUT);
@@ -258,8 +259,17 @@ public final class ModelBundler {
             } catch (IOException atomicFailed) {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
             }
+            moved = true;
         } finally {
             connection.disconnect();
+            if (!moved) {
+                // audit M-10: a failed or truncated download must not strand
+                // a model-sized partial next to the bundle
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
