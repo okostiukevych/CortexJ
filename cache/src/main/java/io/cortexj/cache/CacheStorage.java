@@ -22,6 +22,7 @@ import java.util.Properties;
 public final class CacheStorage {
 
     public static final long DEFAULT_MAX_SIZE_BYTES = 10L * 1024L * 1024L * 1024L;
+    private static final long EVICT_TEMP_GRACE_MILLIS = 3_600_000L;
 
     private static final int LOCK_STRIPES = 16;
 
@@ -176,55 +177,61 @@ public final class CacheStorage {
         try (InputStream input = content) {
             bytesCopied = Files.copy(input, temp, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            Files.deleteIfExists(temp);
+            deleteSilently(temp);
             throw e;
         }
-
-        if (expectedChecksum != null) {
-            if (!Checksums.verify(temp, expectedChecksum.algorithm(), expectedChecksum.value())) {
-                Files.deleteIfExists(temp);
-                throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
-                        "Downloaded artifact failed checksum validation: " + artifactId,
-                        "The source artifact is corrupted or was tampered with; verify the model repository.")
-                        .detail("artifact", artifactId)
-                        .detail("expected", expectedChecksum.value());
-            }
-        }
-
-        if (maxSizeBytes > 0) {
-            evictToFit(bytesCopied);
-        }
-        synchronized (keyLock(target)) {
-            // atomic replace first: no delete->move window where concurrent
-            // get()/contains() would report "not cached" (audit M-5b); the
-            // delete+move ladder stays as the fallback for filesystems that
-            // reject an atomic replace, and the manifest write happens under
-            // the same lock so a concurrent get() can never pair the new
-            // artifact with the stale manifest and verify-and-delete it
-            boolean moved = false;
-            try {
-                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                moved = true;
-            } catch (IOException atomicReplaceUnsupported) {
-                // fall through to the delete+move ladder
-            }
-            if (!moved) {
-                if (Files.exists(target)) {
-                    Files.delete(target);
+        try {
+            if (expectedChecksum != null) {
+                if (!Checksums.verify(temp, expectedChecksum.algorithm(), expectedChecksum.value())) {
+                    Files.deleteIfExists(temp);
+                    throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                            "Downloaded artifact failed checksum validation: " + artifactId,
+                            "The source artifact is corrupted or was tampered with; verify the model repository.")
+                            .detail("artifact", artifactId)
+                            .detail("expected", expectedChecksum.value());
                 }
+            }
+
+            if (maxSizeBytes > 0) {
+                evictToFit(bytesCopied);
+            }
+            synchronized (keyLock(target)) {
+                // atomic replace first: no delete->move window where concurrent
+                // get()/contains() would report "not cached" (audit M-5b); the
+                // delete+move ladder stays as the fallback for filesystems that
+                // reject an atomic replace, and the manifest write happens under
+                // the same lock so a concurrent get() can never pair the new
+                // artifact with the stale manifest and verify-and-delete it
+                boolean moved = false;
                 try {
-                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
-                } catch (IOException atomicFailed) {
-                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    moved = true;
+                } catch (IOException atomicReplaceUnsupported) {
+                    // fall through to the delete+move ladder
                 }
+                if (!moved) {
+                    if (Files.exists(target)) {
+                        Files.delete(target);
+                    }
+                    try {
+                        Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (IOException atomicFailed) {
+                        Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
             }
-            writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
+            eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
+                    PlatformEvent.Level.INFO,
+                    "artifact stored: " + artifactId,
+                    null, System.currentTimeMillis()));
+            return target;
+        } catch (IOException | RuntimeException failure) {
+            // audit M-9: no stranded temps on any failure path - a failed
+            // eviction or move must not orphan a full-size .part- file
+            deleteSilently(temp);
+            throw failure;
         }
-        eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
-                PlatformEvent.Level.INFO,
-                "artifact stored: " + artifactId,
-                null, System.currentTimeMillis()));
-        return target;
     }
 
     public List<CacheEntry> list() throws IOException {
@@ -236,7 +243,7 @@ public final class CacheStorage {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String name = file.getFileName().toString();
-                if (name.contains(".part-") || name.endsWith(".lock") || name.endsWith(".manifest")
+                if (name.endsWith(".lock") || name.endsWith(".manifest")
                         || name.endsWith(".pinned")) {
                     return FileVisitResult.CONTINUE;
                 }
@@ -325,8 +332,15 @@ public final class CacheStorage {
     public long evictToFit(long incomingBytes) throws IOException {
         synchronized (evictionLock) {
             List<CacheEntry> entries = list();
+            long now = System.currentTimeMillis();
             long total = 0L;
             for (CacheEntry entry : entries) {
+                // transient in-flight temps are excluded from the accounting:
+                // they move into place within seconds and the incomingBytes
+                // parameter already reserves space for the current put's temp
+                if (isTempEntry(entry) && now - entry.lastModifiedMillis() < EVICT_TEMP_GRACE_MILLIS) {
+                    continue;
+                }
                 total += entry.sizeBytes();
             }
             if (total + incomingBytes <= maxSizeBytes) {
@@ -343,6 +357,9 @@ public final class CacheStorage {
                 if (total + incomingBytes - freed <= maxSizeBytes) {
                     break;
                 }
+                if (isTempEntry(entry) && now - entry.lastModifiedMillis() < EVICT_TEMP_GRACE_MILLIS) {
+                    continue;
+                }
                 if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
                     continue;
                 }
@@ -353,6 +370,10 @@ public final class CacheStorage {
             }
             return freed;
         }
+    }
+
+    private static boolean isTempEntry(CacheEntry entry) {
+        return entry.path().getFileName().toString().contains(".part-");
     }
 
     public long purge() throws IOException {
