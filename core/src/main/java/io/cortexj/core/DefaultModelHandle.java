@@ -25,16 +25,17 @@ public final class DefaultModelHandle implements ModelHandle {
 
     private final ModelDescriptor descriptor;
     private final ExecutionPlan plan;
-    private final RuntimeModel model;
-    private final ModelRuntime runtime;
+    private volatile RuntimeModel model;
+    private volatile ModelRuntime runtime;
     private final DefaultCortexJ platform;
     private final ExecutionCandidate candidate;
     private final ReentrantLock sessionLock = new ReentrantLock();
     private final boolean serializeAccess;
     private volatile java.util.function.Consumer<DefaultModelHandle> closeCallback;
+    private final Object lifecycleMonitor = new Object();
 
     private final java.util.concurrent.atomic.AtomicReference<ModelLifecycleState> state =
-            new java.util.concurrent.atomic.AtomicReference<ModelLifecycleState>(ModelLifecycleState.LOADING);
+            new java.util.concurrent.atomic.AtomicReference<ModelLifecycleState>(ModelLifecycleState.DISCOVERED);
     private volatile String fallbackNote;
 
     DefaultModelHandle(ModelDescriptor descriptor,
@@ -49,9 +50,17 @@ public final class DefaultModelHandle implements ModelHandle {
         this.runtime = runtime;
         this.platform = platform;
         this.candidate = candidate;
-        this.serializeAccess = runtime != null
-                && runtimeSupportDescriptor() == io.cortexj.runtime.ThreadSafety.SESSION_SCOPED;
-        this.state.set(ModelLifecycleState.READY);
+        this.serializeAccess = runtimeSupportDescriptor() == io.cortexj.runtime.ThreadSafety.SESSION_SCOPED;
+    }
+
+    void lifecycleTo(ModelLifecycleState next) {
+        transitionTo(next);
+    }
+
+    void attach(RuntimeModel model, ModelRuntime runtime) {
+        this.model = model;
+        this.runtime = runtime;
+        transitionTo(ModelLifecycleState.READY);
     }
 
     private io.cortexj.runtime.ThreadSafety runtimeSupportDescriptor() {
@@ -277,9 +286,19 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public void waitForReady() throws InterruptedException {
-        ModelLifecycleState current = state.get();
-        if (current.isTerminal()) {
-            throw new IllegalStateException("Model handle is already " + current);
+        for (;;) {
+            ModelLifecycleState current = state.get();
+            if (current == ModelLifecycleState.READY || current == ModelLifecycleState.DEGRADED) {
+                return;
+            }
+            if (current.isTerminal()) {
+                throw new IllegalStateException("Model handle is already " + current);
+            }
+            synchronized (lifecycleMonitor) {
+                if (state.get() == current) {
+                    lifecycleMonitor.wait(50);
+                }
+            }
         }
     }
 
@@ -333,6 +352,9 @@ public final class DefaultModelHandle implements ModelHandle {
                         "Illegal model lifecycle transition " + current + " -> " + next);
             }
             if (state.compareAndSet(current, next)) {
+                synchronized (lifecycleMonitor) {
+                    lifecycleMonitor.notifyAll();
+                }
                 return;
             }
         }
@@ -374,11 +396,15 @@ public final class DefaultModelHandle implements ModelHandle {
         }
         try {
             try {
-                model.close();
+                if (model != null) {
+                    model.close();
+                }
             } catch (RuntimeException ignored) {
             }
             try {
-                runtime.close();
+                if (runtime != null) {
+                    runtime.close();
+                }
             } catch (RuntimeException ignored) {
             }
         } finally {
