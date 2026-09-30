@@ -41,10 +41,16 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
 
     @Override
     public LlamaServerEndpoint launch(Path artifactPath) throws IOException {
+        return launchWithHealthUrl(artifactPath, null);
+    }
+
+    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl) throws IOException {
         if (artifactPath == null || !Files.isRegularFile(artifactPath)) {
             throw new IOException("GGUF artifact does not exist: " + artifactPath);
         }
         int port = LlamaServerLauncher.findFreePort();
+        final String effectiveHealthUrl = healthBaseUrl == null
+                ? "http://127.0.0.1:" + port : healthBaseUrl;
         ProcessBuilder builder = new ProcessBuilder(
                 serverBinary,
                 "-m", artifactPath.toAbsolutePath().toString(),
@@ -72,7 +78,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
 
         final String baseUrl = "http://127.0.0.1:" + port;
         try {
-            LlamaServerLauncher.awaitHealthy(baseUrl, startupTimeoutMillis);
+            LlamaServerLauncher.awaitHealthy(effectiveHealthUrl, startupTimeoutMillis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             killProcess(process);

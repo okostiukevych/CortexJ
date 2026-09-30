@@ -20,7 +20,7 @@ class ProcessLlamaServerLauncherTest {
     @TempDir
     Path tempDir;
 
-    static final class StubbornProcess extends Process {
+    static class StubbornProcess extends Process {
 
         volatile boolean running = true;
         volatile boolean destroyCalled;
@@ -129,6 +129,52 @@ class ProcessLlamaServerLauncherTest {
         } finally {
             Thread.interrupted();
             Files.deleteIfExists(artifact);
+        }
+    }
+
+    @Test
+    void healthyLaunchDoesNotKillAndStopRunsTheFullLadder() throws Exception {
+        StubbornProcess process = new StubbornProcess() {
+            @Override
+            public boolean waitFor(long timeout, TimeUnit unit) {
+                running = false;
+                return true;
+            }
+        };
+        com.sun.net.httpserver.HttpServer health = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        health.createContext("/health", new com.sun.net.httpserver.HttpHandler() {
+            @Override
+            public void handle(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+            }
+        });
+        health.start();
+        try {
+            final ProcessLlamaServerLauncher launcher = new ProcessLlamaServerLauncher(
+                    "fake-llama-server", 5_000, null,
+                    new ProcessLlamaServerLauncher.ProcessStarter() {
+                        @Override
+                        public Process start(ProcessBuilder builder) {
+                            return process;
+                        }
+                    });
+            Path artifact = Files.createTempFile(tempDir, "fake-model", ".gguf");
+            try {
+                LlamaServerEndpoint endpoint = launcher.launchWithHealthUrl(artifact,
+                        "http://127.0.0.1:" + health.getAddress().getPort());
+                assertFalse(process.destroyCalled,
+                        "a healthy launch must not kill the process");
+                endpoint.stop();
+                assertTrue(process.destroyCalled, "stop() must run SIGTERM first");
+                assertFalse(process.running,
+                        "stop() must run the full destruction ladder");
+            } finally {
+                Files.deleteIfExists(artifact);
+            }
+        } finally {
+            health.stop(0);
         }
     }
 }

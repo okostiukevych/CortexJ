@@ -28,7 +28,9 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Tag;
 
+@Tag("concurrency")
 class LoadAsyncCancellationTest {
 
     private static final int PAYLOAD_SIZE = 200;
