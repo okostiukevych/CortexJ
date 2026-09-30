@@ -32,6 +32,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class DefaultModels implements io.cortexj.Models {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(DefaultModels.class.getName());
+
     private final DefaultCortexJ platform;
     private final List<DefaultModelHandle> openHandles = new CopyOnWriteArrayList<DefaultModelHandle>();
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightWork =
@@ -156,11 +159,13 @@ public final class DefaultModels implements io.cortexj.Models {
                         artifactPath,
                         candidate.device(),
                         planOptions(request, candidate)));
-            } catch (RuntimeException e) {
-                try {
-                    runtime.close();
-                } catch (RuntimeException closeError) {
-                }
+        } catch (RuntimeException e) {
+            try {
+                runtime.close();
+            } catch (RuntimeException closeError) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "runtime close failed during load failure; continuing", closeError);
+            }
                 throw e instanceof ModelLoadException ? e : new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "runtime " + candidate.runtimeId() + " failed to load the model: " + e.getMessage(), e);
             }
@@ -523,7 +528,9 @@ public final class DefaultModels implements io.cortexj.Models {
             for (DefaultModelHandle handle : openHandles) {
                 try {
                     handle.close();
-                } catch (RuntimeException ignored) {
+                } catch (RuntimeException failure) {
+                    LOG.log(java.util.logging.Level.FINE,
+                            "handle close failed during platform shutdown; continuing", failure);
                 }
             }
             openHandles.clear();
