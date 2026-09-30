@@ -5,7 +5,6 @@ import io.cortexj.hardware.HardwareProfile;
 import io.cortexj.observability.PlatformEventListener;
 import io.cortexj.model.ArtifactFormat;
 import io.cortexj.model.ModelArtifact;
-import io.cortexj.spi.artifact.ArtifactInspector;
 import io.cortexj.spi.artifact.ArtifactInspection;
 import io.cortexj.spi.policy.ExecutionPolicy;
 import io.cortexj.spi.policy.PlanningContext;
@@ -26,7 +25,7 @@ public final class PlannerInputs {
     public final List<ModelRepositoryProvider> repositoryProviders;
     public final List<ModelConverter> converters;
     public final List<ExecutionPolicy> policies;
-    public final ArtifactInspector inspector;
+    public final io.cortexj.model.artifact.ArtifactInspectorRegistry inspector;
     public final EnvironmentProfile environment;
     public final HardwareProfile hardware;
     public final PlanningContext.CacheLookup cacheLookup;
@@ -44,7 +43,7 @@ public final class PlannerInputs {
                         List<ModelRepositoryProvider> repositoryProviders,
                         List<ModelConverter> converters,
                         List<ExecutionPolicy> policies,
-                        ArtifactInspector inspector,
+                        io.cortexj.model.artifact.ArtifactInspectorRegistry inspector,
                         EnvironmentProfile environment,
                         HardwareProfile hardware,
                         PlanningContext.CacheLookup cacheLookup,
@@ -65,7 +64,7 @@ public final class PlannerInputs {
                         List<ModelRepositoryProvider> repositoryProviders,
                         List<ModelConverter> converters,
                         List<ExecutionPolicy> policies,
-                        ArtifactInspector inspector,
+                        io.cortexj.model.artifact.ArtifactInspectorRegistry inspector,
                         EnvironmentProfile environment,
                         HardwareProfile hardware,
                         PlanningContext.CacheLookup cacheLookup,
@@ -110,22 +109,27 @@ public final class PlannerInputs {
                 artifact.checksum() == null ? null : artifact.checksum().value());
     }
 
-    public ArtifactInspection inspectIfLocal(ResolvedArtifact artifact) {
+    public ArtifactInspection inspectIfLocal(ResolvedModel resolved, ResolvedArtifact artifact) {
         if (inspector == null || artifact == null || artifact.location() == null) {
-            return null;
-        }
-        if (!artifact.location().getScheme().equals("file")) {
             return null;
         }
         if (!artifact.artifact().format().isExecutableWeights()) {
             return null;
         }
         try {
-            java.nio.file.Path path = java.nio.file.Paths.get(artifact.location());
-            if (!java.nio.file.Files.isRegularFile(path)) {
+            java.nio.file.Path path = null;
+            if (artifact.location().getScheme().equals("file")) {
+                path = java.nio.file.Paths.get(artifact.location());
+            } else if (resolved != null && resolved.hasRevision() && cacheLookup != null) {
+                path = cacheLookup.cachedArtifactPath(resolved.repository().value(),
+                        resolved.revision(), artifact.artifact().id(),
+                        artifact.artifact().checksum() == null
+                                ? null : artifact.artifact().checksum().value());
+            }
+            if (path == null || !java.nio.file.Files.isRegularFile(path)) {
                 return null;
             }
-            return inspector.inspect(path);
+            return inspector.inspectOrNull(artifact.artifact().format(), path);
         } catch (RuntimeException e) {
             return null;
         }

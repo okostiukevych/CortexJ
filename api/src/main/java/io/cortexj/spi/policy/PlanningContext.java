@@ -8,6 +8,16 @@ public final class PlanningContext {
 
     public interface CacheLookup {
         boolean isCached(String repositoryId, String revision, String artifactId, String checksum);
+
+        /**
+         * Local cache path for the artifact, or null when unavailable or not
+         * cached. Lets the planner inspect real artifact headers for cached
+         * (downloaded) models instead of relying on filename heuristics.
+         */
+        default java.nio.file.Path cachedArtifactPath(String repositoryId, String revision,
+                                                      String artifactId, String checksum) {
+            return null;
+        }
     }
 
     private final EnvironmentProfile environment;
