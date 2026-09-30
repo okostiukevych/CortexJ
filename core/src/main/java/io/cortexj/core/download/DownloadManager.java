@@ -243,45 +243,49 @@ public final class DownloadManager {
         Map<String, String> hopHeaders = headers;
         for (int hop = 0; hop < MAX_REDIRECTS; hop++) {
             HttpURLConnection probe = open(current.toURL());
-            probe.setConnectTimeout(CONNECT_TIMEOUT);
-            probe.setReadTimeout(READ_TIMEOUT);
-            probe.setInstanceFollowRedirects(false);
-            for (Map.Entry<String, String> header : hopHeaders.entrySet()) {
-                probe.setRequestProperty(header.getKey(), header.getValue());
-            }
-            int status = probe.getResponseCode();
-            if (status >= 300 && status < 400) {
-                String target = probe.getHeaderField("Location");
+            // audit L-7: the probe is disconnected on EVERY exit path - an
+            // exception from getResponseCode() must not leave the socket
+            // lingering in the keep-alive cache
+            try {
+                probe.setConnectTimeout(CONNECT_TIMEOUT);
+                probe.setReadTimeout(READ_TIMEOUT);
+                probe.setInstanceFollowRedirects(false);
+                for (Map.Entry<String, String> header : hopHeaders.entrySet()) {
+                    probe.setRequestProperty(header.getKey(), header.getValue());
+                }
+                int status = probe.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    String target = probe.getHeaderField("Location");
+                    if (target == null) {
+                        throw new IOException("Redirect without Location header from " + current);
+                    }
+                    URI next = current.resolve(target);
+                    String nextScheme = next.getScheme() == null ? "" : next.getScheme();
+                    if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
+                        ArtifactResolutionException rejected = new ArtifactResolutionException(
+                                ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                                "Redirect target uses a non-http(s) scheme: " + next,
+                                "Redirect hops must stay http(s); the download was aborted "
+                                        + "before any credential or data reached the target.");
+                        rejected.detail("redirectTarget", next.toString());
+                        throw rejected;
+                    }
+                    // audit M-18: credentials are dropped when the redirect leaves the
+                    // original origin - a compromised CDN must not harvest the token;
+                    // the stripped set also governs the final download connection
+                    if (!sameOrigin(current, next)) {
+                        hopHeaders = stripCredentials(hopHeaders);
+                    }
+                    current = next;
+                    continue;
+                }
+                if (status == 200) {
+                    return new RedirectTarget(current.toURL(), hopHeaders);
+                }
+                throw new IOException("HTTP " + status + " while resolving " + location);
+            } finally {
                 probe.disconnect();
-                if (target == null) {
-                    throw new IOException("Redirect without Location header from " + current);
-                }
-                URI next = current.resolve(target);
-                String nextScheme = next.getScheme() == null ? "" : next.getScheme();
-                if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
-                    ArtifactResolutionException rejected = new ArtifactResolutionException(
-                            ErrorCode.ARTIFACT_RESOLUTION_FAILED,
-                            "Redirect target uses a non-http(s) scheme: " + next,
-                            "Redirect hops must stay http(s); the download was aborted "
-                                    + "before any credential or data reached the target.");
-                    rejected.detail("redirectTarget", next.toString());
-                    throw rejected;
-                }
-                // audit M-18: credentials are dropped when the redirect leaves the
-                // original origin - a compromised CDN must not harvest the token;
-                // the stripped set also governs the final download connection
-                if (!sameOrigin(current, next)) {
-                    hopHeaders = stripCredentials(hopHeaders);
-                }
-                current = next;
-                continue;
             }
-            if (status == 200) {
-                probe.disconnect();
-                return new RedirectTarget(current.toURL(), hopHeaders);
-            }
-            probe.disconnect();
-            throw new IOException("HTTP " + status + " while resolving " + location);
         }
         throw new IOException("Too many redirects while downloading " + location);
     }
