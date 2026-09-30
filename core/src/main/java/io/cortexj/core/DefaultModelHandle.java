@@ -173,19 +173,42 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.inference.GenerationResponse generate(io.cortexj.inference.GenerationRequest request) {
-            long start = System.nanoTime();
-            io.cortexj.inference.GenerationResponse response = delegate.generate(request);
-            io.cortexj.inference.TokenUsage usage = response == null ? null : response.usage();
-            publishInferenceCompleted(start, "generate",
-                    usage != null && usage.isKnown() ? Long.valueOf(usage.outputTokens()) : null);
-            return response;
+            // audit L-3: the generation dispatch goes through the session lock
+            // for SESSION_SCOPED runtimes exactly like execute/stream
+            if (serializeAccess) {
+                sessionLock.lock();
+            }
+            try {
+                long start = System.nanoTime();
+                io.cortexj.inference.GenerationResponse response = delegate.generate(request);
+                io.cortexj.inference.TokenUsage usage = response == null ? null : response.usage();
+                publishInferenceCompleted(start, "generate",
+                        usage != null && usage.isKnown() ? Long.valueOf(usage.outputTokens()) : null);
+                return response;
+            } finally {
+                if (serializeAccess) {
+                    sessionLock.unlock();
+                }
+            }
         }
 
         @Override
         public io.cortexj.stream.TokenStream stream(io.cortexj.inference.GenerationRequest request) {
-            long startedNanos = System.nanoTime();
-            io.cortexj.stream.TokenStream upstream = delegate.stream(request);
-            return new FirstTokenTimingStream(upstream, startedNanos);
+            // audit L-3: the stream creation dispatches on the runtime model too,
+            // so it goes through the session lock for SESSION_SCOPED runtimes
+            // exactly like generate/execute
+            if (serializeAccess) {
+                sessionLock.lock();
+            }
+            try {
+                long startedNanos = System.nanoTime();
+                io.cortexj.stream.TokenStream upstream = delegate.stream(request);
+                return new FirstTokenTimingStream(upstream, startedNanos);
+            } finally {
+                if (serializeAccess) {
+                    sessionLock.unlock();
+                }
+            }
         }
     }
 
@@ -269,11 +292,22 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.inference.EmbeddingResponse embed(io.cortexj.inference.EmbeddingRequest request) {
-            long start = System.nanoTime();
-            io.cortexj.inference.EmbeddingResponse response = delegate.embed(request);
-            publishInferenceCompleted(start,
-                    response == null ? null : "embed:" + response.vectors().size(), null);
-            return response;
+            // audit L-3: the embedding dispatch goes through the session lock
+            // for SESSION_SCOPED runtimes exactly like execute/generate
+            if (serializeAccess) {
+                sessionLock.lock();
+            }
+            try {
+                long start = System.nanoTime();
+                io.cortexj.inference.EmbeddingResponse response = delegate.embed(request);
+                publishInferenceCompleted(start,
+                        response == null ? null : "embed:" + response.vectors().size(), null);
+                return response;
+            } finally {
+                if (serializeAccess) {
+                    sessionLock.unlock();
+                }
+            }
         }
     }
 
