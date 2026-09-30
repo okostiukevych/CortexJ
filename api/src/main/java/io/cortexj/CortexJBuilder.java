@@ -34,6 +34,7 @@ public final class CortexJBuilder {
     private String remoteModelPrefix;
     private ExecutorService executor;
     private boolean allowRemoteRuntime = true;
+    private boolean asyncEventDelivery;
     private volatile boolean frozen;
 
     public CortexJBuilder runtimeProvider(RuntimeProvider provider) {
@@ -126,6 +127,23 @@ public final class CortexJBuilder {
         ensureMutable();
         this.trustPolicy = policy == null ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING : policy;
         return this;
+    }
+
+    /**
+     * Async event delivery (audit L-9): platform events are dispatched on a
+     * dedicated daemon thread through a bounded queue instead of the caller's
+     * thread, so a slow listener cannot stall model loads or downloads.
+     * Ordering between events is lost on queue overflow (events are dropped
+     * and counted in the debug log). Synchronous delivery remains the default.
+     */
+    public CortexJBuilder asyncEventDelivery(boolean async) {
+        ensureMutable();
+        this.asyncEventDelivery = async;
+        return this;
+    }
+
+    public boolean isAsyncEventDelivery() {
+        return asyncEventDelivery;
     }
 
     public CortexJBuilder proxy(String host, int port) {

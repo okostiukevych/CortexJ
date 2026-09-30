@@ -48,7 +48,7 @@ public final class DefaultCortexJ implements CortexJ {
         this.snapshot = EnvironmentSnapshot.probe();
         PlatformModuleSelector.validateStarters(snapshot);
         this.platformModule = PlatformModuleSelector.select(snapshot);
-        this.events = new EventBus(configuration.eventListeners());
+        this.events = new EventBus(configuration.eventListeners(), configuration.isAsyncEventDelivery());
 
         this.runtimeProviders = SpiRegistries.loadSorted(RuntimeProvider.class,
                 new SpiRegistries.IdAccessor<RuntimeProvider>() {
