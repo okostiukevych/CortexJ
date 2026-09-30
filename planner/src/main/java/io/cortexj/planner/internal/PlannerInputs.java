@@ -153,8 +153,8 @@ public final class PlannerInputs {
 
     private static <T> List<T> immutable(List<T> list) {
         if (list == null) {
-            return new ArrayList<T>();
+            return java.util.Collections.emptyList();
         }
-        return new ArrayList<T>(list);
+        return java.util.Collections.unmodifiableList(new ArrayList<T>(list));
     }
 }
