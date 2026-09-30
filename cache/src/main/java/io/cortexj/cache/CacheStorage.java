@@ -33,6 +33,11 @@ public final class CacheStorage {
     private final java.util.Set<Path> activePartials =
             java.util.Collections.newSetFromMap(
                     new java.util.concurrent.ConcurrentHashMap<Path, Boolean>());
+    private final java.util.concurrent.atomic.AtomicLong trackedBytes =
+            new java.util.concurrent.atomic.AtomicLong();
+    private volatile boolean trackedInitialized;
+    private final java.util.concurrent.atomic.AtomicLong listCalls =
+            new java.util.concurrent.atomic.AtomicLong();
     private volatile PlatformEventListener eventListener = PlatformEventListener.NOOP;
 
     public CacheStorage(Path root) {
@@ -238,9 +243,10 @@ public final class CacheStorage {
                         Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
                     }
                 }
-                writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
-            }
-            eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
+            writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
+        }
+        trackedBytes.addAndGet(bytesCopied);
+        eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
                     PlatformEvent.Level.INFO,
                     "artifact stored: " + artifactId,
                     null, System.currentTimeMillis()));
@@ -254,6 +260,7 @@ public final class CacheStorage {
     }
 
     public List<CacheEntry> list() throws IOException {
+        listCalls.incrementAndGet();
         final List<CacheEntry> entries = new ArrayList<CacheEntry>();
         if (!Files.isDirectory(root)) {
             return entries;
@@ -334,6 +341,7 @@ public final class CacheStorage {
                     freed += entry.sizeBytes();
                 }
             }
+            trackedBytes.addAndGet(-freed);
             return freed;
         }
     }
@@ -348,23 +356,34 @@ public final class CacheStorage {
                 freed += entry.sizeBytes();
             }
         }
+        trackedBytes.set(0L);
         return freed;
     }
 
     public long evictToFit(long incomingBytes) throws IOException {
         synchronized (evictionLock) {
+            // amortized eviction (audit M-16): the common case (durable content
+            // plus the incoming artifact fits the advisory cap) is decided from
+            // the incremental size index - no tree-wide walk per put; the walk
+            // runs only when the index says over-limit and re-baselines it
+            long tracked = trackedBytes.get();
+            if (trackedInitialized && tracked + incomingBytes <= maxSizeBytes) {
+                return 0L;
+            }
             List<CacheEntry> entries = list();
             long now = System.currentTimeMillis();
             long total = 0L;
             for (CacheEntry entry : entries) {
-                // transient in-flight temps are excluded from the accounting:
-                // they move into place within seconds and the incomingBytes
-                // parameter already reserves space for the current put's temp
                 if (isTempEntry(entry) && now - entry.lastModifiedMillis() < EVICT_TEMP_GRACE_MILLIS) {
+                    continue;
+                }
+                if (isActivePartial(entry)) {
                     continue;
                 }
                 total += entry.sizeBytes();
             }
+            trackedBytes.set(total);
+            trackedInitialized = true;
             if (total + incomingBytes <= maxSizeBytes) {
                 return 0L;
             }
@@ -393,8 +412,13 @@ public final class CacheStorage {
                     freed += entry.sizeBytes();
                 }
             }
+            trackedBytes.addAndGet(-freed);
             return freed;
         }
+    }
+
+    long listCallsForTesting() {
+        return listCalls.get();
     }
 
     private static boolean isTempEntry(CacheEntry entry) {
@@ -408,6 +432,7 @@ public final class CacheStorage {
             Files.deleteIfExists(entry.path());
             deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
         }
+        trackedBytes.set(0L);
         return freed;
     }
 
