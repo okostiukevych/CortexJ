@@ -100,44 +100,52 @@ public final class DownloadManager {
                 .resolve(safeName(repositoryId) + "~" + safeName(revision) + "~"
                         + safeName(artifact.artifact().id()) + ".part");
         boolean resumedOnce = java.nio.file.Files.exists(resumeFile);
-        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            try {
-                if (cancelFlag != null && cancelFlag.get()) {
-                    throw new java.io.IOException("download cancelled");
+        // audit M-12: the in-flight partial is registered so LRU/age eviction
+        // never deletes an active download's resume file mid-flight
+        cache.registerActivePartial(resumeFile);
+        try {
+            for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                    if (cancelFlag != null && cancelFlag.get()) {
+                        throw new java.io.IOException("download cancelled");
+                    }
+                    java.nio.file.Path path = attemptDownload(artifact, repositoryId, revision, cache,
+                            declaredSize, resumeFile, cancelFlag);
+                    java.nio.file.Files.deleteIfExists(resumeFile);
+                    Map<String, String> completed = new LinkedHashMap<String, String>(attributes);
+                    completed.put("durationMillis",
+                            String.valueOf(System.currentTimeMillis() - downloadStartedMillis));
+                    events.publish(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
+                            "download completed: " + artifact.artifact().id(), completed);
+                    return path;
+                } catch (IOException e) {
+                    lastError = e;
+                    events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
+                            "download attempt " + attempt + " failed for " + artifact.artifact().id()
+                                    + ": " + e.getMessage(), attributes);
                 }
-                java.nio.file.Path path = attemptDownload(artifact, repositoryId, revision, cache,
-                        declaredSize, resumeFile, cancelFlag);
-                java.nio.file.Files.deleteIfExists(resumeFile);
-                Map<String, String> completed = new LinkedHashMap<String, String>(attributes);
-                completed.put("durationMillis",
-                        String.valueOf(System.currentTimeMillis() - downloadStartedMillis));
-                events.publish(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
-                        "download completed: " + artifact.artifact().id(), completed);
-                return path;
-            } catch (IOException e) {
-                lastError = e;
-                events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
-                        "download attempt " + attempt + " failed for " + artifact.artifact().id() + ": " + e.getMessage(), attributes);
             }
+            if (lastError != null && lastError.getMessage() != null
+                    && lastError.getMessage().contains("cancelled")) {
+                ArtifactResolutionException cancelled = new ArtifactResolutionException(
+                        ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                        "Download of " + artifact.artifact().id() + " was cancelled",
+                        "The partial download is kept for resuming on the next attempt.");
+                cancelled.detail("artifact", artifact.artifact().id());
+                throw cancelled;
+            }
+            ArtifactResolutionException failure = new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                    "Download failed after " + MAX_ATTEMPTS + " attempts: " + artifact.artifact().id(),
+                    "Check network access and retry; the artifact location was "
+                            + artifact.location()
+                            + (resumedOnce && java.nio.file.Files.exists(resumeFile)
+                            ? ". Partial progress is kept and will be resumed (HTTP Range)."
+                            : ""), lastError);
+            failure.detail("artifact", artifact.artifact().id());
+            throw failure;
+        } finally {
+            cache.unregisterActivePartial(resumeFile);
         }
-        if (lastError != null && lastError.getMessage() != null
-                && lastError.getMessage().contains("cancelled")) {
-            ArtifactResolutionException cancelled = new ArtifactResolutionException(
-                    ErrorCode.ARTIFACT_RESOLUTION_FAILED,
-                    "Download of " + artifact.artifact().id() + " was cancelled",
-                    "The partial download is kept for resuming on the next attempt.");
-            cancelled.detail("artifact", artifact.artifact().id());
-            throw cancelled;
-        }
-        ArtifactResolutionException failure = new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
-                "Download failed after " + MAX_ATTEMPTS + " attempts: " + artifact.artifact().id(),
-                "Check network access and retry; the artifact location was "
-                        + artifact.location()
-                        + (resumedOnce && java.nio.file.Files.exists(resumeFile)
-                        ? ". Partial progress is kept and will be resumed (HTTP Range)."
-                        : ""), lastError);
-        failure.detail("artifact", artifact.artifact().id());
-        throw failure;
     }
 
     private static String safeName(String value) {

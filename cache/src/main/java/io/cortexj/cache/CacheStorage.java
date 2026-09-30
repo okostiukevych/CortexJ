@@ -30,6 +30,9 @@ public final class CacheStorage {
     private final long maxSizeBytes;
     private final Object[] keyLocks = new Object[LOCK_STRIPES];
     private final Object evictionLock = new Object();
+    private final java.util.Set<Path> activePartials =
+            java.util.Collections.newSetFromMap(
+                    new java.util.concurrent.ConcurrentHashMap<Path, Boolean>());
     private volatile PlatformEventListener eventListener = PlatformEventListener.NOOP;
 
     public CacheStorage(Path root) {
@@ -91,6 +94,22 @@ public final class CacheStorage {
     private Object keyLock(Path artifact) {
         int index = (artifact.hashCode() & 0x7fffffff) % LOCK_STRIPES;
         return keyLocks[index];
+    }
+
+    /**
+     * Registers an in-flight download partial so LRU/age eviction never
+     * deletes an active download's resume file mid-flight (audit M-12).
+     */
+    public void registerActivePartial(Path partialFile) {
+        activePartials.add(partialFile.toAbsolutePath().normalize());
+    }
+
+    public void unregisterActivePartial(Path partialFile) {
+        activePartials.remove(partialFile.toAbsolutePath().normalize());
+    }
+
+    private boolean isActivePartial(CacheEntry entry) {
+        return activePartials.contains(entry.path().toAbsolutePath().normalize());
     }
 
     /**
@@ -304,6 +323,9 @@ public final class CacheStorage {
                 if (entry.lastModifiedMillis() >= cutoffEpochMillis) {
                     continue;
                 }
+                if (isActivePartial(entry)) {
+                    continue;
+                }
                 if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
                     continue;
                 }
@@ -358,6 +380,9 @@ public final class CacheStorage {
                     break;
                 }
                 if (isTempEntry(entry) && now - entry.lastModifiedMillis() < EVICT_TEMP_GRACE_MILLIS) {
+                    continue;
+                }
+                if (isActivePartial(entry)) {
                     continue;
                 }
                 if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
