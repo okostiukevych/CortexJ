@@ -121,14 +121,17 @@ final class HttpJsonClient {
         if (stream == null) {
             return "";
         }
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8 * 1024];
-        int read;
-        while ((read = stream.read(buffer)) >= 0) {
-            bytes.write(buffer, 0, read);
+        // audit L-6: explicit close - a mid-read exception must not leak the
+        // response/error stream to the outer disconnect
+        try (InputStream input = stream) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8 * 1024];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                bytes.write(buffer, 0, read);
+            }
+            return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
         }
-        stream.close();
-        return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
     }
 
     static String trimSlash(String value) {

@@ -339,13 +339,17 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     }
 
     private static String readAll(java.io.InputStream input) throws IOException {
-        java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
-        byte[] chunk = new byte[8192];
-        int read;
-        while ((read = input.read(chunk)) >= 0) {
-            buffer.write(chunk, 0, read);
+        // audit L-6: explicit close - a mid-read exception must not leak the
+        // response stream to the outer disconnect
+        try (java.io.InputStream in = input) {
+            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int read;
+            while ((read = in.read(chunk)) >= 0) {
+                buffer.write(chunk, 0, read);
+            }
+            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
         }
-        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private static TokenUsage usageOf(JsonNode usage) {
