@@ -23,6 +23,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public final class DefaultModelHandle implements ModelHandle {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(DefaultModelHandle.class.getName());
+
     private final ModelDescriptor descriptor;
     private final ExecutionPlan plan;
     private volatile RuntimeModel model;
@@ -399,13 +402,17 @@ public final class DefaultModelHandle implements ModelHandle {
                 if (model != null) {
                     model.close();
                 }
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException failure) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "model close failed for " + descriptor.canonicalId() + "; continuing", failure);
             }
             try {
                 if (runtime != null) {
                     runtime.close();
                 }
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException failure) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "runtime close failed for " + descriptor.canonicalId() + "; continuing", failure);
             }
         } finally {
             if (serializeAccess) {
