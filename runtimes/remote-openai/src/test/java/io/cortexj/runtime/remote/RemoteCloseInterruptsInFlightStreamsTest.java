@@ -139,8 +139,34 @@ class RemoteCloseInterruptsInFlightStreamsTest {
         return true;
     }
 
+    private static java.util.Set<Long> threadIdsNamed(String prefix) {
+        java.util.Set<Long> ids = new java.util.HashSet<Long>();
+        for (java.util.Map.Entry<Thread, java.lang.StackTraceElement[]> entry
+                : Thread.getAllStackTraces().entrySet()) {
+            if (entry.getKey().isAlive() && entry.getKey().getName().startsWith(prefix)) {
+                ids.add(Long.valueOf(entry.getKey().getId()));
+            }
+        }
+        return ids;
+    }
+
+    private static boolean noNewThreadAliveNamed(String prefix, java.util.Set<Long> preExisting) {
+        for (java.util.Map.Entry<Thread, java.lang.StackTraceElement[]> entry
+                : Thread.getAllStackTraces().entrySet()) {
+            Thread thread = entry.getKey();
+            if (thread.isAlive() && thread.getName().startsWith(prefix)
+                    && !preExisting.contains(Long.valueOf(thread.getId()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @Test
     void runtimeCloseUnblocksInFlightSseWorkersImmediately() throws Exception {
+        // earlier tests in this JVM may leave their own (unclosed, daemon)
+        // runtime pools alive: scope the leak assertion to THIS test's threads
+        java.util.Set<Long> preExisting = threadIdsNamed("cortexj-remote-io");
         ModelRuntime runtime = loadRuntime();
         RuntimeModel model = runtime.load(new RuntimeModelRequest(
                 io.cortexj.model.ModelDescriptor.builder("tck/model").build(),
@@ -181,8 +207,8 @@ class RemoteCloseInterruptsInFlightStreamsTest {
                 "a stream interrupted by close() must not deliver an error "
                         + "(deliberate close has cancel semantics)");
         Thread.sleep(200);
-        assertTrue(noThreadAliveNamed("cortexj-remote-io"),
-                "no library SSE worker thread may survive runtime close()");
+        assertTrue(noNewThreadAliveNamed("cortexj-remote-io", preExisting),
+                "no SSE worker thread of THIS runtime may survive runtime close()");
         model.close();
     }
 }

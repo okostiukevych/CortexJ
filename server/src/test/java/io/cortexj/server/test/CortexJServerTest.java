@@ -136,6 +136,16 @@ class CortexJServerTest {
                     public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
                         return new FakeModelHandle();
                     }
+
+                    @Override
+                    public java.util.concurrent.Future<ModelHandle> loadAsync(ModelReference reference) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(new FakeModelHandle());
+                    }
+
+                    @Override
+                    public java.util.concurrent.Future<ModelHandle> loadAsync(io.cortexj.planner.ExecutionRequest request) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(new FakeModelHandle());
+                    }
                 };
             }
 
@@ -303,6 +313,16 @@ class CortexJServerTest {
                         public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
                             return hangingStreamHandle();
                         }
+
+                        @Override
+                        public java.util.concurrent.Future<ModelHandle> loadAsync(ModelReference reference) {
+                            return java.util.concurrent.CompletableFuture.completedFuture(hangingStreamHandle());
+                        }
+
+                        @Override
+                        public java.util.concurrent.Future<ModelHandle> loadAsync(io.cortexj.planner.ExecutionRequest request) {
+                            return java.util.concurrent.CompletableFuture.completedFuture(hangingStreamHandle());
+                        }
                     };
                 }
 
@@ -404,6 +424,16 @@ class CortexJServerTest {
                     @Override
                     public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
                         return new FakeModelHandle();
+                    }
+
+                    @Override
+                    public java.util.concurrent.Future<ModelHandle> loadAsync(ModelReference reference) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(new FakeModelHandle());
+                    }
+
+                    @Override
+                    public java.util.concurrent.Future<ModelHandle> loadAsync(io.cortexj.planner.ExecutionRequest request) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(new FakeModelHandle());
                     }
                 };
             }

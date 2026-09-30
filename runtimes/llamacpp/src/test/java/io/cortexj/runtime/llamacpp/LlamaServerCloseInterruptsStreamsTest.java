@@ -137,8 +137,32 @@ class LlamaServerCloseInterruptsStreamsTest {
         return true;
     }
 
+    private static java.util.Set<Long> threadIdsNamed(String prefix) {
+        java.util.Set<Long> ids = new java.util.HashSet<Long>();
+        for (java.util.Map.Entry<Thread, java.lang.StackTraceElement[]> entry
+                : Thread.getAllStackTraces().entrySet()) {
+            if (entry.getKey().isAlive() && entry.getKey().getName().startsWith(prefix)) {
+                ids.add(Long.valueOf(entry.getKey().getId()));
+            }
+        }
+        return ids;
+    }
+
+    private static boolean noNewThreadAliveNamed(String prefix, java.util.Set<Long> preExisting) {
+        for (java.util.Map.Entry<Thread, java.lang.StackTraceElement[]> entry
+                : Thread.getAllStackTraces().entrySet()) {
+            Thread thread = entry.getKey();
+            if (thread.isAlive() && thread.getName().startsWith(prefix)
+                    && !preExisting.contains(Long.valueOf(thread.getId()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @Test
     void modelCloseUnblocksTheStalledSseWorkerImmediately() throws Exception {
+        java.util.Set<Long> preExisting = threadIdsNamed("cortexj-llama-sse");
         RuntimeModel model = loadModel();
         io.cortexj.inference.TextGenerationCapability generator =
                 (io.cortexj.inference.TextGenerationCapability) model;
@@ -176,7 +200,7 @@ class LlamaServerCloseInterruptsStreamsTest {
                 "a stream interrupted by close() must not deliver an error "
                         + "(deliberate close has cancel semantics)");
         Thread.sleep(200);
-        assertTrue(noThreadAliveNamed("cortexj-llama-sse"),
-                "no library SSE worker thread may survive model close()");
+        assertTrue(noNewThreadAliveNamed("cortexj-llama-sse", preExisting),
+                "no SSE worker thread of THIS model may survive model close()");
     }
 }
