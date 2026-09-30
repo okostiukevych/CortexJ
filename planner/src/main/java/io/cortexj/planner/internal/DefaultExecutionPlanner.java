@@ -412,7 +412,7 @@ public final class DefaultExecutionPlanner implements Planner {
             long now = System.currentTimeMillis();
             java.util.concurrent.CompletableFuture<CachedProbe> seen = probeFutures.get(key);
             if (seen != null) {
-                CachedProbe cached = seen.getNow(null);
+                CachedProbe cached = resultOf(seen);
                 if (cached != null && now < cached.expiresAtMillis) {
                     return cached.result;
                 }
@@ -435,7 +435,7 @@ public final class DefaultExecutionPlanner implements Planner {
                     }
                 }
             }
-            CachedProbe cached = racing.getNow(null);
+            CachedProbe cached = resultOf(racing);
             if (cached == null) {
                 return awaitProbeResult(provider, key, racing);
             }
@@ -445,6 +445,20 @@ public final class DefaultExecutionPlanner implements Planner {
             probeFutures.remove(key, racing);
         }
         return probeOnce(provider).result;
+    }
+
+    private static CachedProbe resultOf(java.util.concurrent.CompletableFuture<CachedProbe> future) {
+        // getNow(null) violates the JDK nullness contract and throws an
+        // unhandled CompletionException on exceptional completion; a done
+        // future is joined safely, an exceptional completion counts as absent
+        if (!future.isDone()) {
+            return null;
+        }
+        try {
+            return future.join();
+        } catch (java.util.concurrent.CompletionException failure) {
+            return null;
+        }
     }
 
     private CachedProbe probeOnce(RuntimeProvider provider) {

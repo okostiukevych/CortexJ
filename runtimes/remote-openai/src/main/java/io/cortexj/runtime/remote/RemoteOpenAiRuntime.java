@@ -286,7 +286,6 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             // exception must not rely on the outer disconnect for cleanup
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8))) {
-                StringBuilder content = new StringBuilder();
                 FinishReason finish = FinishReason.STOP;
                 long inputTokens = -1;
                 long outputTokens = -1;
@@ -320,7 +319,6 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     JsonNode choice = chunk.path("choices").path(0);
                     String delta = choice.path("delta").path("content").asText("");
                     if (!delta.isEmpty()) {
-                        content.append(delta);
                         publisher.publish(delta);
                     }
                     if (choice.has("finish_reason") && !choice.path("finish_reason").isNull()) {

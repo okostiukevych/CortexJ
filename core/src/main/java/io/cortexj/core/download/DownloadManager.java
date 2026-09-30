@@ -164,7 +164,9 @@ public final class DownloadManager {
         Map<String, String> effectiveHeaders = target.headers;
         long alreadyDownloaded = 0L;
         java.nio.file.Path partialDirectory = resumeFile.getParent();
-        java.nio.file.Files.createDirectories(partialDirectory);
+        if (partialDirectory != null) {
+            java.nio.file.Files.createDirectories(partialDirectory);
+        }
         if (java.nio.file.Files.exists(resumeFile)) {
             alreadyDownloaded = java.nio.file.Files.size(resumeFile);
         } else {
@@ -207,9 +209,10 @@ public final class DownloadManager {
                 throw new IOException("truncated download: " + written + " of " + declaredSize
                         + " bytes (partial progress is kept for resume)");
             }
-            return cache.put(repositoryId, revision, artifact.artifact().id(),
-                    artifact.artifact().checksum(),
-                    new java.io.FileInputStream(resumeFile.toFile()));
+            try (java.io.InputStream content = new java.io.FileInputStream(resumeFile.toFile())) {
+                return cache.put(repositoryId, revision, artifact.artifact().id(),
+                        artifact.artifact().checksum(), content);
+            }
         } catch (java.io.IOException downloadFailure) {
             // keep the partial file for the next resume attempt
             throw downloadFailure;

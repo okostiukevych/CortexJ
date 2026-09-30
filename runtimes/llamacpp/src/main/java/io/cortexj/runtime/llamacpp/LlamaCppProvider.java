@@ -94,7 +94,7 @@ public final class LlamaCppProvider implements RuntimeProvider {
                         + "3. use the ONNX runtime for embedding workloads");
         failure.detail("runtime", id.value());
         failure.detail("probedPaths", String.valueOf(candidates));
-        failure.detail("serverBinary", String.valueOf(serverBinary));
+        failure.detail("serverBinary", "not found");
         return RuntimeProbeResult.unavailable(
                 "neither llama-server nor the llama.cpp JNI library is installed on this machine",
                 failure);

@@ -72,7 +72,16 @@ public final class ArtifactInspectorRegistry {
     public Map<String, ArtifactInspection> inspectAll(Map<String, java.nio.file.Path> artifactsByPath) {
         Map<String, ArtifactInspection> result = new LinkedHashMap<String, ArtifactInspection>();
         for (Map.Entry<String, java.nio.file.Path> entry : artifactsByPath.entrySet()) {
-            ArtifactInspection inspection = inspectOrNull(ArtifactFormat.fromFileName(entry.getValue().getFileName().toString()), entry.getValue());
+            java.nio.file.Path path = entry.getValue();
+            java.nio.file.Path fileName = path == null ? null : path.getFileName();
+            if (fileName == null) {
+                continue;
+            }
+            ArtifactFormat format = ArtifactFormat.fromFileName(fileName.toString());
+            if (format == null) {
+                continue;
+            }
+            ArtifactInspection inspection = inspectOrNull(format, path);
             if (inspection != null) {
                 result.put(entry.getKey(), inspection);
             }

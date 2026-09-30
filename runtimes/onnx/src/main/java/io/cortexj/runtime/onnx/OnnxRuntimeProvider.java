@@ -181,10 +181,11 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         private io.cortexj.model.token.HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
             Path tokenizerJson = modelPath.resolveSibling("tokenizer.json");
+            Path parentDirectory = modelPath.getParent();
             if (!Files.isRegularFile(tokenizerJson)) {
-                tokenizerJson = modelPath.getParent() == null
+                tokenizerJson = parentDirectory == null
                         ? null
-                        : modelPath.getParent().resolve("tokenizer.json");
+                        : parentDirectory.resolve("tokenizer.json");
             }
             if (tokenizerJson != null && Files.isRegularFile(tokenizerJson)) {
                 try {
