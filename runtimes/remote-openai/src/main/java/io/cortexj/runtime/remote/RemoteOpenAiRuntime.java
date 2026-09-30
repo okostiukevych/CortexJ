@@ -282,59 +282,62 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
 
         private void readSseStream(InputStream stream, io.cortexj.stream.internal.TokenStreamPublisher publisher,
                                    java.util.concurrent.atomic.AtomicBoolean cancelled) throws IOException {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
-            StringBuilder content = new StringBuilder();
-            FinishReason finish = FinishReason.STOP;
-            long inputTokens = -1;
-            long outputTokens = -1;
-            long lastActivity = System.currentTimeMillis();
-            while (!cancelled.get() && !runtimeClosed.get()) {
-                String line;
-                try {
-                    line = reader.readLine();
-                } catch (java.net.SocketTimeoutException idle) {
-                    if (System.currentTimeMillis() - lastActivity >= SSE_IDLE_CEILING_MILLIS) {
-                        throw new IOException("remote stream produced no data for "
-                                + SSE_IDLE_CEILING_MILLIS + " ms");
+            // audit L-6: the reader is closed by try-with-resources - a mid-read
+            // exception must not rely on the outer disconnect for cleanup
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                StringBuilder content = new StringBuilder();
+                FinishReason finish = FinishReason.STOP;
+                long inputTokens = -1;
+                long outputTokens = -1;
+                long lastActivity = System.currentTimeMillis();
+                while (!cancelled.get() && !runtimeClosed.get()) {
+                    String line;
+                    try {
+                        line = reader.readLine();
+                    } catch (java.net.SocketTimeoutException idle) {
+                        if (System.currentTimeMillis() - lastActivity >= SSE_IDLE_CEILING_MILLIS) {
+                            throw new IOException("remote stream produced no data for "
+                                    + SSE_IDLE_CEILING_MILLIS + " ms");
+                        }
+                        continue;
                     }
-                    continue;
+                    if (line == null) {
+                        break;
+                    }
+                    lastActivity = System.currentTimeMillis();
+                    if (line.isEmpty()) {
+                        continue;
+                    }
+                    if (!line.startsWith("data:")) {
+                        continue;
+                    }
+                    String data = line.substring(5).trim();
+                    if (data.equals("[DONE]")) {
+                        break;
+                    }
+                    JsonNode chunk = client.fromJson(data, JsonNode.class);
+                    JsonNode choice = chunk.path("choices").path(0);
+                    String delta = choice.path("delta").path("content").asText("");
+                    if (!delta.isEmpty()) {
+                        content.append(delta);
+                        publisher.publish(delta);
+                    }
+                    if (choice.has("finish_reason") && !choice.path("finish_reason").isNull()) {
+                        finish = finishReason(choice.path("finish_reason").asText("stop"));
+                    }
+                    JsonNode usageNode = chunk.path("usage");
+                    if (usageNode.has("prompt_tokens")) {
+                        inputTokens = usageNode.path("prompt_tokens").asLong(-1);
+                        outputTokens = usageNode.path("completion_tokens").asLong(-1);
+                    }
                 }
-                if (line == null) {
-                    break;
+                if (cancelled.get() || runtimeClosed.get()) {
+                    // deliberately cancelled or closed: no terminal delivery
+                    return;
                 }
-                lastActivity = System.currentTimeMillis();
-                if (line.isEmpty()) {
-                    continue;
-                }
-                if (!line.startsWith("data:")) {
-                    continue;
-                }
-                String data = line.substring(5).trim();
-                if (data.equals("[DONE]")) {
-                    break;
-                }
-                JsonNode chunk = client.fromJson(data, JsonNode.class);
-                JsonNode choice = chunk.path("choices").path(0);
-                String delta = choice.path("delta").path("content").asText("");
-                if (!delta.isEmpty()) {
-                    content.append(delta);
-                    publisher.publish(delta);
-                }
-                if (choice.has("finish_reason") && !choice.path("finish_reason").isNull()) {
-                    finish = finishReason(choice.path("finish_reason").asText("stop"));
-                }
-                JsonNode usageNode = chunk.path("usage");
-                if (usageNode.has("prompt_tokens")) {
-                    inputTokens = usageNode.path("prompt_tokens").asLong(-1);
-                    outputTokens = usageNode.path("completion_tokens").asLong(-1);
-                }
+                publisher.complete(finish, inputTokens, outputTokens);
             }
-            reader.close();
-            if (cancelled.get() || runtimeClosed.get()) {
-                // deliberately cancelled or closed: no terminal delivery
-                return;
-            }
-            publisher.complete(finish, inputTokens, outputTokens);
         }
 
         @Override
