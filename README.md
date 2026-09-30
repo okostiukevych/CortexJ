@@ -182,14 +182,16 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **41 suites / 177 tests green on JDK 25**, **37 suites / 164 tests
-green on real JDK 8** (verified locally); GitHub Actions CI matrix runs
-JDK 8/11/17/21/25 on ubuntu/macos/windows (15/15 lanes green), JPMS lanes
-(`mvn -Pjpms`), and gated self-hosted GPU lanes (CUDA/Metal per spec 70).
+Current test matrix: **~80 test classes / 318 tests green on JDK 25** (12 gated
+skips are loud assumeTrue, never silent); GitHub Actions CI matrix runs
+JDK 8/11/17/21/25 on ubuntu/macos/windows, JPMS lanes (`mvn -Pjpms`),
+SpotBugs + CodeQL + JaCoCo coverage lanes (issue #53), and gated self-hosted
+GPU lanes (CUDA/Metal per spec 70).
 
 llama.cpp execution is real: the provider manages a `llama-server` process (health
-polling, blocking + SSE streaming, graceful shutdown) when
-`CORTEXJ_LLAMACPP_SERVER` points at the binary. §95 JPMS is implemented as the
+polling, blocking + SSE streaming, graceful shutdown incl. destroyForcibly escalation
+and orphan-free teardown on Ctrl+C/close/failure) when
+`CORTEXJ_LLAMACPP_SERVER` points at the binary (verified 2026-09-30: issues #14, #15, #29). §95 JPMS is implemented as the
 `jpms` build profile (multi-release module-info jars, verified with
 `jar --describe-module`); §60 server mode ships as `cortexj-server` +
 `cortexj server` CLI; §93/94 ship as `cortexj-maven-plugin` (`cortexj:verify`).
@@ -230,9 +232,12 @@ Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 - `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
   and the exact remediation: *replace with cortexj-starter-java8*.
 
-87 automated tests across 16 suites: planner synthetic matrices (determinism, hard
-constraints, JVM/quality/offline policies), provider TCK, download integrity, cache safety,
-and an end-to-end load→plan→execute→close cycle.
+318 automated tests across ~80 test classes: planner synthetic matrices (determinism, hard
+constraints, JVM/quality/offline policies), provider TCK (lifecycle, streaming, cancellation,
+registration contracts), concurrency/race regression suite (double-close, cold-load races,
+close-during-stream, cancellation - tagged `concurrency`), download integrity + retry matrix,
+cache safety + amortized eviction, resource-leak assertions (process exit, executor termination,
+temp cleanup, handle closure), and end-to-end load→plan→execute→close cycles.
 
 ## Configuration priority
 

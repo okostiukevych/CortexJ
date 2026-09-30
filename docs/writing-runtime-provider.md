@@ -120,5 +120,9 @@ class MyProviderTckTest extends RuntimeProviderContract {
 }
 ```
 
-The TCK validates descriptor sanity, probe reporting, evaluation reasons, and
-registration. See `cortexj-tck` sources for the exact contract.
+The TCK validates descriptor sanity, probe reporting, evaluation reasons,
+ServiceLoader registration, lifecycle close idempotency, typed failed-load
+behavior with the provider staying usable, and streaming contracts (single
+subscription, cancel semantics, at-most-once terminal). Contracts that need a
+loadable artifact skip loudly via assumeTrue when none is available. See
+`cortexj-tck` sources for the exact contract.

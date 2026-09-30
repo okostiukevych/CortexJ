@@ -17,13 +17,13 @@ threat model of spec §64-§65 and the acceptance criteria of §113.
 | Threat | Mitigation | Status |
 |---|---|---|
 | Path traversal via repository/revision/artifact ids | `CacheStorage` sanitization; bundle manifests cannot escape the bundle dir (`CORTEXJ-ARTIFACT-2005`); local repository path resolution is absolute+normalized | ✅ |
-| Corrupted/tampered artifacts | SHA-256 verification on download and on cache read (`CORTEXJ-ARTIFACT-2001`); checksum mismatch never exposes partial content; bundle verify reports tampering explicitly | ✅ |
+| Corrupted/tampered artifacts | SHA-256 verification on download (real LFS sha256 propagated from HF blobs, `CORTEXJ-ARTIFACT-2001`) and verify-once-then-trust on cache read (manifest + size check; the paranoid `verifyIntegrity` escape hatch re-hashes on demand); checksum mismatch never exposes partial content; bundle verify reports tampering explicitly (verified 2026-09-30: issues #16, #20) | ✅ |
 | Arbitrary repository code execution (§35.1) | Resolution is data-only; no remote Python/source execution anywhere; llama.cpp execution is via the managed llama-server process (native code isolated outside the JVM) | ✅ |
 | Untrusted models auto-executed (§35.2) | Trust policies: `TRUSTED_ONLY` fails with `CORTEXJ-SEC-10001`; `ALLOW_UNSIGNED_WITH_WARNING` records warning events; repositories set `trustNote` on content they cannot vouch for | ✅ |
 | Native artifact mismatch | Probe-before-open contract: providers verify environment/library presence before loading; honest `CORTEXJ-NATIVE-*` errors | ✅ |
-| Credential leakage | Tokens via `TokenSupplier`/env only; never logged, never in error messages or plan explanations (test: `apiKeyUpstreamOnlyAndNeverInErrors`) | ✅ |
+| Credential leakage | Tokens via `TokenSupplier`/env only; never logged, never in error messages or plan explanations (test: `apiKeyUpstreamOnlyAndNeverInErrors`); `Authorization`/`Cookie` headers are scoped to the original origin on redirects - stripped on cross-origin hops and the final connection (verified 2026-09-30: issue #39) | ✅ |
 | Prompt/response logging (§57.3) | Platform events carry metadata only (runtime, model, artifact ids, durations, byte counts); prompts are never emitted to logs by default | ✅ |
-| Download of oversized artifacts | Declared size checked against the configured maximum before any bytes are written (`CORTEXJ-ARTIFACT-*` too-large) | ✅ |
+| Download of oversized artifacts | Declared size checked against the configured maximum before any bytes are written (`CORTEXJ-ARTIFACT-*` too-large); server request bodies are size-limited (`CORTEXJ-SRV-*` 413) | ✅ |
 | Supply chain (§100) | Immutable revision resolution; lockfiles pin revision+sha256; bundle verify validates checksum manifests; no mandatory external dependencies in core (§108.15) | ✅ |
 
 ## Findings found and fixed during review
