@@ -159,7 +159,9 @@ public final class DownloadManager {
                                                long declaredSize,
                                                java.nio.file.Path resumeFile,
                                                java.util.concurrent.atomic.AtomicBoolean cancelFlag) throws IOException {
-        URL url = openFollowingRedirects(artifact.location(), artifact.downloadHeaders());
+        RedirectTarget target = resolveRedirectTarget(artifact.location(), artifact.downloadHeaders());
+        URL url = target.url;
+        Map<String, String> effectiveHeaders = target.headers;
         long alreadyDownloaded = 0L;
         java.nio.file.Path partialDirectory = resumeFile.getParent();
         java.nio.file.Files.createDirectories(partialDirectory);
@@ -172,7 +174,7 @@ public final class DownloadManager {
         HttpURLConnection connection = open(url);
         connection.setConnectTimeout(CONNECT_TIMEOUT);
         connection.setReadTimeout(READ_TIMEOUT);
-        for (Map.Entry<String, String> header : artifact.downloadHeaders().entrySet()) {
+        for (Map.Entry<String, String> header : effectiveHeaders.entrySet()) {
             connection.setRequestProperty(header.getKey(), header.getValue());
         }
         if (declaredSize > 0 && alreadyDownloaded >= declaredSize) {
@@ -236,14 +238,15 @@ public final class DownloadManager {
         }
     }
 
-    private URL openFollowingRedirects(URI location, Map<String, String> headers) throws IOException {
+    private RedirectTarget resolveRedirectTarget(URI location, Map<String, String> headers) throws IOException {
         URI current = location;
+        Map<String, String> hopHeaders = headers;
         for (int hop = 0; hop < MAX_REDIRECTS; hop++) {
             HttpURLConnection probe = open(current.toURL());
             probe.setConnectTimeout(CONNECT_TIMEOUT);
             probe.setReadTimeout(READ_TIMEOUT);
             probe.setInstanceFollowRedirects(false);
-            for (Map.Entry<String, String> header : headers.entrySet()) {
+            for (Map.Entry<String, String> header : hopHeaders.entrySet()) {
                 probe.setRequestProperty(header.getKey(), header.getValue());
             }
             int status = probe.getResponseCode();
@@ -253,17 +256,75 @@ public final class DownloadManager {
                 if (target == null) {
                     throw new IOException("Redirect without Location header from " + current);
                 }
-                current = current.resolve(target);
+                URI next = current.resolve(target);
+                String nextScheme = next.getScheme() == null ? "" : next.getScheme();
+                if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
+                    ArtifactResolutionException rejected = new ArtifactResolutionException(
+                            ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                            "Redirect target uses a non-http(s) scheme: " + next,
+                            "Redirect hops must stay http(s); the download was aborted "
+                                    + "before any credential or data reached the target.");
+                    rejected.detail("redirectTarget", next.toString());
+                    throw rejected;
+                }
+                // audit M-18: credentials are dropped when the redirect leaves the
+                // original origin - a compromised CDN must not harvest the token;
+                // the stripped set also governs the final download connection
+                if (!sameOrigin(current, next)) {
+                    hopHeaders = stripCredentials(hopHeaders);
+                }
+                current = next;
                 continue;
             }
             if (status == 200) {
                 probe.disconnect();
-                return current.toURL();
+                return new RedirectTarget(current.toURL(), hopHeaders);
             }
             probe.disconnect();
             throw new IOException("HTTP " + status + " while resolving " + location);
         }
         throw new IOException("Too many redirects while downloading " + location);
+    }
+
+    private static final class RedirectTarget {
+        final URL url;
+        final Map<String, String> headers;
+
+        RedirectTarget(URL url, Map<String, String> headers) {
+            this.url = url;
+            this.headers = headers;
+        }
+    }
+
+    private static boolean sameOrigin(URI a, URI b) {
+        if (a.getScheme() == null || b.getScheme() == null
+                || !a.getScheme().equalsIgnoreCase(b.getScheme())) {
+            return false;
+        }
+        if (a.getHost() == null || b.getHost() == null
+                || !a.getHost().equalsIgnoreCase(b.getHost())) {
+            return false;
+        }
+        return effectivePort(a) == effectivePort(b);
+    }
+
+    private static int effectivePort(URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static Map<String, String> stripCredentials(Map<String, String> headers) {
+        Map<String, String> stripped = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, String> header : headers.entrySet()) {
+            String name = header.getKey();
+            if ("Authorization".equalsIgnoreCase(name) || "Cookie".equalsIgnoreCase(name)) {
+                continue;
+            }
+            stripped.put(name, header.getValue());
+        }
+        return stripped;
     }
 
 }
