@@ -6,13 +6,8 @@ on:
   pull_request:
 
 jobs:
-  # TEMPORARY (until Oct 1): GitHub Actions minutes conservation -
-  # 90% of the monthly plan used. Every job below is skipped via `if: false`;
-  # the matrices and steps are left intact - remove the `if: false` lines to
-  # restore the full CI (tracked in issue #56).
   build:
     name: JDK ${{ matrix.java }} on ${{ matrix.os }}
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +42,6 @@ jobs:
 
   windows:
     name: JDK ${{ matrix.java }} on windows-latest
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +66,6 @@ jobs:
 
   jpms:
     name: JPMS module descriptors (JDK ${{ matrix.java }})
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -101,7 +94,6 @@ jobs:
   # cannot read class files from newer JDK classpaths.
   quality:
     name: Static analysis + coverage (issue #53)
-    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +128,6 @@ jobs:
   # skip compatibility assertions - provider probes report honestly on any lane.
   cpu-verification:
     name: CPU-only runtime verification (spec 70)
-    if: false
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,7 +157,7 @@ jobs:
   #   CPU-only    -> the dedicated cpu-verification lane above
   gpu-cuda:
     name: GPU CUDA lane (spec 70, self-hosted)
-    if: false
+    if: ${{ vars.GPU_RUNNERS_ENABLED == 'true' }}
     runs-on: [self-hosted, cuda]
     steps:
       - uses: actions/checkout@v4
@@ -180,7 +171,7 @@ jobs:
 
   gpu-metal:
     name: GPU Metal lane (spec 70, self-hosted)
-    if: false
+    if: ${{ vars.GPU_RUNNERS_ENABLED == 'true' }}
     runs-on: [self-hosted, metal]
     steps:
       - uses: actions/checkout@v4
