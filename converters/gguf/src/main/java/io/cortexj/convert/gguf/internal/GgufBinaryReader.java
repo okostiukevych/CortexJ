@@ -81,13 +81,18 @@ public final class GgufBinaryReader {
     }
 
     private void readFully(byte[] target) throws IOException {
-        int offset = 0;
-        while (offset < target.length) {
-            int read = input.read(target, offset, target.length - offset);
+        readFully(target, 0, target.length);
+    }
+
+    public void readFully(byte[] target, int offset, int length) throws IOException {
+        int position = offset;
+        int end = offset + length;
+        while (position < end) {
+            int read = input.read(target, position, end - position);
             if (read < 0) {
                 throw new EOFException("unexpected end of GGUF data");
             }
-            offset += read;
+            position += read;
         }
     }
 

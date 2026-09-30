@@ -219,16 +219,47 @@ public final class GgufFloatConverter implements ModelConverter {
         return targetType == GgufDocument.TENSOR_F16 ? elements * 2L : elements * 4L;
     }
 
+    private static final int CONVERT_CHUNK_ELEMENTS = 8192;
+
     private static void convertFloats(GgufBinaryReader reader, GgufBinaryWriter writer,
                                       long count, boolean toHalf) throws IOException {
-        for (long i = 0; i < count; i++) {
+        // audit M-17: bulk chunk conversion - two reused scratch buffers, zero
+        // per-element allocation; little-endian packing is bit-identical to the
+        // per-element path (verified by the round-trip tests)
+        byte[] inBuffer = new byte[CONVERT_CHUNK_ELEMENTS * (toHalf ? 4 : 2)];
+        byte[] outBuffer = new byte[CONVERT_CHUNK_ELEMENTS * (toHalf ? 2 : 4)];
+        int elementSize = toHalf ? 4 : 2;
+        long remaining = count;
+        while (remaining > 0) {
+            int elements = (int) Math.min(CONVERT_CHUNK_ELEMENTS, remaining);
+            reader.readFully(inBuffer, 0, elements * elementSize);
             if (toHalf) {
-                short half = Float16.toHalf(reader.readFloat32());
-                writer.write(new byte[]{(byte) half, (byte) (half >> 8)});
+                for (int i = 0; i < elements; i++) {
+                    int base = i * 4;
+                    int bits = ((inBuffer[base + 3] & 0xFF) << 24)
+                            | ((inBuffer[base + 2] & 0xFF) << 16)
+                            | ((inBuffer[base + 1] & 0xFF) << 8)
+                            | (inBuffer[base] & 0xFF);
+                    short half = Float16.toHalf(Float.intBitsToFloat(bits));
+                    int out = i * 2;
+                    outBuffer[out] = (byte) half;
+                    outBuffer[out + 1] = (byte) (half >> 8);
+                }
+                writer.write(outBuffer, 0, elements * 2);
             } else {
-                float widened = Float16.fromHalf((short) reader.readUInt16());
-                writer.writeFloat32(widened);
+                for (int i = 0; i < elements; i++) {
+                    int base = i * 2;
+                    int half = ((inBuffer[base + 1] & 0xFF) << 8) | (inBuffer[base] & 0xFF);
+                    int bits = Float.floatToIntBits(Float16.fromHalf((short) half));
+                    int out = i * 4;
+                    outBuffer[out] = (byte) bits;
+                    outBuffer[out + 1] = (byte) (bits >> 8);
+                    outBuffer[out + 2] = (byte) (bits >> 16);
+                    outBuffer[out + 3] = (byte) (bits >> 24);
+                }
+                writer.write(outBuffer, 0, elements * 4);
             }
+            remaining -= elements;
         }
     }
 
@@ -237,8 +268,8 @@ public final class GgufFloatConverter implements ModelConverter {
         long remaining = bytes;
         while (remaining > 0) {
             int chunk = (int) Math.min(buffer.length, remaining);
-            byte[] data = reader.readBytes(chunk);
-            writer.write(data);
+            reader.readFully(buffer, 0, chunk);
+            writer.write(buffer, 0, chunk);
             remaining -= chunk;
         }
     }
