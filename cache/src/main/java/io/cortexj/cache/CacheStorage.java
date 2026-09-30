@@ -166,7 +166,7 @@ public final class CacheStorage {
      * re-reading and re-hashing a 10 GB file on every cache hit.
      */
     private boolean manifestMatches(Path path, Checksum expectedChecksum) {
-        Path manifestPath = path.resolveSibling(path.getFileName() + ".manifest");
+        Path manifestPath = path.resolveSibling(fileNameOf(path) + ".manifest");
         if (!Files.isRegularFile(manifestPath)) {
             return false;
         }
@@ -194,8 +194,11 @@ public final class CacheStorage {
 
     public Path put(String repositoryId, String revision, String artifactId, Checksum expectedChecksum, InputStream content) throws IOException {
         Path target = artifactPath(repositoryId, revision, artifactId);
-        Files.createDirectories(target.getParent());
-        Path temp = target.resolveSibling(target.getFileName() + ".part-" + Long.toHexString(System.nanoTime()));
+        Path parentDirectory = target.getParent();
+        if (parentDirectory != null) {
+            Files.createDirectories(parentDirectory);
+        }
+        Path temp = target.resolveSibling(fileNameOf(target) + ".part-" + Long.toHexString(System.nanoTime()));
 
         long bytesCopied = 0L;
         try (InputStream input = content) {
@@ -268,7 +271,7 @@ public final class CacheStorage {
         Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                String name = file.getFileName().toString();
+                String name = fileNameOf(file);
                 if (name.endsWith(".lock") || name.endsWith(".manifest")
                         || name.endsWith(".pinned")) {
                     return FileVisitResult.CONTINUE;
@@ -302,7 +305,7 @@ public final class CacheStorage {
 
     public boolean isPinned(String repositoryId, String revision, String artifactId) {
         return Files.isRegularFile(artifactPath(repositoryId, revision, artifactId)
-                .resolveSibling(artifactPath(repositoryId, revision, artifactId).getFileName() + ".pinned"));
+                .resolveSibling(fileNameOf(artifactPath(repositoryId, revision, artifactId)) + ".pinned"));
     }
 
     public void pin(String repositoryId, String revision, String artifactId) throws IOException {
@@ -310,8 +313,11 @@ public final class CacheStorage {
         if (!Files.isRegularFile(artifact)) {
             throw new IOException("cannot pin a missing artifact: " + artifactId);
         }
-        Files.createDirectories(artifact.getParent());
-        Path marker = artifact.resolveSibling(artifact.getFileName() + ".pinned");
+        Path parentDirectory = artifact.getParent();
+        if (parentDirectory != null) {
+            Files.createDirectories(parentDirectory);
+        }
+        Path marker = artifact.resolveSibling(fileNameOf(artifact) + ".pinned");
         if (!Files.exists(marker)) {
             Files.createFile(marker);
         }
@@ -319,7 +325,7 @@ public final class CacheStorage {
 
     public void unpin(String repositoryId, String revision, String artifactId) throws IOException {
         Path artifact = artifactPath(repositoryId, revision, artifactId);
-        Files.deleteIfExists(artifact.resolveSibling(artifact.getFileName() + ".pinned"));
+        Files.deleteIfExists(artifact.resolveSibling(fileNameOf(artifact) + ".pinned"));
     }
 
     public long evictOlderThan(long cutoffEpochMillis) throws IOException {
@@ -333,11 +339,11 @@ public final class CacheStorage {
                 if (isActivePartial(entry)) {
                     continue;
                 }
-                if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                if (Files.isRegularFile(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"))) {
                     continue;
                 }
                 if (Files.deleteIfExists(entry.path())) {
-                    deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                    deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
                     freed += entry.sizeBytes();
                 }
             }
@@ -351,8 +357,8 @@ public final class CacheStorage {
         long freed = 0L;
         for (CacheEntry entry : entries) {
             if (Files.deleteIfExists(entry.path())) {
-                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
-                deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"));
+                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"));
                 freed += entry.sizeBytes();
             }
         }
@@ -404,11 +410,11 @@ public final class CacheStorage {
                 if (isActivePartial(entry)) {
                     continue;
                 }
-                if (Files.isRegularFile(entry.path().resolveSibling(entry.path().getFileName() + ".pinned"))) {
+                if (Files.isRegularFile(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"))) {
                     continue;
                 }
                 if (Files.deleteIfExists(entry.path())) {
-                    deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+                    deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
                     freed += entry.sizeBytes();
                 }
             }
@@ -422,7 +428,7 @@ public final class CacheStorage {
     }
 
     private static boolean isTempEntry(CacheEntry entry) {
-        return entry.path().getFileName().toString().contains(".part-");
+        return fileNameOf(entry.path()).contains(".part-");
     }
 
     public long purge() throws IOException {
@@ -430,7 +436,7 @@ public final class CacheStorage {
         for (CacheEntry entry : list()) {
             freed += entry.sizeBytes();
             Files.deleteIfExists(entry.path());
-            deleteSilently(entry.path().resolveSibling(entry.path().getFileName() + ".manifest"));
+            deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
         }
         trackedBytes.set(0L);
         return freed;
@@ -459,12 +465,17 @@ public final class CacheStorage {
             manifest.setProperty("checksum", checksum == null ? "" : checksum.value());
             manifest.setProperty("sizeBytes", String.valueOf(sizeBytes));
             manifest.setProperty("storedAtMillis", String.valueOf(System.currentTimeMillis()));
-            Path manifestPath = target.resolveSibling(target.getFileName() + ".manifest");
+            Path manifestPath = target.resolveSibling(fileNameOf(target) + ".manifest");
             try (java.io.OutputStream out = Files.newOutputStream(manifestPath)) {
                 manifest.store(out, "cortexj cache manifest");
             }
         } catch (IOException ignored) {
         }
+    }
+
+    private static String fileNameOf(Path path) {
+        java.nio.file.Path name = path == null ? null : path.getFileName();
+        return name == null ? "" : name.toString();
     }
 
     private static String sanitize(String value) {

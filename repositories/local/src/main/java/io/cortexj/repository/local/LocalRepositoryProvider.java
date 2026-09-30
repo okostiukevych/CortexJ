@@ -37,7 +37,7 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
 
     private final RepositoryId id = RepositoryId.of("local");
     private final ObjectMapper mapper = new ObjectMapper();
-    private final long checksumInlineLimitBytes = 256L * 1024L * 1024L;
+    private static final long CHECKSUM_INLINE_LIMIT_BYTES = 256L * 1024L * 1024L;
 
     @Override
     public RepositoryId id() {
@@ -99,7 +99,9 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
         }
         try {
             JsonNode manifest = mapper.readTree(Files.newInputStream(manifestPath));
-            String canonicalId = manifest.path("id").asText(directory.getFileName().toString());
+            java.nio.file.Path directoryName = directory.getFileName();
+            String canonicalId = manifest.path("id")
+                    .asText(directoryName == null ? "local" : directoryName.toString());
             String revision = manifest.path("revision").asText("local-" + Files.getLastModifiedTime(manifestPath).toMillis());
             ModelDescriptor.Builder builder = ModelDescriptor.builder(canonicalId)
                     .revision(revision)
@@ -130,7 +132,7 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
                         : ArtifactFormat.fromFileName(file);
                 long size = Files.isRegularFile(artifactPath) ? sizeOf(artifactPath) : artifactNode.path("size").asLong(0L);
                 String sha256 = artifactNode.path("sha256").asText(null);
-                if (sha256 == null && Files.isRegularFile(artifactPath) && size < checksumInlineLimitBytes) {
+                if (sha256 == null && Files.isRegularFile(artifactPath) && size < CHECKSUM_INLINE_LIMIT_BYTES) {
                     sha256 = sha256Hex(artifactPath);
                 }
                 Map<String, String> metadata = new LinkedHashMap<String, String>();
@@ -150,10 +152,12 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
     }
 
     private ResolvedModel resolveSingleFile(ModelReference reference, Path file) {
-        ArtifactFormat format = ArtifactFormat.fromFileName(file.getFileName().toString());
+        java.nio.file.Path fileName = file.getFileName();
+        String fileNameString = fileName == null ? "model" : fileName.toString();
+        ArtifactFormat format = ArtifactFormat.fromFileName(fileNameString);
         long size = sizeOf(file);
-        String sha256 = size < checksumInlineLimitBytes ? sha256Hex(file) : null;
-        String canonicalId = file.getFileName().toString();
+        String sha256 = size < CHECKSUM_INLINE_LIMIT_BYTES ? sha256Hex(file) : null;
+        String canonicalId = fileNameString;
         String revision = "local-" + size + "-" + (sha256 == null ? Long.toHexString(file.toAbsolutePath().hashCode()) : sha256.substring(0, 12));
 
         ModelDescriptor.Builder builder = ModelDescriptor.builder(canonicalId)
@@ -228,7 +232,7 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
             } finally {
                 input.close();
             }
-        } catch (Exception e) {
+        } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
             return null;
         }
     }

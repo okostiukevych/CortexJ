@@ -165,11 +165,13 @@ public final class DjlProvider implements RuntimeProvider {
             }
             HfTokenizer.TokenEncoder tokenizer;
             boolean modelLoaded = false;
+            java.nio.file.Path modelDirectory = artifactPath.toAbsolutePath().getParent();
+            java.nio.file.Path modelFileName = artifactPath.getFileName();
             try {
-                model.load(artifactPath.toAbsolutePath().getParent(),
-                        artifactPath.getFileName().toString());
+                model.load(modelDirectory,
+                        modelFileName == null ? "model" : modelFileName.toString());
                 modelLoaded = true;
-                tokenizer = loadTokenizer(artifactPath.toAbsolutePath().getParent());
+                tokenizer = loadTokenizer(modelDirectory);
             } catch (Exception loadFailure) {
                 if (modelLoaded) {
                     throw new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -188,8 +190,8 @@ public final class DjlProvider implements RuntimeProvider {
         }
 
         private HfTokenizer.TokenEncoder loadTokenizer(Path modelDirectory) {
-            Path tokenizerJson = modelDirectory.resolve("tokenizer.json");
-            if (Files.isRegularFile(tokenizerJson)) {
+            Path tokenizerJson = modelDirectory == null ? null : modelDirectory.resolve("tokenizer.json");
+            if (tokenizerJson != null && Files.isRegularFile(tokenizerJson)) {
                 try {
                     return HfTokenizer.load(tokenizerJson);
                 } catch (Exception e) {

@@ -39,7 +39,10 @@ public final class CortexJServer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final long streamAwaitMillis;
     private final String authToken;
-    private com.sun.net.httpserver.HttpServer httpServer;
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(CortexJServer.class.getName());
+
+    private volatile com.sun.net.httpserver.HttpServer httpServer;
     private java.util.concurrent.ExecutorService requestExecutor;
 
     public CortexJServer(CortexJ platform, String modelReference) {
@@ -284,7 +287,13 @@ public final class CortexJServer {
                 }
             });
             // hold the exchange open until the stream terminates
-            finished.await(streamAwaitMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+            boolean terminated = finished.await(streamAwaitMillis,
+                    java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (!terminated) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "stream hold timed out after " + streamAwaitMillis
+                                + "ms; the exchange is closed");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }

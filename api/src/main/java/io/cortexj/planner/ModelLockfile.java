@@ -120,7 +120,10 @@ public final class ModelLockfile {
     }
 
     public void writeTo(Path path) throws IOException {
-        Files.createDirectories(path.toAbsolutePath().getParent());
+        java.nio.file.Path parent = path.toAbsolutePath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         Files.write(path, toYaml().getBytes(StandardCharsets.UTF_8));
     }
 

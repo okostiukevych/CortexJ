@@ -134,7 +134,7 @@ public final class DeploymentVerifier {
             for (io.cortexj.runtime.RuntimeHealthReport health : platform.runtimeHealth()) {
                 messages.add(health.runtimeId() + ": " + health.health());
                 if (requiredRuntime != null
-                        && requiredRuntime.equals(health.runtimeId())
+                        && requiredRuntime.equals(health.runtimeId().value())
                         && health.health() != io.cortexj.runtime.RuntimeHealth.AVAILABLE) {
                     issues.add("required runtime '" + requiredRuntime
                             + "' is not available on this machine");

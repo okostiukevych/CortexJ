@@ -37,7 +37,10 @@ public final class EnvironmentProbe {
 
     public static int parseFeatureVersion(String javaVersion, String specVersion) {
         String source = specVersion != null && !specVersion.isEmpty() ? specVersion : javaVersion;
-        if (source != null && source.startsWith("1.")) {
+        if (source == null) {
+            return 8;
+        }
+        if (source.startsWith("1.")) {
             try {
                 return Integer.parseInt(source.substring(2, Math.min(source.length(), 3)));
             } catch (NumberFormatException ignored) {

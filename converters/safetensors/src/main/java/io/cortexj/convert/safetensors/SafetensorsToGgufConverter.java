@@ -77,7 +77,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
 
             GgufDocument document = new GgufDocument();
             document.version = 3;
-            String name = stripExtension(source.getFileName().toString());
+            String name = stripExtension(fileNameOf(source));
             document.upsert("general.name", GgufBinaryReader.Types.STRING, name);
             String architecture = config.get("model_type");
             if (architecture != null && !architecture.isEmpty()) {
@@ -144,7 +144,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             metadata.put("quantization", "fp16");
             metadata.put("convertedFrom", request.sourceArtifact().id());
             ModelArtifact artifact = new ModelArtifact.Abstract(
-                    output.getFileName().toString(), ArtifactFormat.GGUF,
+                    fileNameOf(output), ArtifactFormat.GGUF,
                     Files.size(output), null, metadata) {
             };
             return new ConversionResult(artifact, output, provenance);
@@ -163,6 +163,11 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 }
             }
         }
+    }
+
+    private static String fileNameOf(Path path) {
+        java.nio.file.Path name = path == null ? null : path.getFileName();
+        return name == null ? "" : name.toString();
     }
 
     private static int ggufTypeOf(String dtype) throws IOException {
@@ -205,9 +210,10 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
     }
 
     private static Map<String, String> readAdjacentConfig(Path source) throws IOException {
-        Path config = source.toAbsolutePath().getParent().resolve("config.json");
+        java.nio.file.Path parent = source.toAbsolutePath().getParent();
+        Path config = parent == null ? null : parent.resolve("config.json");
         Map<String, String> flat = new LinkedHashMap<String, String>();
-        if (!Files.isRegularFile(config)) {
+        if (config == null || !Files.isRegularFile(config)) {
             return flat;
         }
         ObjectMapper mapper = new ObjectMapper();

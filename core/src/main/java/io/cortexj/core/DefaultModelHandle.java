@@ -177,19 +177,23 @@ public final class DefaultModelHandle implements ModelHandle {
             // for SESSION_SCOPED runtimes exactly like execute/stream
             if (serializeAccess) {
                 sessionLock.lock();
-            }
-            try {
-                long start = System.nanoTime();
-                io.cortexj.inference.GenerationResponse response = delegate.generate(request);
-                io.cortexj.inference.TokenUsage usage = response == null ? null : response.usage();
-                publishInferenceCompleted(start, "generate",
-                        usage != null && usage.isKnown() ? Long.valueOf(usage.outputTokens()) : null);
-                return response;
-            } finally {
-                if (serializeAccess) {
+                try {
+                    return generateAndInstrument(request);
+                } finally {
                     sessionLock.unlock();
                 }
             }
+            return generateAndInstrument(request);
+        }
+
+        private io.cortexj.inference.GenerationResponse generateAndInstrument(
+                io.cortexj.inference.GenerationRequest request) {
+            long start = System.nanoTime();
+            io.cortexj.inference.GenerationResponse response = delegate.generate(request);
+            io.cortexj.inference.TokenUsage usage = response == null ? null : response.usage();
+            publishInferenceCompleted(start, "generate",
+                    usage != null && usage.isKnown() ? Long.valueOf(usage.outputTokens()) : null);
+            return response;
         }
 
         @Override
@@ -199,16 +203,20 @@ public final class DefaultModelHandle implements ModelHandle {
             // exactly like generate/execute
             if (serializeAccess) {
                 sessionLock.lock();
-            }
-            try {
-                long startedNanos = System.nanoTime();
-                io.cortexj.stream.TokenStream upstream = delegate.stream(request);
-                return new FirstTokenTimingStream(upstream, startedNanos);
-            } finally {
-                if (serializeAccess) {
+                try {
+                    return streamAndInstrument(request);
+                } finally {
                     sessionLock.unlock();
                 }
             }
+            return streamAndInstrument(request);
+        }
+
+        private io.cortexj.stream.TokenStream streamAndInstrument(
+                io.cortexj.inference.GenerationRequest request) {
+            long startedNanos = System.nanoTime();
+            io.cortexj.stream.TokenStream upstream = delegate.stream(request);
+            return new FirstTokenTimingStream(upstream, startedNanos);
         }
     }
 
@@ -296,18 +304,22 @@ public final class DefaultModelHandle implements ModelHandle {
             // for SESSION_SCOPED runtimes exactly like execute/generate
             if (serializeAccess) {
                 sessionLock.lock();
-            }
-            try {
-                long start = System.nanoTime();
-                io.cortexj.inference.EmbeddingResponse response = delegate.embed(request);
-                publishInferenceCompleted(start,
-                        response == null ? null : "embed:" + response.vectors().size(), null);
-                return response;
-            } finally {
-                if (serializeAccess) {
+                try {
+                    return embedAndInstrument(request);
+                } finally {
                     sessionLock.unlock();
                 }
             }
+            return embedAndInstrument(request);
+        }
+
+        private io.cortexj.inference.EmbeddingResponse embedAndInstrument(
+                io.cortexj.inference.EmbeddingRequest request) {
+            long start = System.nanoTime();
+            io.cortexj.inference.EmbeddingResponse response = delegate.embed(request);
+            publishInferenceCompleted(start,
+                    response == null ? null : "embed:" + response.vectors().size(), null);
+            return response;
         }
     }
 
@@ -341,21 +353,21 @@ public final class DefaultModelHandle implements ModelHandle {
 
     public InferenceResponse execute(InferenceRequest request) {
         requireActive("execute");
-        if (serializeAccess) {
-            long waitStartedNanos = System.nanoTime();
-            sessionLock.lock();
-            long queueWaitMillis = (System.nanoTime() - waitStartedNanos) / 1_000_000L;
-            try {
-                if (queueWaitMillis > 0) {
-                    publishQueueWait(queueWaitMillis);
-                }
-                requireActive("execute");
-                return model.execute(request);
-            } finally {
-                sessionLock.unlock();
-            }
+        if (!serializeAccess) {
+            return model.execute(request);
         }
-        return model.execute(request);
+        long waitStartedNanos = System.nanoTime();
+        sessionLock.lock();
+        long queueWaitMillis = (System.nanoTime() - waitStartedNanos) / 1_000_000L;
+        try {
+            if (queueWaitMillis > 0) {
+                publishQueueWait(queueWaitMillis);
+            }
+            requireActive("execute");
+            return model.execute(request);
+        } finally {
+            sessionLock.unlock();
+        }
     }
 
     private void publishQueueWait(long queueWaitMillis) {
@@ -420,6 +432,25 @@ public final class DefaultModelHandle implements ModelHandle {
         }
     }
 
+    private void closeResources() {
+        try {
+            if (model != null) {
+                model.close();
+            }
+        } catch (RuntimeException failure) {
+            LOG.log(java.util.logging.Level.FINE,
+                    "model close failed for " + descriptor.canonicalId() + "; continuing", failure);
+        }
+        try {
+            if (runtime != null) {
+                runtime.close();
+            }
+        } catch (RuntimeException failure) {
+            LOG.log(java.util.logging.Level.FINE,
+                    "runtime close failed for " + descriptor.canonicalId() + "; continuing", failure);
+        }
+    }
+
     @Override
     public void close() {
         if (!beginClose()) {
@@ -430,28 +461,13 @@ public final class DefaultModelHandle implements ModelHandle {
         // of tearing down the native session under it
         if (serializeAccess) {
             sessionLock.lock();
-        }
-        try {
             try {
-                if (model != null) {
-                    model.close();
-                }
-            } catch (RuntimeException failure) {
-                LOG.log(java.util.logging.Level.FINE,
-                        "model close failed for " + descriptor.canonicalId() + "; continuing", failure);
-            }
-            try {
-                if (runtime != null) {
-                    runtime.close();
-                }
-            } catch (RuntimeException failure) {
-                LOG.log(java.util.logging.Level.FINE,
-                        "runtime close failed for " + descriptor.canonicalId() + "; continuing", failure);
-            }
-        } finally {
-            if (serializeAccess) {
+                closeResources();
+            } finally {
                 sessionLock.unlock();
             }
+        } else {
+            closeResources();
         }
         transitionTo(ModelLifecycleState.CLOSED);
         java.util.function.Consumer<DefaultModelHandle> callback = closeCallback;

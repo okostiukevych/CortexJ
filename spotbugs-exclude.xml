@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs triage (reliability audit 2026-09-27, issue #53).
+  Every suppression carries a justification; findings outside this list fail the build.
+-->
+<FindBugsFilter>
+
+  <!-- Public API value types and SPI request/response types expose their
+       metadata maps and builder collections by contract. The maps are
+       defensively copied / wrapped in Collections.unmodifiableMap at the
+       construction sites and never mutated post-construction (verified by
+       BuilderImmutabilityTest, the #22 frozen-builder fix and the audit).
+       SpotBugs cannot trace the conditional unmodifiable wrap through the
+       constructors, so these are false positives. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+  </Match>
+
+  <!-- Quantization implements Comparable for deterministic ordering of
+       quantization variants; equals() is deliberately not overridden
+       (identity semantics for an enum-like value type). -->
+  <Match>
+    <Bug pattern="EQ_COMPARETO_USE_OBJECT_EQUALS"/>
+  </Match>
+
+  <!-- ModelArtifact.Abstract is the SPI base for anonymous artifact holders;
+       its constructor throws on invalid input by design and no finalizers
+       exist anywhere in the codebase, so the finalizer-attack vector does not
+       apply. -->
+  <Match>
+    <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+  </Match>
+
+  <!-- DefaultModelHandle's guarded regions (execute/generate/stream/embed/close)
+       release the session lock in an unconditional finally; SpotBugs's lock
+       analysis is conservative about calls between lock() and the try block.
+       The serialization is proven by SessionScopedDispatchTest (zero interleaved
+       entries) and ModelHandleClosedDispatchTest. -->
+  <Match>
+    <Bug pattern="UL_UNRELEASED_LOCK_EXCEPTION_PATH"/>
+    <Class name="io.cortexj.core.DefaultModelHandle"/>
+  </Match>
+
+  <!-- The SSE workers' catch (Exception) in LlamaServerTokenStream.runSse and
+       RemoteOpenAiRuntime's stream worker is deliberate: the token consumer is
+       user code that may throw anything, and the worker must convert every
+       failure into onError instead of dying silently (audit #10/#11). -->
+  <Match>
+    <Bug pattern="REC_CATCH_EXCEPTION"/>
+    <Class name="io.cortexj.runtime.llamacpp.LlamaServerModel$LlamaServerTokenStream"/>
+  </Match>
+
+  <!-- GgufDocument is an internal mutable container shared by the GGUF
+       readers and writers (io.cortexj.convert.gguf.internal, not public API);
+       its public primitive fields are the container's contract for the
+       converter pipeline. -->
+  <Match>
+    <Bug pattern="PA_PUBLIC_PRIMITIVE_ATTRIBUTE"/>
+    <Class name="io.cortexj.convert.gguf.internal.GgufDocument"/>
+  </Match>
+
+  <!-- HardwareProbe.detectMetal checks the macOS system framework path by
+       design: /System/Library/Frameworks/Metal.framework is the documented
+       probe location for Metal detection. -->
+  <Match>
+    <Bug pattern="DMI_HARDCODED_ABSOLUTE_FILENAME"/>
+    <Class name="io.cortexj.hardware.internal.HardwareProbe"/>
+  </Match>
+
+</FindBugsFilter>

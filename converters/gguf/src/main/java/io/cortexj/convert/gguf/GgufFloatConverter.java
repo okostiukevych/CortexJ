@@ -180,7 +180,7 @@ public final class GgufFloatConverter implements ModelConverter {
             metadata.put("quantization", direction.label);
             metadata.put("convertedFrom", request.sourceArtifact().id());
             ModelArtifact artifact = new ModelArtifact.Abstract(
-                    output.getFileName().toString(), ArtifactFormat.GGUF,
+                    fileNameOf(output), ArtifactFormat.GGUF,
                     Files.size(output), null, metadata) {
             };
             return new ConversionResult(artifact, output, provenance);
@@ -318,11 +318,16 @@ public final class GgufFloatConverter implements ModelConverter {
     }
 
     private static String outputName(Path source, Direction direction) {
-        String name = source.getFileName().toString();
+        String name = fileNameOf(source);
         int dot = name.lastIndexOf('.');
         String base = dot > 0 ? name.substring(0, dot) : name;
         String extension = dot > 0 ? name.substring(dot) : "";
         return base + "." + direction.label + extension;
+    }
+
+    private static String fileNameOf(Path path) {
+        java.nio.file.Path name = path == null ? null : path.getFileName();
+        return name == null ? "" : name.toString();
     }
 
     private static String sha256Hex(Path file) throws IOException {
