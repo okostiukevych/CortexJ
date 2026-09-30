@@ -143,35 +143,107 @@ public final class HfTokenizer {
         public int[] encode(String text) {
             List<Integer> ids = new ArrayList<Integer>();
             for (String word : preTokens(text)) {
-                List<String> parts = new ArrayList<String>();
-                for (char c : word.toCharArray()) {
-                    parts.add(String.valueOf(c));
-                }
-                for (String[] merge : merges) {
-                    for (int i = 0; i + 1 < parts.size(); i++) {
-                        if (parts.get(i).equals(merge[0]) && parts.get(i + 1).equals(merge[1])) {
-                            parts.set(i, merge[0] + merge[1]);
-                            parts.remove(i + 1);
-                            i = Math.max(-1, i - 2);
-                        }
-                    }
-                }
-                for (String part : parts) {
-                    Integer id = vocab.get(part);
-                    ids.add(id == null ? Integer.valueOf(0) : id);
-                }
+                encodeWord(word, ids);
             }
             return toArray(ids);
+        }
+
+        private void encodeWord(String word, List<Integer> ids) {
+            int wordLength = word.length();
+            List<String> parts = new ArrayList<String>(wordLength);
+            for (char c : word.toCharArray()) {
+                parts.add(String.valueOf(c));
+            }
+            // adjacent-pair occurrence index: a merge rule whose pair is absent
+            // from the current parts is provably a no-op, so the rules scan
+            // collapses from O(rules x parts) string comparisons to O(1)
+            // lookups per rule (audit M-19); the merge order and therefore the
+            // output are identical to the full-pass scan
+            Map<String, Map<String, Integer>> pairCounts =
+                    new java.util.HashMap<String, Map<String, Integer>>();
+            for (int i = 0; i + 1 < parts.size(); i++) {
+                incPair(pairCounts, parts.get(i), parts.get(i + 1));
+            }
+            for (String[] merge : merges) {
+                Map<String, Integer> seconds = pairCounts.get(merge[0]);
+                if (seconds == null || !seconds.containsKey(merge[1])) {
+                    continue;
+                }
+                while (applyFirstOccurrence(parts, merge, pairCounts)) {
+                    // keep merging while the pair occurs, exactly like the
+                    // full-pass restart semantics
+                }
+            }
+            for (String part : parts) {
+                Integer id = vocab.get(part);
+                ids.add(id == null ? Integer.valueOf(0) : id);
+            }
+        }
+
+        private static boolean applyFirstOccurrence(List<String> parts, String[] merge,
+                                                    Map<String, Map<String, Integer>> pairCounts) {
+            int size = parts.size();
+            for (int i = 0; i + 1 < size; i++) {
+                if (merge[0].equals(parts.get(i)) && merge[1].equals(parts.get(i + 1))) {
+                    String merged = merge[0] + merge[1];
+                    String previous = i > 0 ? parts.get(i - 1) : null;
+                    String next = i + 2 < size ? parts.get(i + 2) : null;
+                    parts.set(i, merged);
+                    parts.remove(i + 1);
+                    decPair(pairCounts, merge[0], merge[1]);
+                    if (previous != null) {
+                        decPair(pairCounts, previous, merge[0]);
+                        incPair(pairCounts, previous, merged);
+                    }
+                    if (next != null) {
+                        decPair(pairCounts, merge[1], next);
+                        incPair(pairCounts, merged, next);
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static void incPair(Map<String, Map<String, Integer>> pairCounts,
+                                    String first, String second) {
+            Map<String, Integer> seconds = pairCounts.get(first);
+            if (seconds == null) {
+                seconds = new java.util.HashMap<String, Integer>();
+                pairCounts.put(first, seconds);
+            }
+            Integer count = seconds.get(second);
+            seconds.put(second, Integer.valueOf(count == null ? 1 : count + 1));
+        }
+
+        private static void decPair(Map<String, Map<String, Integer>> pairCounts,
+                                    String first, String second) {
+            Map<String, Integer> seconds = pairCounts.get(first);
+            if (seconds == null) {
+                return;
+            }
+            Integer count = seconds.get(second);
+            if (count == null) {
+                return;
+            }
+            if (count <= 1) {
+                seconds.remove(second);
+                if (seconds.isEmpty()) {
+                    pairCounts.remove(first);
+                }
+            } else {
+                seconds.put(second, Integer.valueOf(count - 1));
+            }
         }
     }
 
     private static final class Unigram implements TokenEncoder {
 
         private final List<String> pieces;
+        private final Map<Character, List<String>> piecesByFirstChar;
         private final Map<String, Integer> vocab;
 
         Unigram(JsonNode model) {
-            this.pieces = new ArrayList<String>();
             List<String[]> sortable = new ArrayList<String[]>();
             for (JsonNode entry : model.path("vocab")) {
                 if (entry.isArray() && entry.size() == 2) {
@@ -185,29 +257,45 @@ public final class HfTokenizer {
                 }
             });
             this.vocab = readVocab(model);
+            this.pieces = new ArrayList<String>(sortable.size());
+            this.piecesByFirstChar = new java.util.HashMap<Character, List<String>>();
             for (String[] entry : sortable) {
                 pieces.add(entry[0]);
+                Character first = Character.valueOf(entry[0].charAt(0));
+                List<String> bucket = piecesByFirstChar.get(first);
+                if (bucket == null) {
+                    bucket = new ArrayList<String>();
+                    piecesByFirstChar.put(first, bucket);
+                }
+                bucket.add(entry[0]);
             }
         }
 
         @Override
         public int[] encode(String text) {
             List<Integer> ids = new ArrayList<Integer>();
-            String rest = text.toLowerCase();
-            while (!rest.isEmpty()) {
+            String lower = text.toLowerCase();
+            int position = 0;
+            while (position < lower.length()) {
+                // audit M-19: index-based scan (no O(n^2) substring copying) and
+                // a first-character piece index (the greedy longest-match order
+                // inside a bucket is preserved, so the output is identical)
                 String match = null;
-                for (String piece : pieces) {
-                    if (rest.startsWith(piece)) {
-                        match = piece;
-                        break;
+                List<String> bucket = piecesByFirstChar.get(Character.valueOf(lower.charAt(position)));
+                if (bucket != null) {
+                    for (String piece : bucket) {
+                        if (lower.startsWith(piece, position)) {
+                            match = piece;
+                            break;
+                        }
                     }
                 }
                 if (match == null) {
-                    match = rest.substring(0, 1);
+                    match = lower.substring(position, position + 1);
                 }
                 Integer id = vocab.get(match);
                 ids.add(id == null ? Integer.valueOf(0) : id);
-                rest = rest.substring(match.length());
+                position += match.length();
             }
             return toArray(ids);
         }
@@ -239,7 +327,9 @@ public final class HfTokenizer {
         } else {
             int index = 0;
             for (JsonNode token : model.path("vocab")) {
-                vocab.put(token.asText(), Integer.valueOf(index++));
+                // array vocab entries are [piece, score] pairs: asText() on the
+                // array node returns "" and collapsed every id to zero
+                vocab.put(token.get(0).asText(), Integer.valueOf(index++));
             }
         }
         return vocab;
