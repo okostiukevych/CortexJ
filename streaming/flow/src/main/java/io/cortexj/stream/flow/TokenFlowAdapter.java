@@ -14,17 +14,35 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class TokenFlowAdapter implements Flow.Publisher<Token> {
 
-    private final TokenStream stream;
+    public static final int DEFAULT_BUFFER_CAPACITY = 1024;
 
-    private TokenFlowAdapter(TokenStream stream) {
+    private final TokenStream stream;
+    private final int bufferCapacity;
+
+    private TokenFlowAdapter(TokenStream stream, int bufferCapacity) {
         if (stream == null) {
             throw new IllegalArgumentException("token stream must not be null");
         }
+        if (bufferCapacity <= 0) {
+            throw new IllegalArgumentException("buffer capacity must be positive: " + bufferCapacity);
+        }
         this.stream = stream;
+        this.bufferCapacity = bufferCapacity;
     }
 
     public static TokenFlowAdapter publisher(TokenStream stream) {
-        return new TokenFlowAdapter(stream);
+        return new TokenFlowAdapter(stream, DEFAULT_BUFFER_CAPACITY);
+    }
+
+    /**
+     * Explicit overflow policy (audit M-13): the adapter never buffers without
+     * bound. At most {@code bufferCapacity} tokens are held while the
+     * subscriber's demand lags; beyond that the generation is cancelled and an
+     * explicit {@code onError} signal is delivered (dropping tokens silently
+     * would corrupt a text generation, so the loud policy is the default).
+     */
+    public static TokenFlowAdapter publisher(TokenStream stream, int bufferCapacity) {
+        return new TokenFlowAdapter(stream, bufferCapacity);
     }
 
     @Override
@@ -32,17 +50,20 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         if (subscriber == null) {
             throw new IllegalArgumentException("subscriber must not be null");
         }
-        new Bridge(stream, subscriber).start();
+        new Bridge(stream, subscriber, bufferCapacity).start();
     }
 
     private static final class Bridge {
 
         private final TokenStream stream;
         private final Flow.Subscriber<? super Token> downstream;
+        private final int bufferCapacity;
         private final Queue<Token> buffered = new ArrayDeque<Token>();
         private final AtomicLong demand = new AtomicLong();
         private final AtomicBoolean completed = new AtomicBoolean(false);
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicBoolean overflowed = new AtomicBoolean(false);
+        private boolean errorDelivered;
         // Flow contract: onNext/onComplete must be delivered serially, by at most
         // one thread at a time. The drain-owner guard serializes dispatch when the
         // publisher thread (offer/onComplete) and the subscriber thread (request)
@@ -51,9 +72,10 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         private boolean completionDelivered;
         private final Object lock = new Object();
 
-        Bridge(TokenStream stream, Flow.Subscriber<? super Token> downstream) {
+        Bridge(TokenStream stream, Flow.Subscriber<? super Token> downstream, int bufferCapacity) {
             this.stream = stream;
             this.downstream = downstream;
+            this.bufferCapacity = bufferCapacity;
         }
 
         void start() {
@@ -104,13 +126,21 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
 
         private void offer(Token token) {
             synchronized (lock) {
-                buffered.add(token);
+                if (!overflowed.get() && buffered.size() >= bufferCapacity) {
+                    overflowed.set(true);
+                }
+                if (!overflowed.get()) {
+                    buffered.add(token);
+                }
             }
             drain();
         }
 
         private boolean hasWork() {
             synchronized (lock) {
+                if (overflowed.get() && !errorDelivered) {
+                    return true;
+                }
                 if (demand.get() > 0 && !buffered.isEmpty()) {
                     return true;
                 }
@@ -127,16 +157,34 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                 while (true) {
                     Token token = null;
                     boolean complete = false;
+                    boolean error = false;
                     synchronized (lock) {
                         if (demand.get() > 0 && !buffered.isEmpty()) {
                             token = buffered.poll();
                             demand.decrementAndGet();
+                        } else if (overflowed.get() && !errorDelivered) {
+                            errorDelivered = true;
+                            error = true;
                         } else if (completed.get() && buffered.isEmpty() && !completionDelivered) {
                             completionDelivered = true;
                             complete = true;
                         } else {
                             return;
                         }
+                    }
+                    if (error) {
+                        // explicit overflow policy: the generation is cancelled and
+                        // the subscriber gets a loud typed error - the adapter never
+                        // buffers without bound (audit M-13)
+                        stream.close();
+                        downstream.onError(new io.cortexj.error.InferenceException(
+                                io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
+                                "token stream buffer overflow: the subscriber lagged more than "
+                                        + bufferCapacity + " tokens behind the producer; "
+                                        + "the generation was cancelled",
+                                "Request demand proactively or consume tokens faster; the "
+                                        + "adapter never buffers without bound."));
+                        return;
                     }
                     if (complete) {
                         downstream.onComplete();
