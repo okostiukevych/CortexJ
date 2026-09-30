@@ -29,6 +29,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 public final class DefaultModels implements io.cortexj.Models {
 
@@ -61,13 +62,97 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Model load rejected: the CortexJ platform is closed.",
                         "Create a new CortexJ instance to load models after shutdown.");
             }
-            return loadWithFallbacks(request);
+            return loadWithFallbacks(request, new java.util.concurrent.atomic.AtomicBoolean());
         } finally {
             loadLock.readLock().unlock();
         }
     }
 
-    private ModelHandle loadWithFallbacks(ExecutionRequest request) {
+    @Override
+    public java.util.concurrent.Future<ModelHandle> loadAsync(ModelReference reference) {
+        return loadAsync(ExecutionRequest.forModel(reference));
+    }
+
+    @Override
+    public java.util.concurrent.Future<ModelHandle> loadAsync(final ExecutionRequest request) {
+        loadLock.readLock().lock();
+        try {
+            if (closed) {
+                java.util.concurrent.CompletableFuture<ModelHandle> rejected =
+                        new java.util.concurrent.CompletableFuture<ModelHandle>();
+                rejected.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Model load rejected: the CortexJ platform is closed.",
+                        "Create a new CortexJ instance to load models after shutdown."));
+                return rejected;
+            }
+            final java.util.concurrent.atomic.AtomicBoolean cancelFlag =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            final java.util.concurrent.CompletableFuture<ModelHandle> underlying =
+                    new java.util.concurrent.CompletableFuture<ModelHandle>();
+            platform.asyncExecutor().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (cancelFlag.get()) {
+                            underlying.completeExceptionally(
+                                    new java.util.concurrent.CancellationException(
+                                            "load cancelled before it started"));
+                            return;
+                        }
+                        underlying.complete(loadWithFallbacks(request, cancelFlag));
+                    } catch (Throwable failure) {
+                        underlying.completeExceptionally(failure);
+                    }
+                }
+            });
+            return new CancellableLoad(underlying, cancelFlag);
+        } finally {
+            loadLock.readLock().unlock();
+        }
+    }
+
+    private static final class CancellableLoad implements java.util.concurrent.Future<ModelHandle> {
+
+        private final java.util.concurrent.CompletableFuture<ModelHandle> underlying;
+        private final java.util.concurrent.atomic.AtomicBoolean cancelFlag;
+
+        CancellableLoad(java.util.concurrent.CompletableFuture<ModelHandle> underlying,
+                        java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+            this.underlying = underlying;
+            this.cancelFlag = cancelFlag;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelFlag.set(true);
+            return underlying.cancel(mayInterruptIfRunning);
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return underlying.isCancelled();
+        }
+
+        @Override
+        public boolean isDone() {
+            return underlying.isDone();
+        }
+
+        @Override
+        public ModelHandle get() throws InterruptedException, java.util.concurrent.ExecutionException {
+            return underlying.get();
+        }
+
+        @Override
+        public ModelHandle get(long timeout, TimeUnit unit)
+                throws InterruptedException, java.util.concurrent.ExecutionException,
+                java.util.concurrent.TimeoutException {
+            return underlying.get(timeout, unit);
+        }
+    }
+
+    private ModelHandle loadWithFallbacks(ExecutionRequest request,
+                                          java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         ExecutionPlan plan = platform.planner().plan(request);
         List<ExecutionCandidate> chain = new ArrayList<ExecutionCandidate>();
         chain.add(plan.selected());
@@ -77,7 +162,7 @@ public final class DefaultModels implements io.cortexj.Models {
         for (int index = 0; index < chain.size(); index++) {
             ExecutionCandidate candidate = chain.get(index);
             try {
-                DefaultModelHandle handle = loadCandidate(plan, candidate, request);
+                DefaultModelHandle handle = loadCandidate(plan, candidate, request, cancelFlag);
                 if (index > 0) {
                     handle.markFallback(plan.selected().runtimeId(), candidate.runtimeId());
                 }
@@ -112,7 +197,8 @@ public final class DefaultModels implements io.cortexj.Models {
         return wrapped;
     }
 
-    private DefaultModelHandle loadCandidate(ExecutionPlan plan, ExecutionCandidate candidate, ExecutionRequest request) {
+    private DefaultModelHandle loadCandidate(ExecutionPlan plan, ExecutionCandidate candidate, ExecutionRequest request,
+                                             java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         platform.events().info(PlatformEvent.Type.MODEL_RESOLUTION_STARTED,
                 "loading " + plan.modelId() + " via " + candidate.runtimeId());
 
@@ -136,7 +222,7 @@ public final class DefaultModels implements io.cortexj.Models {
         try {
             enforceTrustPolicy(resolved);
 
-            Path artifactPath = ensureArtifact(plan, resolved, candidate, handle);
+            Path artifactPath = ensureArtifact(plan, resolved, candidate, handle, cancelFlag);
 
             ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
                     resolved.descriptor(),
@@ -201,14 +287,14 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     private Path ensureArtifact(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
-                                DefaultModelHandle handle) {
+                                DefaultModelHandle handle, java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         ModelArtifact artifact = candidate.artifact();
         if (artifact == null || artifact.format() == io.cortexj.model.ArtifactFormat.REMOTE
                 || candidate.device() == DeviceType.REMOTE) {
             return null;
         }
         if (candidate.requiresConversion()) {
-            return materializeConversion(plan, resolved, candidate, handle);
+            return materializeConversion(plan, resolved, candidate, handle, cancelFlag);
         }
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
             if (!resolvedArtifact.artifact().id().equals(artifact.id())) {
@@ -231,7 +317,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         .detail("artifact", artifact.id());
             }
             return downloadOnce(resolvedArtifact, resolved.repository().value(),
-                    resolved.revision(), cache, handle);
+                    resolved.revision(), cache, handle, cancelFlag);
         }
         throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
                 "Resolved model does not contain artifact " + artifact.id(),
@@ -259,7 +345,8 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     private Path downloadOnce(ResolvedArtifact resolvedArtifact, String repositoryId, String revision,
-                               io.cortexj.cache.CacheStorage cache, final DefaultModelHandle handle) {
+                               io.cortexj.cache.CacheStorage cache, final DefaultModelHandle handle,
+                               final java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         String key = repositoryId + "~" + revision + "~" + resolvedArtifact.artifact().id();
         return oncePerKey(key, new java.util.function.Supplier<Path>() {
             @Override
@@ -271,7 +358,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 }
                 handle.lifecycleTo(ModelLifecycleState.DOWNLOADING);
                 return platform.downloads().download(resolvedArtifact, repositoryId,
-                        revision, cache, 0L);
+                        revision, cache, 0L, cancelFlag);
             }
         });
     }
@@ -315,7 +402,8 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
-                                        DefaultModelHandle handle) {
+                                        DefaultModelHandle handle,
+                                        java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         io.cortexj.planner.ConversionStep step = candidate.conversion();
         ResolvedArtifact source = null;
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
@@ -348,7 +436,7 @@ public final class DefaultModels implements io.cortexj.Models {
             @Override
             public Path get() {
                 return runConversion(plan, resolved, candidate, step, conversionSource,
-                        repositoryId, revision, convertedId, cache, handle);
+                        repositoryId, revision, convertedId, cache, handle, cancelFlag);
             }
         });
     }
@@ -356,8 +444,9 @@ public final class DefaultModels implements io.cortexj.Models {
     private Path runConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
                                io.cortexj.planner.ConversionStep step, ResolvedArtifact source,
                                String repositoryId, String revision, String convertedId,
-                               io.cortexj.cache.CacheStorage cache, DefaultModelHandle handle) {
-        Path sourcePath = ensureSourceArtifact(resolved, source, handle);
+                               io.cortexj.cache.CacheStorage cache, DefaultModelHandle handle,
+                               java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+        Path sourcePath = ensureSourceArtifact(resolved, source, handle, cancelFlag);
         handle.lifecycleTo(ModelLifecycleState.PREPARING);
         Path outputDirectory;
         try {
@@ -444,7 +533,8 @@ public final class DefaultModels implements io.cortexj.Models {
         }
     }
 
-    private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source, DefaultModelHandle handle) {
+    private Path ensureSourceArtifact(ResolvedModel resolved, ResolvedArtifact source, DefaultModelHandle handle,
+                                      java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         String scheme = source.location() == null ? "" : source.location().getScheme();
         if (scheme.equals("file")) {
             return Paths.get(source.location());
@@ -462,7 +552,7 @@ public final class DefaultModels implements io.cortexj.Models {
                     "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
                     .detail("artifact", source.artifact().id());
         }
-        return downloadOnce(source, resolved.repository().value(), resolved.revision(), cache, handle);
+        return downloadOnce(source, resolved.repository().value(), resolved.revision(), cache, handle, cancelFlag);
     }
 
     private io.cortexj.spi.conversion.ModelConverter converterById(String converterId) {
