@@ -99,6 +99,13 @@ public final class DefaultCortexJ implements CortexJ {
             public boolean isCached(String repositoryId, String revision, String artifactId, String checksum) {
                 return cache.contains(repositoryId, revision, artifactId);
             }
+
+            @Override
+            public java.nio.file.Path cachedArtifactPath(String repositoryId, String revision,
+                                                         String artifactId, String checksum) {
+                java.nio.file.Path path = cache.artifactPath(repositoryId, revision, artifactId);
+                return java.nio.file.Files.isRegularFile(path) ? path : null;
+            }
         };
 
         this.planner = new io.cortexj.planner.internal.DefaultExecutionPlanner(
@@ -107,7 +114,7 @@ public final class DefaultCortexJ implements CortexJ {
                         repositoryProviders,
                         converters,
                         configuration.executionPolicies(),
-                        null,
+                        new io.cortexj.model.artifact.ArtifactInspectorRegistry(),
                         snapshot.environment,
                         snapshot.hardware,
                         cacheLookup,

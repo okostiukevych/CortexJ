@@ -760,7 +760,8 @@ public final class DefaultExecutionPlanner implements Planner {
     private ArtifactInspectionHolder inspectFor(ResolvedModel resolved, ModelArtifact artifact) {
         for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
             if (resolvedArtifact.artifact().id().equals(artifact.id())) {
-                io.cortexj.spi.artifact.ArtifactInspection inspection = inputs.inspectIfLocal(resolvedArtifact);
+                io.cortexj.spi.artifact.ArtifactInspection inspection =
+                        inputs.inspectIfLocal(resolved, resolvedArtifact);
                 if (inspection != null) {
                     return new ArtifactInspectionHolder(inspection.contextLength(), inspection.quantization());
                 }
