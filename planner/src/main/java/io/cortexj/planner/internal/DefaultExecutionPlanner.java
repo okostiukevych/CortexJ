@@ -571,12 +571,15 @@ public final class DefaultExecutionPlanner implements Planner {
     private void applyConstraints(Outcome outcome, ExecutionRequest request, ResolvedModel resolved, Map<String, RuntimeProbeResult> probes) {
         List<CandidateHolder> survivors = new ArrayList<CandidateHolder>();
         for (CandidateHolder holder : outcome.candidates) {
+            // audit L-8: the candidate is built once per holder - the constraint
+            // checks are read-only, so rebuilding it per constraint is waste
+            ExecutionCandidate built = holder.builder.build();
             HardConstraint.ConstraintContext context = new HardConstraint.ConstraintContext(
                     holder.descriptor, holder.probe, inputs.environment, inputs.hardware, request,
                     resolved.descriptor(), inputs.offline, inputs.remoteAllowed);
             PlanReason violation = null;
             for (HardConstraint constraint : constraints) {
-                violation = constraint.check(holder.builder.build(), context);
+                violation = constraint.check(built, context);
                 if (violation != null) {
                     break;
                 }
@@ -584,7 +587,7 @@ public final class DefaultExecutionPlanner implements Planner {
             if (violation == null) {
                 survivors.add(holder);
             } else {
-                outcome.rejected.add(new SupportReport.RejectedCandidate(holder.builder.build(), violation));
+                outcome.rejected.add(new SupportReport.RejectedCandidate(built, violation));
             }
         }
         outcome.candidates = survivors;
@@ -599,12 +602,16 @@ public final class DefaultExecutionPlanner implements Planner {
         for (CandidateHolder holder : outcome.candidates) {
             boolean rejected = false;
             for (ExecutionPolicy policy : inputs.policies) {
-                PolicyDecision decision = policy.evaluate(holder.builder.build(), planningContext);
+                // policies may mutate the builder's score, so the snapshot is
+                // taken per policy (semantics preserved); the rejection path
+                // reuses the same snapshot instead of building twice
+                ExecutionCandidate built = holder.builder.build();
+                PolicyDecision decision = policy.evaluate(built, planningContext);
                 if (decision == null) {
                     continue;
                 }
                 if (decision.isRejection()) {
-                    outcome.rejected.add(new SupportReport.RejectedCandidate(holder.builder.build(), decision.asReason()));
+                    outcome.rejected.add(new SupportReport.RejectedCandidate(built, decision.asReason()));
                     rejected = true;
                     break;
                 }
@@ -628,19 +635,37 @@ public final class DefaultExecutionPlanner implements Planner {
                 rule.apply(holder.builder, holder.descriptor, request, inputs);
             }
         }
-        List<CandidateHolder> scored = new ArrayList<CandidateHolder>(outcome.candidates);
-        scored.sort(new Comparator<CandidateHolder>() {
+        // audit L-8: each candidate is built once; the comparator compares
+        // precomputed keys instead of rebuilding candidates O(n log n) times
+        List<ScoredCandidate> scored = new ArrayList<ScoredCandidate>(outcome.candidates.size());
+        for (CandidateHolder holder : outcome.candidates) {
+            ExecutionCandidate built = holder.builder.build();
+            scored.add(new ScoredCandidate(built));
+        }
+        scored.sort(new Comparator<ScoredCandidate>() {
             @Override
-            public int compare(CandidateHolder a, CandidateHolder b) {
-                int byScore = Double.compare(b.builder.build().score(), a.builder.build().score());
+            public int compare(ScoredCandidate a, ScoredCandidate b) {
+                int byScore = Double.compare(b.score, a.score);
                 if (byScore != 0) {
                     return byScore;
                 }
-                return a.builder.build().stableKey().compareTo(b.builder.build().stableKey());
+                return a.stableKey.compareTo(b.stableKey);
             }
         });
-        for (CandidateHolder holder : scored) {
-            outcome.viable.add(holder.builder.build());
+        for (ScoredCandidate entry : scored) {
+            outcome.viable.add(entry.candidate);
+        }
+    }
+
+    private static final class ScoredCandidate {
+        final ExecutionCandidate candidate;
+        final double score;
+        final String stableKey;
+
+        ScoredCandidate(ExecutionCandidate candidate) {
+            this.candidate = candidate;
+            this.score = candidate.score();
+            this.stableKey = candidate.stableKey();
         }
     }
 
