@@ -33,6 +33,16 @@ class CortexJServerBindAuthTest {
                 public ModelHandle load(io.cortexj.planner.ExecutionRequest request) {
                     return echoHandle();
                 }
+
+                @Override
+                public java.util.concurrent.Future<ModelHandle> loadAsync(ModelReference reference) {
+                    return java.util.concurrent.CompletableFuture.completedFuture(echoHandle());
+                }
+
+                @Override
+                public java.util.concurrent.Future<ModelHandle> loadAsync(io.cortexj.planner.ExecutionRequest request) {
+                    return java.util.concurrent.CompletableFuture.completedFuture(echoHandle());
+                }
             };
         }
 
