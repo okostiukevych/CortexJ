@@ -97,6 +97,10 @@ public final class GgufBinaryWriter {
         output.write(bytes);
     }
 
+    public void write(byte[] bytes, int offset, int length) throws IOException {
+        output.write(bytes, offset, length);
+    }
+
     public void flush() throws IOException {
         output.flush();
     }
