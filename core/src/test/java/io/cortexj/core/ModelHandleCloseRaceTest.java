@@ -40,7 +40,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Tag;
 
+@Tag("concurrency")
 class ModelHandleCloseRaceTest {
 
     static final class CountingRuntimeModel implements RuntimeModel, TextGenerationCapability {

@@ -13,7 +13,9 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Tag;
 
+@Tag("concurrency")
 class TerminalOrderingTest {
 
     private static void assertNoTokenAfterTerminal(List<String> events, int round) {

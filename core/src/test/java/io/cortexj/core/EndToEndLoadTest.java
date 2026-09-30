@@ -244,6 +244,8 @@ class EndToEndLoadTest {
                 assertEquals("executed: probe", inference.singleOutput());
             } finally {
                 handle.close();
+                assertEquals(true, provider.models.get(0).closed,
+                        "the runtime model must be closed by handle.close() (leak assertion)");
             }
             DefaultModelHandle second = (DefaultModelHandle) platform.models()
                     .load(ExecutionRequest.forModel(ModelReference.of("e2e/test-model")));
@@ -256,6 +258,10 @@ class EndToEndLoadTest {
             assertTrue(report.isExecutable());
         } finally {
             platform.close();
+            for (FakeRuntimeModel model : provider.models) {
+                assertEquals(true, model.closed,
+                        "every runtime model must be closed after platform.close() (leak assertion)");
+            }
         }
     }
 

@@ -30,7 +30,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.Tag;
 
+@Tag("concurrency")
 class SessionScopedDispatchTest {
 
     @TempDir
