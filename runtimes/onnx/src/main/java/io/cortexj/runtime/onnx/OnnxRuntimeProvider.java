@@ -101,6 +101,15 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
         return current;
     }
 
+    private static void closeSessionQuietly(OrtSession session) {
+        if (session != null) {
+            try {
+                session.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     @Override
     public RuntimeSupport evaluate(RuntimeEvaluationRequest request) {
         if (request.artifact() == null || request.artifact().format() != ArtifactFormat.ONNX) {
@@ -140,20 +149,34 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                 failure.detail("path", String.valueOf(modelPath));
                 throw failure;
             }
+            // created from the file path: no full heap copy of the model
+            // (audit M-14 - a 1 GB ONNX model no longer doubles peak heap during load)
+            OrtSession session = null;
             try {
-                byte[] modelBytes = Files.readAllBytes(modelPath);
-                OrtSession session = env.createSession(modelBytes,
+                session = env.createSession(modelPath.toString(),
                         new OrtSession.SessionOptions());
                 io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer = loadTokenizer(modelPath);
                 return new OnnxModel(session, tokenizer);
             } catch (io.cortexj.error.CortexJException e) {
+                closeQuietly(session);
                 throw e;
             } catch (Exception e) {
+                closeQuietly(session);
                 ModelLoadException failure = new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "Cannot create ONNX session from " + modelPath + ": " + e.getMessage(), e);
                 failure.detail("path", modelPath.toString());
                 throw failure;
+            } catch (Throwable error) {
+                // audit M-14: an Error escaping between session creation and the
+                // model constructor must not leak the native OrtSession
+                // (off-heap weights, invisible to GC)
+                closeQuietly(session);
+                throw error;
             }
+        }
+
+        private void closeQuietly(OrtSession session) {
+            closeSessionQuietly(session);
         }
 
         private io.cortexj.model.token.HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
@@ -180,7 +203,6 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
     }
 
     final class OnnxModel implements RuntimeModel, io.cortexj.inference.EmbeddingCapability {
-
         private final OrtSession session;
         private final io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
