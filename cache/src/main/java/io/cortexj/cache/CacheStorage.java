@@ -225,24 +225,31 @@ public final class CacheStorage {
             synchronized (keyLock(target)) {
                 // atomic replace first: no delete->move window where concurrent
                 // get()/contains() would report "not cached" (audit M-5b); the
-                // delete+move ladder stays as the fallback for filesystems that
-                // reject an atomic replace, and the manifest write happens under
-                // the same lock so a concurrent get() can never pair the new
-                // artifact with the stale manifest and verify-and-delete it
+                // manifest write happens under the same lock so a concurrent
+                // get() can never pair the new artifact with the stale manifest
+                // and verify-and-delete it
                 boolean moved = false;
                 try {
                     Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                     moved = true;
                 } catch (IOException atomicReplaceUnsupported) {
-                    // fall through to the delete+move ladder
+                    // fall through to the fallback ladder
                 }
                 if (!moved) {
-                    if (Files.exists(target)) {
-                        Files.delete(target);
-                    }
+                    // replace-on-rename without an explicit delete: rename(2)
+                    // atomically replaces an existing target on POSIX, and the
+                    // Windows atomic path is MoveFileEx(REPLACE_EXISTING) - the
+                    // target is never left missing, unlike an explicit delete
+                    // followed by a separate move, whose gap a concurrent get()
+                    // observes when a scanner delays the rename (Windows CI
+                    // flake, audit M-5b)
                     try {
                         Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
+                        moved = true;
                     } catch (IOException atomicFailed) {
+                        // last resort: filesystems that reject the atomic
+                        // replace entirely - non-atomic replace-on-move keeps
+                        // the gap inside a single JDK move call at worst
                         Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
                     }
                 }

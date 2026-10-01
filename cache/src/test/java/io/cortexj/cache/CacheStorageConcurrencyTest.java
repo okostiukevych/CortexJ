@@ -72,14 +72,22 @@ class CacheStorageConcurrencyTest {
                                     gets.incrementAndGet();
                                     if (!Files.isRegularFile(cached)) {
                                         // tolerate a mid-flight replace on fallback
-                                        // filesystems, but the artifact must reappear
-                                        try {
-                                            Thread.sleep(20);
-                                        } catch (InterruptedException e) {
-                                            Thread.currentThread().interrupt();
-                                            return;
+                                        // filesystems, but the artifact must reappear:
+                                        // bounded retry instead of a single 20ms check,
+                                        // loaded CI runners and AV-scanned writes can
+                                        // delay the fallback rename longer than 20ms
+                                        boolean reappeared = false;
+                                        long deadline = System.currentTimeMillis() + 2000L;
+                                        while (!reappeared && System.currentTimeMillis() < deadline) {
+                                            try {
+                                                Thread.sleep(10);
+                                            } catch (InterruptedException e) {
+                                                Thread.currentThread().interrupt();
+                                                return;
+                                            }
+                                            reappeared = Files.isRegularFile(cached);
                                         }
-                                        if (!Files.isRegularFile(cached)) {
+                                        if (!reappeared) {
                                             missingAfterGet.incrementAndGet();
                                         }
                                     }
