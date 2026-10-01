@@ -25,6 +25,8 @@ public final class CacheStorage {
     private static final long EVICT_TEMP_GRACE_MILLIS = 3_600_000L;
     private static final int ATOMIC_REPLACE_RETRIES = 5;
     private static final long ATOMIC_REPLACE_BACKOFF_MILLIS = 20L;
+    private static final java.util.concurrent.atomic.AtomicLong TEMP_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
 
     private static final int LOCK_STRIPES = 16;
 
@@ -200,7 +202,9 @@ public final class CacheStorage {
         if (parentDirectory != null) {
             Files.createDirectories(parentDirectory);
         }
-        Path temp = target.resolveSibling(fileNameOf(target) + ".part-" + Long.toHexString(System.nanoTime()));
+        Path temp = target.resolveSibling(fileNameOf(target) + ".part-"
+                + Long.toHexString(System.nanoTime())
+                + "-" + TEMP_SEQUENCE.incrementAndGet());
 
         long bytesCopied = 0L;
         try (InputStream input = content) {
