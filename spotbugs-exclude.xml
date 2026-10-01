@@ -70,4 +70,17 @@
     <Class name="io.cortexj.hardware.internal.HardwareProbe"/>
   </Match>
 
+  <!-- CacheStorage.put's fallback ladder retries the atomic replace with a
+       short bounded backoff under the per-key lock. The wait happens BEFORE
+       any delete, so the target stays present the whole time and concurrent
+       get()/contains() never observe a missing-artifact window (Windows CI
+       flake: a scanner holds the freshly written temp open without
+       share-delete). The lock is per-key (striped 16) and the path is rare -
+       only filesystems that reject the atomic replace under transient
+       interference - so the bounded 20ms backoff does not stall other keys. -->
+  <Match>
+    <Bug pattern="SWL_SLEEP_WITH_LOCK_HELD"/>
+    <Class name="io.cortexj.cache.CacheStorage"/>
+  </Match>
+
 </FindBugsFilter>
