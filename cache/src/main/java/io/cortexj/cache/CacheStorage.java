@@ -23,6 +23,8 @@ public final class CacheStorage {
 
     public static final long DEFAULT_MAX_SIZE_BYTES = 10L * 1024L * 1024L * 1024L;
     private static final long EVICT_TEMP_GRACE_MILLIS = 3_600_000L;
+    private static final int ATOMIC_REPLACE_RETRIES = 5;
+    private static final long ATOMIC_REPLACE_BACKOFF_MILLIS = 20L;
 
     private static final int LOCK_STRIPES = 16;
 
@@ -234,6 +236,29 @@ public final class CacheStorage {
                     moved = true;
                 } catch (IOException atomicReplaceUnsupported) {
                     // fall through to the fallback ladder
+                }
+                if (!moved) {
+                    // the atomic replace can fail transiently - a scanner
+                    // (Windows Defender on CI runners) holds the freshly written
+                    // temp file open without share-delete - without actually
+                    // rejecting the replace. Retry with a short backoff BEFORE
+                    // any delete: failed attempts never touch the target, so it
+                    // stays present the whole time and concurrent get() and
+                    // contains() never observe a missing-artifact window.
+                    for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
+                        try {
+                            Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        try {
+                            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                            moved = true;
+                        } catch (IOException retryFailed) {
+                            // scanner still holding the file; keep backing off
+                        }
+                    }
                 }
                 if (!moved) {
                     // replace-on-rename without an explicit delete: rename(2)

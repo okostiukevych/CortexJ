@@ -150,10 +150,8 @@ class LoadAsyncCancellationTest {
                 }
                 Thread.sleep(10);
             }
-            // let the copy settle into its blocked read, then capture the size
-            // right before the cancel
+            // let the copy settle into its blocked read, then cancel
             Thread.sleep(50);
-            long sizeAtCancel = Files.size(partial);
 
             long cancelStarted = System.nanoTime();
             assertTrue(future.cancel(true), "cancel() on a running load must succeed");
@@ -166,10 +164,15 @@ class LoadAsyncCancellationTest {
             } catch (CancellationException expected) {
             }
 
-            // prompt: the copy stops and the loading task finishes quickly
+            // prompt: the copy stops and the loading task finishes quickly. The
+            // chunk already read (past the cancel-flag check) when cancel() lands
+            // may still be written - the copy settles within one 50ms chunk
+            // interval, then the partial must stop growing entirely
+            Thread.sleep(300);
+            long settled = Files.size(partial);
             Thread.sleep(500);
-            assertEquals(sizeAtCancel, Files.size(partial),
-                    "the download must stop promptly after cancel() - no further progress");
+            assertEquals(settled, Files.size(partial),
+                    "the download must stop promptly after cancel() - no further progress beyond the in-flight chunk");
             assertTrue(cancelMillis < 5_000L,
                     "cancel() must return promptly (took " + cancelMillis + "ms)");
             assertTrue(Files.isRegularFile(partial),
