@@ -4,11 +4,27 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.cortexj.CortexJ;
+import io.cortexj.ErrorCode;
+import io.cortexj.error.ModelLoadException;
 import io.cortexj.model.ArtifactFormat;
 import io.cortexj.model.ModelArtifact;
 import io.cortexj.model.ModelHandle;
 import io.cortexj.model.ModelReference;
+import io.cortexj.planner.ExecutionPlan;
+import io.cortexj.planner.ExecutionRequest;
+import io.cortexj.runtime.DeviceType;
+import io.cortexj.runtime.RuntimeDescriptor;
+import io.cortexj.runtime.RuntimeId;
 import io.cortexj.spi.repository.ResolvedArtifact;
+import io.cortexj.spi.runtime.ModelRuntime;
+import io.cortexj.spi.runtime.RuntimeEvaluationRequest;
+import io.cortexj.spi.runtime.RuntimeModel;
+import io.cortexj.spi.runtime.RuntimeModelRequest;
+import io.cortexj.spi.runtime.RuntimeOpenRequest;
+import io.cortexj.spi.runtime.RuntimeProbeContext;
+import io.cortexj.spi.runtime.RuntimeProbeResult;
+import io.cortexj.spi.runtime.RuntimeProvider;
+import io.cortexj.spi.runtime.RuntimeSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,11 +36,15 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -142,7 +162,8 @@ class LoadAsyncCancellationTest {
 
             // wait until the download is in-flight with partial progress
             Path partial = platform.cache().root().resolve("downloads-partial")
-                    .resolve("async-repo~rev1~model.bin.part");
+                    .resolve(io.cortexj.core.download.DownloadManager.partialFileName(
+                            "async-repo", "rev1", "model.bin"));
             long deadline = System.currentTimeMillis() + 30_000L;
             while (!Files.isRegularFile(partial) || Files.size(partial) == 0) {
                 if (System.currentTimeMillis() > deadline) {
@@ -177,6 +198,181 @@ class LoadAsyncCancellationTest {
                     "cancel() must return promptly (took " + cancelMillis + "ms)");
             assertTrue(Files.isRegularFile(partial),
                     "the resume partial must be kept per existing cancellation semantics");
+        } finally {
+            platform.close();
+        }
+    }
+
+    static final class GatedRuntimeLoadProvider implements RuntimeProvider {
+
+        private final RuntimeId id;
+        final CountDownLatch loadEntered = new CountDownLatch(1);
+        final CountDownLatch releaseLoad = new CountDownLatch(1);
+        final AtomicInteger openCount = new AtomicInteger();
+        final AtomicInteger runtimeCloseCount = new AtomicInteger();
+        final List<ModelHandleCloseRaceTest.CountingRuntimeModel> models =
+                new ArrayList<ModelHandleCloseRaceTest.CountingRuntimeModel>();
+        private final boolean failAfterRelease;
+
+        GatedRuntimeLoadProvider(String runtimeId, boolean failAfterRelease) {
+            this.id = RuntimeId.of(runtimeId);
+            this.failAfterRelease = failAfterRelease;
+        }
+
+        @Override
+        public RuntimeId id() {
+            return id;
+        }
+
+        @Override
+        public RuntimeDescriptor descriptor() {
+            return RuntimeDescriptor.builder(id)
+                    .version("1.0")
+                    .format(ArtifactFormat.GGUF)
+                    .device(DeviceType.CPU)
+                    .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
+                    .maturity(RuntimeDescriptor.Maturity.STABLE)
+                    .build();
+        }
+
+        @Override
+        public RuntimeProbeResult probe(RuntimeProbeContext context) {
+            return RuntimeProbeResult.available("gated runtime ready");
+        }
+
+        @Override
+        public RuntimeSupport evaluate(RuntimeEvaluationRequest request) {
+            return RuntimeSupport.full(DeviceType.CPU);
+        }
+
+        @Override
+        public ModelRuntime open(final RuntimeOpenRequest request) {
+            openCount.incrementAndGet();
+            return new ModelRuntime() {
+                @Override
+                public RuntimeId runtimeId() {
+                    return id;
+                }
+
+                @Override
+                public RuntimeModel load(RuntimeModelRequest loadRequest) {
+                    loadEntered.countDown();
+                    try {
+                        releaseLoad.await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    if (failAfterRelease) {
+                        throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                                "simulated runtime load failure after cancel");
+                    }
+                    ModelHandleCloseRaceTest.CountingRuntimeModel model =
+                            new ModelHandleCloseRaceTest.CountingRuntimeModel();
+                    models.add(model);
+                    return model;
+                }
+
+                @Override
+                public void close() {
+                    runtimeCloseCount.incrementAndGet();
+                }
+            };
+        }
+    }
+
+    @Test
+    void cancelDuringRuntimeLoadLeavesNoRegisteredHandle() throws Exception {
+        GatedRuntimeLoadProvider provider = new GatedRuntimeLoadProvider("gated-load-runtime", false);
+        DefaultCortexJ platform = (DefaultCortexJ) CortexJ.builder()
+                .runtimeProvider(provider)
+                .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                .workingDirectory(tempDir.resolve("work"))
+                .build();
+        try {
+            Future<ModelHandle> future = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            assertTrue(provider.loadEntered.await(10, TimeUnit.SECONDS),
+                    "the async load must reach the runtime load phase");
+            assertTrue(future.cancel(true), "cancel() on a running load must succeed");
+
+            provider.releaseLoad.countDown();
+            DefaultModels models = (DefaultModels) platform.models();
+            long deadline = System.currentTimeMillis() + 10_000L;
+            while (models.openHandleCount() > 0) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw new AssertionError(
+                            "a handle remained registered after the load was cancelled during runtime.load()");
+                }
+                Thread.sleep(10);
+            }
+            while (provider.runtimeCloseCount.get() == 0) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw new AssertionError(
+                            "the runtime opened for the cancelled load must be closed");
+                }
+                Thread.sleep(10);
+            }
+
+            assertTrue(future.isCancelled());
+            try {
+                future.get(10, TimeUnit.SECONDS);
+                throw new AssertionError("get() on a cancelled load must throw");
+            } catch (CancellationException expected) {
+            }
+            assertEquals(1, provider.runtimeCloseCount.get(),
+                    "the runtime opened for the cancelled load must be closed");
+            assertEquals(1, provider.models.get(0).closeCount.get(),
+                    "the runtime model created for the cancelled load must be closed");
+        } finally {
+            platform.close();
+        }
+    }
+
+    @Test
+    void cancelDuringRuntimeLoadAbortsRemainingFallbackCandidates() throws Exception {
+        GatedRuntimeLoadProvider firstCandidate = new GatedRuntimeLoadProvider("aaa-cancel-runtime", true);
+        GatedRuntimeLoadProvider secondCandidate = new GatedRuntimeLoadProvider("zzz-cancel-runtime", false);
+        DefaultCortexJ platform = (DefaultCortexJ) CortexJ.builder()
+                .runtimeProvider(firstCandidate)
+                .runtimeProvider(secondCandidate)
+                .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                .workingDirectory(tempDir.resolve("work"))
+                .build();
+        try {
+            ExecutionPlan plan = platform.planner()
+                    .plan(ExecutionRequest.forModel(ModelReference.of("e2e/test-model")));
+            String selectedRuntimeId = plan.selected().runtimeId();
+            GatedRuntimeLoadProvider selected =
+                    firstCandidate.id().value().equals(selectedRuntimeId) ? firstCandidate : secondCandidate;
+            GatedRuntimeLoadProvider other = selected == firstCandidate ? secondCandidate : firstCandidate;
+
+            Future<ModelHandle> future = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            assertTrue(selected.loadEntered.await(10, TimeUnit.SECONDS),
+                    "the async load must reach the selected runtime load phase");
+            assertTrue(future.cancel(true), "cancel() on a running load must succeed");
+
+            selected.releaseLoad.countDown();
+            DefaultModels models = (DefaultModels) platform.models();
+            long deadline = System.currentTimeMillis() + 10_000L;
+            while (models.openHandleCount() > 0) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw new AssertionError(
+                            "a handle remained registered after the load was cancelled during runtime.load()");
+                }
+                Thread.sleep(10);
+            }
+            while (selected.runtimeCloseCount.get() == 0) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw new AssertionError(
+                            "the runtime opened for the cancelled load must be closed on the failure path");
+                }
+                Thread.sleep(10);
+            }
+
+            assertTrue(future.isCancelled());
+            assertEquals(0, other.openCount.get(),
+                    "cancellation must stop the load from trying the remaining fallback runtimes");
+            assertEquals(1, selected.runtimeCloseCount.get(),
+                    "the runtime opened for the cancelled load must be closed on the failure path");
         } finally {
             platform.close();
         }

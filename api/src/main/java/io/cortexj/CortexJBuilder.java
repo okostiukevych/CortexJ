@@ -28,6 +28,7 @@ public final class CortexJBuilder {
     private boolean offline = offlineFromEnvironment();
     private Path workingDirectory;
     private Long memoryLimitBytes;
+    private Long maxArtifactBytes;
     private TokenSupplier tokenSupplier;
     private String remoteBaseUrl;
     private String remoteApiKey;
@@ -35,6 +36,7 @@ public final class CortexJBuilder {
     private ExecutorService executor;
     private boolean allowRemoteRuntime = true;
     private boolean asyncEventDelivery;
+    private boolean shutdownHook;
     private volatile boolean frozen;
 
     public CortexJBuilder runtimeProvider(RuntimeProvider provider) {
@@ -84,6 +86,12 @@ public final class CortexJBuilder {
     public CortexJBuilder memoryLimitBytes(long bytes) {
         ensureMutable();
         this.memoryLimitBytes = Long.valueOf(bytes);
+        return this;
+    }
+
+    public CortexJBuilder maxArtifactBytes(long bytes) {
+        ensureMutable();
+        this.maxArtifactBytes = Long.valueOf(bytes);
         return this;
     }
 
@@ -144,6 +152,21 @@ public final class CortexJBuilder {
 
     public boolean isAsyncEventDelivery() {
         return asyncEventDelivery;
+    }
+
+    /**
+     * Opt-in JVM shutdown hook (audit #81): when enabled, the platform registers
+     * a 'cortexj-shutdown' hook that closes the instance on JVM exit, releasing
+     * model handles, executors and the event bus. Default false.
+     */
+    public CortexJBuilder shutdownHook(boolean hook) {
+        ensureMutable();
+        this.shutdownHook = hook;
+        return this;
+    }
+
+    public boolean isShutdownHook() {
+        return shutdownHook;
     }
 
     public CortexJBuilder proxy(String host, int port) {
@@ -208,6 +231,10 @@ public final class CortexJBuilder {
 
     public Long memoryLimitBytes() {
         return memoryLimitBytes;
+    }
+
+    public Long maxArtifactBytes() {
+        return maxArtifactBytes;
     }
 
     public TokenSupplier tokenSupplier() {

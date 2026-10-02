@@ -45,97 +45,123 @@ public final class DefaultCortexJ implements CortexJ {
     private final ExecutorService asyncExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
-        this.snapshot = EnvironmentSnapshot.probe();
-        PlatformModuleSelector.validateStarters(snapshot);
-        this.platformModule = PlatformModuleSelector.select(snapshot);
-        this.events = new EventBus(configuration.eventListeners(), configuration.isAsyncEventDelivery());
-
-        this.runtimeProviders = SpiRegistries.loadSorted(RuntimeProvider.class,
-                new SpiRegistries.IdAccessor<RuntimeProvider>() {
-                    public String idOf(RuntimeProvider provider) {
-                        return provider.id().value();
-                    }
-                }, configuration.runtimeProviders());
-
-        this.repositoryProviders = SpiRegistries.loadSorted(ModelRepositoryProvider.class,
-                new SpiRegistries.IdAccessor<ModelRepositoryProvider>() {
-                    public String idOf(ModelRepositoryProvider provider) {
-                        return provider.id().value();
-                    }
-                }, configuration.repositoryProviders());
-
-        this.converters = SpiRegistries.loadSorted(io.cortexj.spi.conversion.ModelConverter.class,
-                new SpiRegistries.IdAccessor<io.cortexj.spi.conversion.ModelConverter>() {
-                    public String idOf(io.cortexj.spi.conversion.ModelConverter converter) {
-                        return converter.id().value();
-                    }
-                }, configuration.converters());
-
-        Configuration resolved = Configuration.from(configuration, snapshot);
-        this.cache = new io.cortexj.cache.CacheStorage(
-                resolved.workingDirectory.resolve("cache"),
-                resolved.memoryLimitBytes == null || resolved.memoryLimitBytes <= 0
-                        ? io.cortexj.cache.CacheStorage.DEFAULT_MAX_SIZE_BYTES
-                        : Math.min(resolved.memoryLimitBytes * 4,
-                                io.cortexj.cache.CacheStorage.DEFAULT_MAX_SIZE_BYTES * 4));
-        this.cache.setEventListener(events.asListener());
-
-        if (configuration.executor() != null) {
-            this.ioExecutor = configuration.executor();
-            this.ownsExecutor = false;
-        } else {
-            this.ioExecutor = platformModule.createIoExecutor();
-            this.ownsExecutor = true;
+        java.lang.Thread shutdownHook = null;
+        if (configuration.isShutdownHook()) {
+            shutdownHook = new java.lang.Thread(new Runnable() {
+                @Override
+                public void run() {
+                    close();
+                }
+            }, "cortexj-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
         }
-        this.asyncExecutor = java.util.concurrent.Executors.newFixedThreadPool(
-                Math.max(2, Runtime.getRuntime().availableProcessors()),
-                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"));
+        ExecutorService ioExecutorCandidate = null;
+        ExecutorService asyncExecutorCandidate = null;
+        try {
+            this.snapshot = EnvironmentSnapshot.probe();
+            PlatformModuleSelector.validateStarters(snapshot);
+            this.platformModule = PlatformModuleSelector.select(snapshot);
+            this.events = new EventBus(configuration.eventListeners(), configuration.isAsyncEventDelivery());
 
-        this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
-                resolved.proxyHost, resolved.proxyPort);
+            this.runtimeProviders = SpiRegistries.loadSorted(RuntimeProvider.class,
+                    new SpiRegistries.IdAccessor<RuntimeProvider>() {
+                        public String idOf(RuntimeProvider provider) {
+                            return provider.id().value();
+                        }
+                    }, configuration.runtimeProviders());
 
-        io.cortexj.spi.policy.PlanningContext.CacheLookup cacheLookup = new io.cortexj.spi.policy.PlanningContext.CacheLookup() {
-            @Override
-            public boolean isCached(String repositoryId, String revision, String artifactId, String checksum) {
-                return cache.contains(repositoryId, revision, artifactId);
+            this.repositoryProviders = SpiRegistries.loadSorted(ModelRepositoryProvider.class,
+                    new SpiRegistries.IdAccessor<ModelRepositoryProvider>() {
+                        public String idOf(ModelRepositoryProvider provider) {
+                            return provider.id().value();
+                        }
+                    }, configuration.repositoryProviders());
+
+            this.converters = SpiRegistries.loadSorted(io.cortexj.spi.conversion.ModelConverter.class,
+                    new SpiRegistries.IdAccessor<io.cortexj.spi.conversion.ModelConverter>() {
+                        public String idOf(io.cortexj.spi.conversion.ModelConverter converter) {
+                            return converter.id().value();
+                        }
+                    }, configuration.converters());
+
+            Configuration resolved = Configuration.from(configuration, snapshot);
+            this.cache = new io.cortexj.cache.CacheStorage(
+                    resolved.workingDirectory.resolve("cache"),
+                    resolved.memoryLimitBytes == null || resolved.memoryLimitBytes <= 0
+                            ? io.cortexj.cache.CacheStorage.DEFAULT_MAX_SIZE_BYTES
+                            : Math.min(resolved.memoryLimitBytes * 4,
+                                    io.cortexj.cache.CacheStorage.DEFAULT_MAX_SIZE_BYTES * 4));
+            this.cache.setEventListener(events.asListener());
+
+            if (configuration.executor() != null) {
+                ioExecutorCandidate = configuration.executor();
+                this.ownsExecutor = false;
+            } else {
+                ioExecutorCandidate = platformModule.createIoExecutor();
+                this.ownsExecutor = true;
             }
+            asyncExecutorCandidate = java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.max(2, Runtime.getRuntime().availableProcessors()),
+                    io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"));
+            this.ioExecutor = ioExecutorCandidate;
+            this.asyncExecutor = asyncExecutorCandidate;
 
-            @Override
-            public java.nio.file.Path cachedArtifactPath(String repositoryId, String revision,
-                                                         String artifactId, String checksum) {
-                java.nio.file.Path path = cache.artifactPath(repositoryId, revision, artifactId);
-                return java.nio.file.Files.isRegularFile(path) ? path : null;
+            this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
+                    resolved.proxyHost, resolved.proxyPort);
+
+            io.cortexj.spi.policy.PlanningContext.CacheLookup cacheLookup = new io.cortexj.spi.policy.PlanningContext.CacheLookup() {
+                @Override
+                public boolean isCached(String repositoryId, String revision, String artifactId, String checksum) {
+                    return cache.contains(repositoryId, revision, artifactId);
+                }
+
+                @Override
+                public java.nio.file.Path cachedArtifactPath(String repositoryId, String revision,
+                                                             String artifactId, String checksum) {
+                    java.nio.file.Path path = cache.artifactPath(repositoryId, revision, artifactId);
+                    return java.nio.file.Files.isRegularFile(path) ? path : null;
+                }
+            };
+
+            this.planner = new io.cortexj.planner.internal.DefaultExecutionPlanner(
+                    new io.cortexj.planner.internal.PlannerInputs(
+                            runtimeProviders,
+                            repositoryProviders,
+                            converters,
+                            configuration.executionPolicies(),
+                            new io.cortexj.model.artifact.ArtifactInspectorRegistry(),
+                            snapshot.environment,
+                            snapshot.hardware,
+                            cacheLookup,
+                            configuration.tokenSupplier() == null
+                                    ? io.cortexj.spi.repository.TokenSupplier.none()
+                                    : configuration.tokenSupplier(),
+                            ioExecutorCandidate,
+                            events.asListener(),
+                            resolved.offline,
+                            resolved.remoteRuntimeAllowed,
+                            CortexJInfo.VERSION,
+                            resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes,
+                            resolved.runtimeConfiguration()));
+
+            this.models = new DefaultModels(this);
+            this.resolvedConfiguration = resolved;
+            this.resolutionContext = ResolutionContext.create(resolved.offline,
+                    configuration.tokenSupplier(), ioExecutorCandidate, events.asListener());
+            events.info(PlatformEvent.Type.PLATFORM_STARTED,
+                    "CortexJ started on Java " + snapshot.environment.jvmFeatureVersion()
+                            + " with " + runtimeProviders.size() + " runtime provider(s)");
+        } catch (RuntimeException failure) {
+            if (shutdownHook != null) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(shutdownHook);
+                } catch (IllegalStateException alreadyShuttingDown) {
+                }
             }
-        };
-
-        this.planner = new io.cortexj.planner.internal.DefaultExecutionPlanner(
-                new io.cortexj.planner.internal.PlannerInputs(
-                        runtimeProviders,
-                        repositoryProviders,
-                        converters,
-                        configuration.executionPolicies(),
-                        new io.cortexj.model.artifact.ArtifactInspectorRegistry(),
-                        snapshot.environment,
-                        snapshot.hardware,
-                        cacheLookup,
-                        configuration.tokenSupplier() == null
-                                ? io.cortexj.spi.repository.TokenSupplier.none()
-                                : configuration.tokenSupplier(),
-                        ioExecutor,
-                        events.asListener(),
-                        resolved.offline,
-                        resolved.remoteRuntimeAllowed,
-                        CortexJInfo.VERSION,
-                        resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes,
-                        resolved.runtimeConfiguration()));
-
-        this.models = new DefaultModels(this);
-        this.resolvedConfiguration = resolved;
-        this.resolutionContext = ResolutionContext.create(resolved.offline,
-                configuration.tokenSupplier(), ioExecutor, events.asListener());
-        events.info(PlatformEvent.Type.PLATFORM_STARTED,
-                "CortexJ started on Java " + snapshot.environment.jvmFeatureVersion()
-                        + " with " + runtimeProviders.size() + " runtime provider(s)");
+            shutdownExecutor(ioExecutorCandidate);
+            shutdownExecutor(asyncExecutorCandidate);
+            throw failure;
+        }
     }
 
     List<io.cortexj.spi.conversion.ModelConverter> converters() {
@@ -258,6 +284,7 @@ public final class DefaultCortexJ implements CortexJ {
         }
         models.closeAll();
         events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
+        events.close();
         shutdownExecutor(ownsExecutor ? ioExecutor : null);
         shutdownExecutor(asyncExecutor);
     }

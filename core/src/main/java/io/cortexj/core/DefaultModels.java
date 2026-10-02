@@ -1,8 +1,10 @@
 package io.cortexj.core;
 
 import io.cortexj.ErrorCode;
+import io.cortexj.error.ArtifactIntegrityException;
 import io.cortexj.error.ArtifactResolutionException;
 import io.cortexj.error.ModelLoadException;
+import io.cortexj.error.NativeRuntimeException;
 import io.cortexj.error.RuntimeUnavailableException;
 import io.cortexj.model.ModelArtifact;
 import io.cortexj.model.ModelDescriptor;
@@ -36,12 +38,14 @@ public final class DefaultModels implements io.cortexj.Models {
     private static final java.util.logging.Logger LOG =
             java.util.logging.Logger.getLogger(DefaultModels.class.getName());
 
+    private static final long DEFAULT_AWAIT_TIMEOUT_MILLIS = 10L * 60L * 1000L;
+
     private final DefaultCortexJ platform;
     private final List<DefaultModelHandle> openHandles = new CopyOnWriteArrayList<DefaultModelHandle>();
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>> inFlightWork =
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>>();
     private final java.util.concurrent.locks.ReentrantReadWriteLock loadLock =
-            new java.util.concurrent.locks.ReentrantReadWriteLock();
+            new java.util.concurrent.locks.ReentrantReadWriteLock(true);
     private volatile boolean closed;
 
     DefaultModels(DefaultCortexJ platform) {
@@ -99,7 +103,17 @@ public final class DefaultModels implements io.cortexj.Models {
                                             "load cancelled before it started"));
                             return;
                         }
-                        underlying.complete(loadWithFallbacks(request, cancelFlag));
+                        ModelHandle handle = loadWithFallbacks(request, cancelFlag);
+                        if (cancelFlag.get()) {
+                            closeHandleAfterCancellation(handle);
+                            underlying.completeExceptionally(
+                                    new java.util.concurrent.CancellationException(
+                                            "load cancelled during execution"));
+                            return;
+                        }
+                        if (!underlying.complete(handle) && cancelFlag.get()) {
+                            closeHandleAfterCancellation(handle);
+                        }
                     } catch (Throwable failure) {
                         underlying.completeExceptionally(failure);
                     }
@@ -160,6 +174,10 @@ public final class DefaultModels implements io.cortexj.Models {
 
         ModelLoadException last = null;
         for (int index = 0; index < chain.size(); index++) {
+            if (cancelFlag != null && cancelFlag.get()) {
+                throw new java.util.concurrent.CancellationException(
+                        "load cancelled before candidate " + chain.get(index).runtimeId());
+            }
             ExecutionCandidate candidate = chain.get(index);
             try {
                 DefaultModelHandle handle = loadCandidate(plan, candidate, request, cancelFlag);
@@ -169,7 +187,8 @@ public final class DefaultModels implements io.cortexj.Models {
                 return handle;
             } catch (RuntimeException e) {
                 if (e instanceof ModelLoadException || e instanceof RuntimeUnavailableException
-                        || e instanceof ArtifactResolutionException) {
+                        || e instanceof ArtifactResolutionException || e instanceof NativeRuntimeException
+                        || e instanceof ArtifactIntegrityException) {
                     last = asLoadFailure(e, candidate);
                     if (index < chain.size() - 1) {
                         platform.events().publish(PlatformEvent.Type.FALLBACK_APPLIED,
@@ -195,6 +214,34 @@ public final class DefaultModels implements io.cortexj.Models {
                 "Candidate " + candidate.runtimeId() + " could not load the model: " + e.getMessage(), e);
         wrapped.detail("runtime", candidate.runtimeId());
         return wrapped;
+    }
+
+    private static void closeAfterCancellation(RuntimeModel model, ModelRuntime runtime) {
+        if (model != null) {
+            try {
+                model.close();
+            } catch (RuntimeException closeError) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "model close failed during load cancellation; continuing", closeError);
+            }
+        }
+        if (runtime != null) {
+            try {
+                runtime.close();
+            } catch (RuntimeException closeError) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "runtime close failed during load cancellation; continuing", closeError);
+            }
+        }
+    }
+
+    private static void closeHandleAfterCancellation(ModelHandle handle) {
+        try {
+            handle.close();
+        } catch (RuntimeException closeError) {
+            LOG.log(java.util.logging.Level.FINE,
+                    "handle close failed after load cancellation; continuing", closeError);
+        }
     }
 
     private DefaultModelHandle loadCandidate(ExecutionPlan plan, ExecutionCandidate candidate, ExecutionRequest request,
@@ -223,6 +270,11 @@ public final class DefaultModels implements io.cortexj.Models {
             enforceTrustPolicy(resolved);
 
             Path artifactPath = ensureArtifact(plan, resolved, candidate, handle, cancelFlag);
+
+            if (cancelFlag != null && cancelFlag.get()) {
+                throw new java.util.concurrent.CancellationException(
+                        "load cancelled after artifact resolution");
+            }
 
             ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
                     resolved.descriptor(),
@@ -254,6 +306,11 @@ public final class DefaultModels implements io.cortexj.Models {
             }
                 throw e instanceof ModelLoadException ? e : new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "runtime " + candidate.runtimeId() + " failed to load the model: " + e.getMessage(), e);
+            }
+            if (cancelFlag != null && cancelFlag.get()) {
+                closeAfterCancellation(model, runtime);
+                throw new java.util.concurrent.CancellationException(
+                        "load cancelled during " + candidate.runtimeId() + " load");
             }
             handle.attach(model, runtime);
 
@@ -306,7 +363,12 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             io.cortexj.cache.CacheStorage cache = platform.cache();
             io.cortexj.model.Checksum checksum = artifact.checksum();
-            Path cached = cache.get(resolved.repository().value(), resolved.revision(), artifact.id(), checksum);
+            Path cached;
+            try {
+                cached = cache.get(resolved.repository().value(), resolved.revision(), artifact.id(), checksum);
+            } catch (ArtifactIntegrityException corrupted) {
+                cached = null;
+            }
             if (cached != null) {
                 return cached;
             }
@@ -325,7 +387,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 .detail("artifact", artifact.id());
     }
 
-    private Path oncePerKey(String key, java.util.function.Supplier<Path> work) {
+    Path oncePerKey(String key, java.util.function.Supplier<Path> work) {
         java.util.concurrent.CompletableFuture<Path> claim =
                 new java.util.concurrent.CompletableFuture<Path>();
         java.util.concurrent.CompletableFuture<Path> inFlight = inFlightWork.putIfAbsent(key, claim);
@@ -337,6 +399,9 @@ public final class DefaultModels implements io.cortexj.Models {
             claim.complete(result);
             return result;
         } catch (RuntimeException failure) {
+            claim.completeExceptionally(failure);
+            throw failure;
+        } catch (Error failure) {
             claim.completeExceptionally(failure);
             throw failure;
         } finally {
@@ -351,21 +416,27 @@ public final class DefaultModels implements io.cortexj.Models {
         return oncePerKey(key, new java.util.function.Supplier<Path>() {
             @Override
             public Path get() {
-                Path cached = cache.get(repositoryId, revision, resolvedArtifact.artifact().id(),
-                        resolvedArtifact.artifact().checksum());
+                Path cached;
+                try {
+                    cached = cache.get(repositoryId, revision, resolvedArtifact.artifact().id(),
+                            resolvedArtifact.artifact().checksum());
+                } catch (ArtifactIntegrityException corrupted) {
+                    cached = null;
+                }
                 if (cached != null) {
                     return cached;
                 }
                 handle.lifecycleTo(ModelLifecycleState.DOWNLOADING);
                 return platform.downloads().download(resolvedArtifact, repositoryId,
-                        revision, cache, 0L, cancelFlag);
+                        revision, cache, platform.config().maxArtifactBytes, cancelFlag);
             }
         });
     }
 
     private Path awaitInFlight(java.util.concurrent.CompletableFuture<Path> inFlight) {
+        long timeoutMillis = awaitTimeoutMillis();
         try {
-            return inFlight.get();
+            return inFlight.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -378,6 +449,24 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             throw new ModelLoadException(ErrorCode.LOAD_FAILED,
                     "Concurrent download of the same artifact failed: " + cause.getMessage(), cause);
+        } catch (java.util.concurrent.TimeoutException e) {
+            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "Timed out after " + timeoutMillis
+                            + "ms waiting for a concurrent download of the same artifact",
+                    "Retry the model load, or raise the cortexj.load.awaitTimeoutMillis system property.", e);
+        }
+    }
+
+    private static long awaitTimeoutMillis() {
+        String property = System.getProperty("cortexj.load.awaitTimeoutMillis");
+        if (property == null || property.trim().isEmpty()) {
+            return DEFAULT_AWAIT_TIMEOUT_MILLIS;
+        }
+        try {
+            long parsed = Long.parseLong(property.trim());
+            return parsed > 0 ? parsed : DEFAULT_AWAIT_TIMEOUT_MILLIS;
+        } catch (NumberFormatException invalid) {
+            return DEFAULT_AWAIT_TIMEOUT_MILLIS;
         }
     }
 
@@ -540,8 +629,13 @@ public final class DefaultModels implements io.cortexj.Models {
             return Paths.get(source.location());
         }
         io.cortexj.cache.CacheStorage cache = platform.cache();
-        Path cached = cache.get(resolved.repository().value(), resolved.revision(),
-                source.artifact().id(), source.artifact().checksum());
+        Path cached;
+        try {
+            cached = cache.get(resolved.repository().value(), resolved.revision(),
+                    source.artifact().id(), source.artifact().checksum());
+        } catch (ArtifactIntegrityException corrupted) {
+            cached = null;
+        }
         if (cached != null) {
             return cached;
         }
@@ -564,6 +658,18 @@ public final class DefaultModels implements io.cortexj.Models {
         return null;
     }
 
+    private static String sanitizePathSegment(String value) {
+        String cleaned = value == null ? "unknown" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        cleaned = cleaned.replaceAll("[^a-z0-9._-]", "_");
+        while (cleaned.startsWith(".") || cleaned.startsWith("-")) {
+            cleaned = "_" + cleaned.substring(1);
+        }
+        if (cleaned.isEmpty() || cleaned.equals("..")) {
+            cleaned = "unknown";
+        }
+        return cleaned;
+    }
+
     private void writeProvenance(ResolvedModel resolved,
                                  ExecutionCandidate candidate,
                                  io.cortexj.planner.ConversionStep step,
@@ -573,8 +679,8 @@ public final class DefaultModels implements io.cortexj.Models {
                                  String outputSha256) {
         try {
             java.nio.file.Path directory = platform.config().workingDirectory
-                    .resolve("converted").resolve(resolved.repository().value())
-                    .resolve(resolved.revision());
+                    .resolve("converted").resolve(sanitizePathSegment(resolved.repository().value()))
+                    .resolve(sanitizePathSegment(resolved.revision()));
             java.nio.file.Files.createDirectories(directory);
             java.util.Properties manifest = new java.util.Properties();
             manifest.setProperty("sourceRevision", resolved.revision());
@@ -600,7 +706,8 @@ public final class DefaultModels implements io.cortexj.Models {
                 manifest.setProperty("converter." + entry.getKey(), entry.getValue());
             }
             java.io.OutputStream out = java.nio.file.Files.newOutputStream(
-                    directory.resolve(candidate.artifact().id() + ".provenance.properties"));
+                    directory.resolve(sanitizePathSegment(candidate.artifact().id())
+                            + ".provenance.properties"));
             try {
                 manifest.store(out, "CortexJ deterministic conversion provenance (spec 32.4)");
             } finally {

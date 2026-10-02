@@ -5,6 +5,7 @@ import io.cortexj.model.ArtifactFormat;
 import io.cortexj.model.ModelArtifact;
 import io.cortexj.model.ModelDescriptor;
 import io.cortexj.model.ModelHandle;
+import io.cortexj.model.ModelLifecycleState;
 import io.cortexj.model.ModelReference;
 import io.cortexj.model.TaskCapability;
 import io.cortexj.spi.conversion.ConversionRequest;
@@ -40,6 +41,7 @@ import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConversionEndToEndTest {
@@ -243,6 +245,115 @@ class ConversionEndToEndTest {
             second.close();
             assertEquals(1, converter.conversions,
                     "second load must reuse the cached conversion output");
+        } finally {
+            platform.close();
+        }
+    }
+
+    @Test
+    void maliciousManifestIdsKeepProvenanceWriteInsideWorkingDirectory() throws Exception {
+        Path safetensors = tempDir.resolve("model.safetensors");
+        Files.write(safetensors, SAFETENSORS_BYTES);
+
+        RecordingRuntimeProvider runtime = new RecordingRuntimeProvider();
+        FakeConverter converter = new FakeConverter();
+        Path workDir = tempDir.resolve("cortexj-work");
+
+        ModelArtifact source = new io.cortexj.model.ModelArtifact.Abstract(
+                "../.ssh/escape", ArtifactFormat.SAFETENSORS, SAFETENSORS_BYTES.length, null, null) {
+        };
+        ModelDescriptor descriptor = ModelDescriptor.builder("evil/escape-model")
+                .revision("../../../outside")
+                .task(TaskCapability.TEXT_GENERATION)
+                .artifact(source)
+                .build();
+        final URI location = safetensors.toUri();
+        ResolvedArtifact artifact = new ResolvedArtifact() {
+            @Override
+            public ModelArtifact artifact() {
+                return source;
+            }
+
+            @Override
+            public URI location() {
+                return location;
+            }
+
+            @Override
+            public java.util.Map<String, String> downloadHeaders() {
+                return Collections.emptyMap();
+            }
+        };
+        final ResolvedModel resolved = new ResolvedModel(descriptor, "../../../outside",
+                RepositoryId.of("evil-repo"), Collections.singletonList(artifact));
+        ModelRepositoryProvider repository = new ModelRepositoryProvider() {
+            @Override
+            public RepositoryId id() {
+                return RepositoryId.of("evil-repo");
+            }
+
+            @Override
+            public boolean supports(ModelReference reference) {
+                return true;
+            }
+
+            @Override
+            public ResolvedModel resolve(ModelReference reference, ResolutionContext context) {
+                return resolved;
+            }
+        };
+
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(runtime)
+                .repositoryProvider(repository)
+                .converter(converter)
+                .workingDirectory(workDir)
+                .build();
+        try {
+            ModelHandle handle = platform.models().load(ModelReference.of("evil/escape-model"));
+            handle.close();
+            assertEquals(ModelLifecycleState.CLOSED, handle.state(),
+                    "the conversion pipeline must survive attacker-supplied ids");
+            assertEquals(1, runtime.loadedPaths.size(), "the runtime must receive the converted artifact");
+
+            assertFalse(Files.exists(tempDir.resolve("outside")),
+                    "the malicious revision must not escape the working directory");
+            assertFalse(Files.exists(tempDir.resolve(".ssh")),
+                    "the malicious artifact id must not escape the working directory");
+
+            Path workRoot = workDir.toAbsolutePath().normalize();
+            Path original = safetensors.toAbsolutePath().normalize();
+            final List<Path> written = new ArrayList<Path>();
+            Files.walkFileTree(tempDir, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                                                                java.nio.file.attribute.BasicFileAttributes attrs) {
+                    written.add(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+            for (Path file : written) {
+                Path normalized = file.toAbsolutePath().normalize();
+                assertTrue(normalized.startsWith(workRoot) || normalized.equals(original),
+                        "no file may be written outside the working directory, found: " + normalized);
+            }
+
+            final List<Path> provenanceFiles = new ArrayList<Path>();
+            Files.walkFileTree(workDir.resolve("converted"), new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                                                                java.nio.file.attribute.BasicFileAttributes attrs) {
+                    if (file.getFileName() != null
+                            && file.getFileName().toString().endsWith(".provenance.properties")) {
+                        provenanceFiles.add(file);
+                    }
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+            assertEquals(1, provenanceFiles.size(),
+                    "exactly one provenance manifest must be written under the working directory");
+            assertTrue(provenanceFiles.get(0).toAbsolutePath().normalize().startsWith(workRoot),
+                    "the provenance manifest must stay inside the working directory");
         } finally {
             platform.close();
         }
