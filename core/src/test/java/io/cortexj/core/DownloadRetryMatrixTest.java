@@ -40,6 +40,7 @@ class DownloadRetryMatrixTest {
     private final AtomicInteger requests = new AtomicInteger();
     private final CopyOnWriteArrayList<Integer> statuses = new CopyOnWriteArrayList<Integer>();
     private final AtomicReference<byte[]> payload = new AtomicReference<byte[]>();
+    private final AtomicReference<String> retryAfter = new AtomicReference<String>();
 
     @TempDir
     Path tempDir;
@@ -62,6 +63,9 @@ class DownloadRetryMatrixTest {
                 statuses.add(status);
                 if (status != 200 && status != 206) {
                     byte[] body = ("error " + status).getBytes(StandardCharsets.UTF_8);
+                    if (retryAfter.get() != null) {
+                        exchange.getResponseHeaders().add("Retry-After", retryAfter.get());
+                    }
                     exchange.sendResponseHeaders(status, body.length);
                     try (OutputStream out = exchange.getResponseBody()) {
                         out.write(body);
@@ -151,7 +155,8 @@ class DownloadRetryMatrixTest {
         scriptedStatuses.set(new Integer[]{500, 502, 503, 500});
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
         DownloadManager downloads = new DownloadManager(new EventBus(
-                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()));
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
 
         assertThrows(ArtifactResolutionException.class,
                 () -> downloads.download(artifact(), "retry-repo", "rev1", cache, 0L),
@@ -171,7 +176,8 @@ class DownloadRetryMatrixTest {
         scriptedStatuses.set(new Integer[]{503});
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
         DownloadManager downloads = new DownloadManager(new EventBus(
-                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()));
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
 
         Path result = downloads.download(artifact(), "retry-repo", "rev1", cache, 0L);
 
@@ -189,7 +195,8 @@ class DownloadRetryMatrixTest {
         scriptedStatuses.set(new Integer[]{429});
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
         DownloadManager downloads = new DownloadManager(new EventBus(
-                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()));
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
 
         Path result = downloads.download(artifact(), "retry-repo", "rev1", cache, 0L);
 
@@ -197,6 +204,73 @@ class DownloadRetryMatrixTest {
                 "the download must succeed after a 429");
         assertEquals(3, requests.get(),
                 "one failed probe + one successful probe + one successful download");
+        assertTrue(cache.contains("retry-repo", "rev1", "model.bin"));
+    }
+
+    @Test
+    void clientError404FailsFastWithTypedError() throws Exception {
+        payload.set("missing-artifact".getBytes(StandardCharsets.UTF_8));
+        scriptedStatuses.set(new Integer[]{404});
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        DownloadManager downloads = new DownloadManager(new EventBus(
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
+
+        ArtifactResolutionException exception = assertThrows(ArtifactResolutionException.class,
+                () -> downloads.download(artifact(), "retry-repo", "rev1", cache, 0L),
+                "a 404 must fail fast with the typed error");
+
+        assertEquals("CORTEXJ-ARTIFACT-2002", exception.code(),
+                "404 must map to the ARTIFACT_MISSING error");
+        assertEquals(1, requests.get(),
+                "404 must not be retried: the very first probe fails fast");
+        assertTrue(cache.get("retry-repo", "rev1", "model.bin", null) == null,
+                "nothing may be stored for a missing artifact");
+    }
+
+    @Test
+    void clientError403FailsFastAndKeepsPartial() throws Exception {
+        payload.set("denied-artifact".getBytes(StandardCharsets.UTF_8));
+        scriptedStatuses.set(new Integer[]{403});
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        byte[] partialBytes = "kept-partial".getBytes(StandardCharsets.UTF_8);
+        Path partial = cache.root().resolve("downloads-partial")
+                .resolve(DownloadManager.partialFileName("retry-repo", "rev1", "model.bin"));
+        Files.createDirectories(partial.getParent());
+        Files.write(partial, partialBytes);
+        DownloadManager downloads = new DownloadManager(new EventBus(
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
+
+        ArtifactResolutionException exception = assertThrows(ArtifactResolutionException.class,
+                () -> downloads.download(artifact(), "retry-repo", "rev1", cache, 0L),
+                "a 403 must fail fast with the typed error");
+
+        assertEquals("CORTEXJ-ARTIFACT-2001", exception.code());
+        assertEquals(1, requests.get(), "403 must not be retried");
+        assertArrayEquals(partialBytes, Files.readAllBytes(partial),
+                "a transient 403 must not wipe the partial download");
+    }
+
+    @Test
+    void retryAfterHeaderDelaysTheRetry() throws Exception {
+        byte[] data = "recovers-after-retry-after".getBytes(StandardCharsets.UTF_8);
+        payload.set(data);
+        scriptedStatuses.set(new Integer[]{429});
+        retryAfter.set("1");
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        DownloadManager downloads = new DownloadManager(new EventBus(
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
+
+        long started = System.currentTimeMillis();
+        Path result = downloads.download(artifact(), "retry-repo", "rev1", cache, 0L);
+        long elapsed = System.currentTimeMillis() - started;
+
+        assertArrayEquals(data, Files.readAllBytes(result),
+                "the download must succeed after honoring Retry-After");
+        assertTrue(elapsed >= 900L,
+                "the retry must wait for the Retry-After interval (took " + elapsed + "ms)");
         assertTrue(cache.contains("retry-repo", "rev1", "model.bin"));
     }
 }
