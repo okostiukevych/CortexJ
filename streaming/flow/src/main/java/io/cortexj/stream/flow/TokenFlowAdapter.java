@@ -11,6 +11,7 @@ import java.util.Queue;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class TokenFlowAdapter implements Flow.Publisher<Token> {
 
@@ -63,6 +64,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         private final AtomicBoolean completed = new AtomicBoolean(false);
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean overflowed = new AtomicBoolean(false);
+        // Flow rule 3.9 (GitHub #79): a non-positive request must produce
+        // exactly ONE onError, then the bridge stops delivering signals
+        private final AtomicBoolean requestFailureSignalled = new AtomicBoolean(false);
         private boolean errorDelivered;
         // Flow contract: onNext/onComplete must be delivered serially, by at most
         // one thread at a time. The drain-owner guard serializes dispatch when the
@@ -71,6 +75,11 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         private final AtomicBoolean draining = new AtomicBoolean(false);
         private boolean completionDelivered;
         private final Object lock = new Object();
+        // upstream subscription handle; set only after the downstream has
+        // received onSubscribe (GitHub #79), so a cancel() or request() issued
+        // from inside onSubscribe finds it null and is handled gracefully
+        private final AtomicReference<StreamSubscription> upstream =
+                new AtomicReference<StreamSubscription>();
 
         Bridge(TokenStream stream, Flow.Subscriber<? super Token> downstream, int bufferCapacity) {
             this.stream = stream;
@@ -79,32 +88,16 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         }
 
         void start() {
-            StreamSubscription upstream = stream.subscribe(new TokenConsumer() {
-                @Override
-                public void onToken(Token token) {
-                    offer(token);
-                }
-
-                @Override
-                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
-                    synchronized (lock) {
-                        completed.set(true);
-                    }
-                    drain();
-                }
-
-                @Override
-                public void onError(CortexJException error) {
-                    downstream.onError(error);
-                    stream.close();
-                }
-            });
+            // Flow rule 1.9 (GitHub #79): onSubscribe must be the FIRST signal
+            // on the downstream. The subscription is created and issued before
+            // the upstream consumer is attached, so a synchronous upstream
+            // (TokenStreams.single/failed, a replaying PushTokenStream) can no
+            // longer deliver tokens or a terminal ahead of it.
             downstream.onSubscribe(new Flow.Subscription() {
                 @Override
                 public void request(long n) {
                     if (n <= 0) {
-                        downstream.onError(new IllegalArgumentException(
-                                "non-positive subscription request: " + n));
+                        rejectNonPositiveRequest(n);
                         return;
                     }
                     synchronized (lock) {
@@ -118,10 +111,63 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                 @Override
                 public void cancel() {
                     cancelled.set(true);
-                    upstream.cancel();
+                    StreamSubscription up = upstream.get();
+                    if (up != null) {
+                        up.cancel();
+                    }
                     stream.close();
                 }
             });
+
+            if (cancelled.get()) {
+                // the subscriber cancelled (or violated the request rule) inside
+                // onSubscribe: do not attach the upstream consumer
+                stream.close();
+                return;
+            }
+
+            upstream.set(stream.subscribe(new TokenConsumer() {
+                @Override
+                public void onToken(Token token) {
+                    if (cancelled.get()) {
+                        return;
+                    }
+                    offer(token);
+                }
+
+                @Override
+                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
+                    if (cancelled.get()) {
+                        return;
+                    }
+                    synchronized (lock) {
+                        completed.set(true);
+                    }
+                    drain();
+                }
+
+                @Override
+                public void onError(CortexJException error) {
+                    if (cancelled.get()) {
+                        return;
+                    }
+                    downstream.onError(error);
+                    stream.close();
+                }
+            }));
+        }
+
+        private void rejectNonPositiveRequest(long n) {
+            if (requestFailureSignalled.compareAndSet(false, true)) {
+                cancelled.set(true);
+                StreamSubscription up = upstream.get();
+                if (up != null) {
+                    up.cancel();
+                }
+                stream.close();
+                downstream.onError(new IllegalArgumentException(
+                        "non-positive subscription request: " + n));
+            }
         }
 
         private void offer(Token token) {
@@ -138,6 +184,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
 
         private boolean hasWork() {
             synchronized (lock) {
+                if (cancelled.get()) {
+                    return false;
+                }
                 if (overflowed.get() && !errorDelivered) {
                     return true;
                 }
@@ -159,6 +208,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                     boolean complete = false;
                     boolean error = false;
                     synchronized (lock) {
+                        if (cancelled.get()) {
+                            return;
+                        }
                         if (demand.get() > 0 && !buffered.isEmpty()) {
                             token = buffered.poll();
                             demand.decrementAndGet();
@@ -177,6 +229,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                         // the subscriber gets a loud typed error - the adapter never
                         // buffers without bound (audit M-13)
                         stream.close();
+                        if (cancelled.get()) {
+                            return;
+                        }
                         downstream.onError(new io.cortexj.error.InferenceException(
                                 io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
                                 "token stream buffer overflow: the subscriber lagged more than "
@@ -187,6 +242,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                         return;
                     }
                     if (complete) {
+                        if (cancelled.get()) {
+                            return;
+                        }
                         downstream.onComplete();
                         stream.close();
                         return;
