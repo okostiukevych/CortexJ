@@ -95,7 +95,8 @@ class RedirectProbeFailureTest {
 
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
         DownloadManager downloads = new DownloadManager(new EventBus(
-                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()));
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
 
         for (int attempt = 0; attempt < 50; attempt++) {
             try {
@@ -116,7 +117,8 @@ class RedirectProbeFailureTest {
     void everyAttemptFailsWithTypeError() throws Exception {
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
         DownloadManager downloads = new DownloadManager(new EventBus(
-                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()));
+                Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
                 downloads.download(artifact(), "probe-repo", "rev1", cache, 0L);

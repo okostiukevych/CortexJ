@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -122,6 +123,8 @@ class DownloadResumeTest {
                     long offset = Long.parseLong(range.replaceAll("[^0-9]", ""));
                     byte[] slice = java.util.Arrays.copyOfRange(fullPayload, (int) offset,
                             fullPayload.length);
+                    exchange.getResponseHeaders().add("Content-Range", "bytes=" + offset + "-"
+                            + (fullPayload.length - 1) + "/" + fullPayload.length);
                     exchange.sendResponseHeaders(206, slice.length);
                     try (OutputStream out = exchange.getResponseBody()) {
                         out.write(slice);
@@ -204,7 +207,7 @@ class DownloadResumeTest {
         assertFalse(cache.contains("cancel-repo", "rev1", "model.bin"),
                 "cancelled download must not enter the cache");
         Path partial = cache.root().resolve("downloads-partial")
-                .resolve("cancel-repo~rev1~model.bin.part");
+                .resolve(DownloadManager.partialFileName("cancel-repo", "rev1", "model.bin"));
         assertTrue(Files.exists(partial), "partial progress must be kept for resume");
     }
 
@@ -258,5 +261,150 @@ class DownloadResumeTest {
         } finally {
             proxy.stop(0);
         }
+    }
+
+    @Test
+    void bad206ContentRangeStartRestartsFromScratch() throws Exception {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < 10; i++) {
+            builder.append("0123456789abcdefghijklmnopqrstuvwxyz");
+        }
+        fullPayload = builder.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] firstChunk = java.util.Arrays.copyOfRange(fullPayload, 0, 100);
+        final AtomicInteger bodyRequests = new AtomicInteger();
+
+        server.createContext("/models/model.bin", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
+                String range = exchange.getRequestHeaders().getFirst("Range");
+                if (range != null) {
+                    // lying proxy: answers 206 from byte 0 but sends the full body
+                    rangeHeaders.add(range);
+                    rangeRequests.incrementAndGet();
+                    exchange.getResponseHeaders().add("Content-Range", "bytes=0-"
+                            + (fullPayload.length - 1) + "/" + fullPayload.length);
+                    exchange.sendResponseHeaders(206, fullPayload.length);
+                    try (OutputStream out = exchange.getResponseBody()) {
+                        out.write(fullPayload);
+                    }
+                    return;
+                }
+                int freshRequest = bodyRequests.incrementAndGet();
+                if (freshRequest <= 2) {
+                    // the first two fresh requests (redirect probe + download):
+                    // serve only a prefix, then close (truncated body)
+                    exchange.sendResponseHeaders(200, fullPayload.length);
+                    try (OutputStream out = exchange.getResponseBody()) {
+                        out.write(firstChunk);
+                        out.flush();
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException ignored) {
+                            return;
+                        }
+                    }
+                    return;
+                }
+                exchange.sendResponseHeaders(200, fullPayload.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(fullPayload);
+                }
+            }
+        });
+
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        DownloadManager downloads = new DownloadManager(new EventBus(
+                java.util.Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
+        Checksum checksum = Checksum.sha256(sha256(fullPayload));
+        ResolvedArtifact artifact = artifact(fullPayload, checksum);
+
+        Path result = downloads.download(artifact, "resume-repo", "rev1", cache, 0L);
+        byte[] stored = Files.readAllBytes(result);
+        assertArrayEquals(fullPayload, stored,
+                "after the Content-Range mismatch the download must restart from scratch");
+        assertEquals(1, rangeRequests.get(), "exactly one lying 206 resume request expected");
+        assertEquals("bytes=100-", rangeHeaders.get(0));
+        assertEquals(5, bodyRequests.get(),
+                "two truncated fresh requests (probe + download) + one complete fresh request,"
+                        + " plus the later redirect probes");
+    }
+
+    @Test
+    void collidingResumeKeysUseDistinctPartialFiles() throws Exception {
+        byte[] payloadA = new byte[1000];
+        byte[] payloadB = new byte[1000];
+        for (int i = 0; i < payloadA.length; i++) {
+            payloadA[i] = (byte) ('a' + (i % 26));
+            payloadB[i] = (byte) ('A' + (i % 26));
+        }
+        final AtomicReference<byte[]> payloadRef = new AtomicReference<byte[]>(payloadA);
+        final AtomicBoolean truncateFirst = new AtomicBoolean(true);
+
+        server.createContext("/models/model.bin", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                exchange.getResponseHeaders().add("Connection", "close");
+                byte[] data = payloadRef.get();
+                String range = exchange.getRequestHeaders().getFirst("Range");
+                if (range != null && !truncateFirst.get()) {
+                    long offset = Long.parseLong(range.replaceAll("[^0-9]", ""));
+                    byte[] slice = java.util.Arrays.copyOfRange(data, (int) offset, data.length);
+                    exchange.getResponseHeaders().add("Content-Range", "bytes=" + offset + "-"
+                            + (data.length - 1) + "/" + data.length);
+                    exchange.sendResponseHeaders(206, slice.length);
+                    try (OutputStream out = exchange.getResponseBody()) {
+                        out.write(slice);
+                    }
+                    return;
+                }
+                exchange.sendResponseHeaders(200, data.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    if (truncateFirst.get()) {
+                        out.write(java.util.Arrays.copyOfRange(data, 0, 500));
+                        out.flush();
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException ignored) {
+                            return;
+                        }
+                    } else {
+                        out.write(data);
+                    }
+                }
+            }
+        });
+
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        DownloadManager downloads = new DownloadManager(new EventBus(
+                java.util.Collections.<io.cortexj.observability.PlatformEventListener>emptyList()),
+                null, null, 1L);
+        ResolvedArtifact artifactA = artifact(payloadA, null);
+        ResolvedArtifact artifactB = artifact(payloadB, null);
+
+        assertFalse(DownloadManager.partialFileName("team/models", "main", "model.bin")
+                        .equals(DownloadManager.partialFileName("team_models", "main", "model.bin")),
+                "distinct raw triples must produce distinct partial files");
+
+        try {
+            downloads.download(artifactA, "team/models", "main", cache, 0L);
+            throw new AssertionError("the truncated download must fail");
+        } catch (ArtifactResolutionException expected) {
+        }
+        Path partialA = cache.root().resolve("downloads-partial")
+                .resolve(DownloadManager.partialFileName("team/models", "main", "model.bin"));
+        assertTrue(Files.exists(partialA), "the first artifact's partial must be kept");
+        assertEquals(500L, Files.size(partialA), "the first artifact's partial must hold its progress");
+
+        truncateFirst.set(false);
+        payloadRef.set(payloadB);
+        Path result = downloads.download(artifactB, "team_models", "main", cache, 0L);
+        assertArrayEquals(payloadB, Files.readAllBytes(result),
+                "the second artifact must download its own bytes, not the spliced partial");
+        assertTrue(Files.exists(partialA),
+                "the first artifact's partial must survive the second download");
+        assertEquals(500L, Files.size(partialA),
+                "the first artifact's partial must not be spliced or deleted by the collision");
     }
 }

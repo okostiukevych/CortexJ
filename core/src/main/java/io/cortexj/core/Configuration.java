@@ -8,6 +8,7 @@ public final class Configuration {
     public final boolean offline;
     public final Path workingDirectory;
     public final Long memoryLimitBytes;
+    public final long maxArtifactBytes;
     public final String remoteBaseUrl;
     public final String remoteApiKey;
     public final boolean remoteRuntimeAllowed;
@@ -20,6 +21,7 @@ public final class Configuration {
     public Configuration(boolean offline,
                         Path workingDirectory,
                         Long memoryLimitBytes,
+                        long maxArtifactBytes,
                         String remoteBaseUrl,
                         String remoteApiKey,
                         boolean remoteRuntimeAllowed,
@@ -29,6 +31,7 @@ public final class Configuration {
         this.offline = offline;
         this.workingDirectory = workingDirectory;
         this.memoryLimitBytes = memoryLimitBytes;
+        this.maxArtifactBytes = maxArtifactBytes;
         this.remoteBaseUrl = remoteBaseUrl;
         this.remoteApiKey = remoteApiKey;
         this.remoteRuntimeAllowed = remoteRuntimeAllowed;
@@ -70,6 +73,22 @@ public final class Configuration {
             }
         }
 
+        long maxArtifactBytes = 0L;
+        Long configuredMaxArtifact = builder.maxArtifactBytes();
+        if (configuredMaxArtifact == null) {
+            String raw = firstNonEmpty(System.getProperty(SYSPROP_PREFIX + "download.max.bytes"),
+                    env("CORTEXJ_MAX_ARTIFACT_BYTES"));
+            if (raw != null) {
+                try {
+                    configuredMaxArtifact = Long.valueOf(raw);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        if (configuredMaxArtifact != null && configuredMaxArtifact.longValue() > 0L) {
+            maxArtifactBytes = configuredMaxArtifact.longValue();
+        }
+
         String remoteBaseUrl = firstNonEmpty(builder.remoteBaseUrl(),
                 System.getProperty(SYSPROP_PREFIX + "remote.base.url"),
                 env("CORTEXJ_REMOTE_BASE_URL"),
@@ -86,7 +105,7 @@ public final class Configuration {
         String proxyPort = firstNonEmpty(builder.proxyPort(),
                 System.getProperty("cortexj.proxy.port"),
                 env("CORTEXJ_PROXY_PORT"));
-        return new Configuration(offline, workingDirectory, memoryLimit, remoteBaseUrl, remoteApiKey,
+        return new Configuration(offline, workingDirectory, memoryLimit, maxArtifactBytes, remoteBaseUrl, remoteApiKey,
                 builder.isRemoteRuntimeAllowed(), builder.trustPolicy(), proxyHost, proxyPort);
     }
 
@@ -101,6 +120,9 @@ public final class Configuration {
         }
         if (memoryLimitBytes != null) {
             config.put("memoryLimitBytes", String.valueOf(memoryLimitBytes));
+        }
+        if (maxArtifactBytes > 0L) {
+            config.put("maxArtifactBytes", String.valueOf(maxArtifactBytes));
         }
         if (proxyHost != null && proxyPort != null) {
             config.put("proxy.host", proxyHost);

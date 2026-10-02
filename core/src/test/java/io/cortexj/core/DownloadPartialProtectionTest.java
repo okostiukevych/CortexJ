@@ -123,7 +123,7 @@ class DownloadPartialProtectionTest {
 
     private Path partialFileOf(CacheStorage cache, String repositoryId, String revision, String artifactId) {
         return cache.root().resolve("downloads-partial")
-                .resolve((repositoryId + "~" + revision + "~" + artifactId + ".part"));
+                .resolve(DownloadManager.partialFileName(repositoryId, revision, artifactId));
     }
 
     @Test
