@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * process per (artifact, server-relevant options) instead of one per handle.
  * Handles attach on load and detach on close; the process is stopped through
  * the existing stop() escalation ladder only when the last handle detaches.
+ * tryRetain/release serialize on the per-key lock (GitHub #6): a retain racing
+ * a release either stays registered or the orphaned endpoint is stopped
+ * exactly once - the registry entry is removed only at refcount zero.
  */
 final class SharedEndpointRegistry {
 
@@ -37,7 +40,7 @@ final class SharedEndpointRegistry {
                     return existing;
                 }
                 LlamaServerEndpoint fresh = launcher.launch(artifactPath);
-                SharedEndpoint shared = new SharedEndpoint(fresh, key, endpoints);
+                SharedEndpoint shared = new SharedEndpoint(fresh, key, endpoints, keyLocks, lock);
                 endpoints.put(key, shared);
                 return shared;
             }
@@ -48,22 +51,35 @@ final class SharedEndpointRegistry {
         return endpoints.size();
     }
 
+    int liveKeyLockCount() {
+        return keyLocks.size();
+    }
+
     /**
      * Reference-counted wrapper: baseUrl() delegates; stop() delegates only
      * when called by the last detaching handle (refcount reaches zero).
+     * tryRetain and release serialize on the per-key lock so the registry
+     * entry is removed exactly when the refcount reaches zero and the stop
+     * fires exactly once; the per-key lock object is dropped with the entry
+     * so the lock map cannot grow without bound.
      */
     static final class SharedEndpoint implements LlamaServerEndpoint {
 
         private final LlamaServerEndpoint delegate;
         private final String key;
         private final ConcurrentHashMap<String, SharedEndpoint> registry;
+        private final ConcurrentHashMap<String, Object> keyLocks;
+        private final Object keyLock;
         private final AtomicInteger refcount = new AtomicInteger(1);
 
         SharedEndpoint(LlamaServerEndpoint delegate, String key,
-                       ConcurrentHashMap<String, SharedEndpoint> registry) {
+                       ConcurrentHashMap<String, SharedEndpoint> registry,
+                       ConcurrentHashMap<String, Object> keyLocks, Object keyLock) {
             this.delegate = delegate;
             this.key = key;
             this.registry = registry;
+            this.keyLocks = keyLocks;
+            this.keyLock = keyLock;
         }
 
         String key() {
@@ -73,26 +89,36 @@ final class SharedEndpointRegistry {
         /**
          * Attach another handle. Returns false if the endpoint was already
          * released and removed from the registry (the caller must acquire a
-         * fresh one); the acquire loop performs that retry.
+         * fresh one); the acquire loop performs that retry. The refcount is
+         * only incremented while the endpoint is still registered, so a
+         * release can never race past an increment into a lost stop().
          */
         boolean tryRetain() {
-            refcount.incrementAndGet();
-            if (registry.get(key) == this) {
+            synchronized (keyLock) {
+                if (registry.get(key) != this) {
+                    return false;
+                }
+                refcount.incrementAndGet();
                 return true;
             }
-            refcount.decrementAndGet();
-            return false;
         }
 
         /**
-         * Detach a handle. Removes the endpoint from the registry first, so a
-         * concurrent tryRetain can never resurrect a stopped process. Stops
-         * the underlying endpoint (escalation ladder) when the last handle
-         * detaches.
+         * Detach a handle. The registry entry (and the per-key lock) is
+         * removed only when the refcount reaches zero, so a concurrent
+         * tryRetain either retains a still-registered endpoint or observes
+         * the removal after this release stopped the process exactly once.
          */
         void release() {
-            registry.remove(key, this);
-            if (refcount.decrementAndGet() == 0) {
+            boolean last;
+            synchronized (keyLock) {
+                last = refcount.decrementAndGet() == 0;
+                if (last) {
+                    registry.remove(key, this);
+                    keyLocks.remove(key, keyLock);
+                }
+            }
+            if (last) {
                 delegate.stop();
             }
         }

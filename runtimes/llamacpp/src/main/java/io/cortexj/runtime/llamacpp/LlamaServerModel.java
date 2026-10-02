@@ -43,7 +43,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
 
     private final SharedEndpointRegistry.SharedEndpoint endpoint;
-    private final ExecutorService sseExecutor;
+    private final ExecutorService ioExecutor;
     private final boolean ownsExecutor;
     private final ObjectMapper mapper = new ObjectMapper();
     private final java.util.concurrent.atomic.AtomicBoolean closed =
@@ -55,10 +55,13 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     LlamaServerModel(SharedEndpointRegistry.SharedEndpoint endpoint, ExecutorService executor) {
         this.endpoint = endpoint;
         this.ownsExecutor = executor == null;
-        this.sseExecutor = executor == null
-                ? Executors.newSingleThreadExecutor(
-                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-llama-sse"))
-                : executor;
+        this.ioExecutor = executor == null ? fallbackIoExecutor() : executor;
+    }
+
+    static ExecutorService fallbackIoExecutor() {
+        return Executors.newFixedThreadPool(
+                Math.max(8, 2 * Runtime.getRuntime().availableProcessors()),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-llama-sse"));
     }
 
     @Override
@@ -81,7 +84,13 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     @Override
     public java.util.concurrent.CompletionStage<InferenceResponse> executeAsync(
             final InferenceRequest request) {
-        return java.util.concurrent.CompletableFuture.completedFuture(execute(request));
+        return java.util.concurrent.CompletableFuture.supplyAsync(
+                new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, ioExecutor);
     }
 
     @Override
@@ -124,7 +133,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         private final AtomicLong emitted = new AtomicLong();
         // audit H-3: the cancelled flag is now actually read by the SSE loop,
         // and cancel()/close() disconnect the in-flight connection so the
-        // single SSE thread is released instead of reading a dropped completion
+        // SSE worker is released instead of reading a dropped completion
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private volatile HttpURLConnection activeConnection;
 
@@ -141,7 +150,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 throw new IllegalStateException("Token stream supports a single subscription");
             }
             liveStreams.add(LlamaServerTokenStream.this);
-            sseExecutor.execute(new Runnable() {
+            ioExecutor.execute(new Runnable() {
                 @Override
                 public void run() {
                     runSse(consumer);
@@ -387,20 +396,20 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         if (closed.compareAndSet(false, true)) {
             // audit M-8: abort every in-flight SSE stream first - socket reads
             // never respond to interrupts, so a plain shutdown would leave the
-            // single SSE thread blocked for the full read timeout (and the
+            // SSE worker blocked for the full read timeout (and the
             // server-side generation running) when the endpoint is shared
             for (LlamaServerTokenStream stream : liveStreams) {
                 stream.abort();
             }
             endpoint.release();
             if (ownsExecutor) {
-                sseExecutor.shutdown();
+                ioExecutor.shutdown();
                 try {
-                    if (!sseExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                        sseExecutor.shutdownNow();
+                    if (!ioExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        ioExecutor.shutdownNow();
                     }
                 } catch (InterruptedException e) {
-                    sseExecutor.shutdownNow();
+                    ioExecutor.shutdownNow();
                     Thread.currentThread().interrupt();
                 }
             }

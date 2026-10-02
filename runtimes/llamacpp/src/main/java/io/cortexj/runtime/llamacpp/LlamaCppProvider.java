@@ -54,7 +54,7 @@ public final class LlamaCppProvider implements RuntimeProvider {
             .minJavaFeatureVersion(11)
             .streamingSupported(true)
             .nativeRuntime(true)
-            .threadSafety(io.cortexj.runtime.ThreadSafety.SESSION_SCOPED)
+            .threadSafety(io.cortexj.runtime.ThreadSafety.STATELESS)
             .maturity(RuntimeDescriptor.Maturity.BETA)
             .metadata("binding", "JNI (planned)")
             .build();
