@@ -3,7 +3,9 @@ package io.cortexj.core;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.cortexj.CortexJ;
+import io.cortexj.error.ModelLoadException;
 import io.cortexj.model.ArtifactFormat;
+import io.cortexj.model.Checksum;
 import io.cortexj.model.ModelArtifact;
 import io.cortexj.model.ModelDescriptor;
 import io.cortexj.model.ModelHandle;
@@ -22,8 +24,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -283,5 +287,152 @@ class ConcurrentLoadDedupTest {
             }
         });
         return new ResolvedModel(descriptor, "rev1", RepositoryId.of("dedup-repo"), artifacts);
+    }
+
+    @Test
+    void errorInOncePerKeyClaimFailsWaitersPromptly() throws Exception {
+        DefaultModels models = new DefaultModels(null);
+        final CountDownLatch workEntered = new CountDownLatch(1);
+        final CountDownLatch releaseWork = new CountDownLatch(1);
+        final java.util.function.Supplier<Path> failingWork = new java.util.function.Supplier<Path>() {
+            @Override
+            public Path get() {
+                workEntered.countDown();
+                try {
+                    releaseWork.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new OutOfMemoryError("simulated heap exhaustion in the claim work");
+            }
+        };
+        final CountDownLatch claimantDone = new CountDownLatch(1);
+        Thread claimant = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    models.oncePerKey("error-injection-key", failingWork);
+                } catch (Throwable ignored) {
+                } finally {
+                    claimantDone.countDown();
+                }
+            }
+        });
+        claimant.start();
+        assertTrue(workEntered.await(10, TimeUnit.SECONDS), "claimant must enter the work");
+
+        final Path[] waiterResult = new Path[1];
+        final Throwable[] waiterFailure = new Throwable[1];
+        final CountDownLatch waiterDone = new CountDownLatch(1);
+        Thread waiter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    waiterResult[0] = models.oncePerKey("error-injection-key",
+                            new java.util.function.Supplier<Path>() {
+                                @Override
+                                public Path get() {
+                                    return Paths.get("unused");
+                                }
+                            });
+                } catch (Throwable failure) {
+                    waiterFailure[0] = failure;
+                } finally {
+                    waiterDone.countDown();
+                }
+            }
+        });
+        waiter.start();
+        Thread.sleep(100);
+        releaseWork.countDown();
+        assertTrue(waiterDone.await(30, TimeUnit.SECONDS),
+                "an Error in the claim work must not leave waiters blocked forever");
+        assertTrue(claimantDone.await(10, TimeUnit.SECONDS));
+        claimant.join(10_000);
+        waiter.join(10_000);
+
+        assertTrue(waiterResult[0] == null, "the waiter must not receive a result");
+        assertTrue(waiterFailure[0] instanceof ModelLoadException,
+                "an Error in the claim work must surface to waiters as a typed load failure, got: "
+                        + waiterFailure[0]);
+        assertTrue(waiterFailure[0].getCause() instanceof OutOfMemoryError,
+                "the original Error cause must be preserved");
+    }
+
+    @Test
+    void corruptedCacheEntryIsReDownloadedTransparently() throws Exception {
+        final byte[] payload = payload();
+        final AtomicInteger hits = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(Executors.newFixedThreadPool(2));
+        server.createContext("/models/dedup-model.gguf", new com.sun.net.httpserver.HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                hits.incrementAndGet();
+                exchange.getResponseHeaders().add("Connection", "close");
+                exchange.sendResponseHeaders(200, payload.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(payload);
+                }
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            final ModelArtifact artifact = new ModelArtifact.Abstract(
+                    "dedup-model.gguf", ArtifactFormat.GGUF, payload.length,
+                    Checksum.sha256(io.cortexj.cache.Checksums.sha256Hex(payload)), null) {
+            };
+            final ResolvedModel resolved = testResolvedModel(artifact,
+                    URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                            + "/models/dedup-model.gguf"));
+            ModelRepositoryProvider repository = new ModelRepositoryProvider() {
+                @Override
+                public RepositoryId id() {
+                    return RepositoryId.of("dedup-repo");
+                }
+
+                @Override
+                public boolean supports(ModelReference reference) {
+                    return true;
+                }
+
+                @Override
+                public ResolvedModel resolve(ModelReference reference, ResolutionContext context) {
+                    return resolved;
+                }
+            };
+            PathRecordingRuntimeProvider provider = new PathRecordingRuntimeProvider();
+            DefaultCortexJ platform = (DefaultCortexJ) CortexJ.builder()
+                    .runtimeProvider(provider)
+                    .repositoryProvider(repository)
+                    .eventListener(provider.listener)
+                    .workingDirectory(workDir)
+                    .build();
+            try {
+                ModelHandle first = platform.models().load(ModelReference.of("dedup/model"));
+                first.close();
+                assertEquals(1, provider.downloadStartedEvents.get(),
+                        "the first load must download the artifact");
+
+                Path cached = platform.cache().artifactPath("dedup-repo", "rev1", "dedup-model.gguf");
+                assertTrue(Files.isRegularFile(cached), "the artifact must be cached after the first load");
+                Files.write(cached, "corrupted".getBytes(StandardCharsets.UTF_8));
+
+                ModelHandle second = platform.models().load(ModelReference.of("dedup/model"));
+                assertEquals(ModelLifecycleState.READY, second.state(),
+                        "a corrupted cache entry must be treated as a miss, not a load failure");
+                second.close();
+                assertEquals(2, provider.downloadStartedEvents.get(),
+                        "a corrupted cache entry must trigger a transparent re-download");
+                assertTrue(hits.get() >= 2, "the re-download must contact the HTTP server again");
+                assertArrayEquals(payload, Files.readAllBytes(provider.loadedPaths.get(1)),
+                        "the re-downloaded artifact bytes must be intact");
+            } finally {
+                platform.close();
+            }
+        } finally {
+            server.stop(0);
+        }
     }
 }
