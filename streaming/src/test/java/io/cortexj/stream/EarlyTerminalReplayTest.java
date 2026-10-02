@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EarlyTerminalReplayTest {
@@ -111,7 +110,7 @@ class EarlyTerminalReplayTest {
     }
 
     @Test
-    void unboundedProductionWithoutSubscriberIsCappedNotSilentlyUnbounded() throws Exception {
+    void unboundedProductionWithoutSubscriberFailsWithTypedException() throws Exception {
         PushTokenStream stream = new PushTokenStream();
         for (int i = 0; i < PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT + 100; i++) {
             stream.emit("token-" + i, null);
@@ -122,9 +121,16 @@ class EarlyTerminalReplayTest {
 
         assertTrue(consumer.terminal.await(1, TimeUnit.SECONDS),
                 "overflow must produce a terminal signal");
-        assertEquals(1, consumer.completions.get());
-        assertTrue(consumer.tokens.size() <= PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT,
-                "the early buffer must be capped");
-        assertNull(consumer.error.get());
+        assertEquals(0, consumer.completions.get(),
+                "overflow must not masquerade as a FinishReason.CONTENT_FILTER completion");
+        assertEquals(1, consumer.errors.get(), "exactly one typed overflow error");
+        assertTrue(consumer.error.get() instanceof io.cortexj.error.InferenceException,
+                "overflow must be a typed InferenceException, got: " + consumer.error.get());
+        assertEquals("CORTEXJ-INFER-9002", consumer.error.get().code(),
+                "same typed code as TokenFlowAdapter's overflow policy");
+        assertTrue(consumer.error.get().getMessage().contains("buffer overflow"),
+                "message must identify the overflow: " + consumer.error.get().getMessage());
+        assertEquals(PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT, consumer.tokens.size(),
+                "the early buffer must be capped at its limit");
     }
 }
