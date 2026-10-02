@@ -3,6 +3,9 @@ package io.cortexj.runtime.llamacpp;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
@@ -56,6 +59,9 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
                 "-m", artifactPath.toAbsolutePath().toString(),
                 "--host", "127.0.0.1",
                 "--port", String.valueOf(port));
+        builder.environment().clear();
+        builder.environment().putAll(allowlistedEnvironment(System.getenv()));
+        builder.directory(workingDirectory(artifactPath).toFile());
         builder.redirectErrorStream(true);
         final Process process = processStarter.start(builder);
 
@@ -114,6 +120,29 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
                 killProcess(process);
             }
         };
+    }
+
+    static Map<String, String> allowlistedEnvironment(Map<String, String> parentEnvironment) {
+        Map<String, String> child = new LinkedHashMap<String, String>();
+        String[] directNames = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG"};
+        for (String name : directNames) {
+            String value = parentEnvironment.get(name);
+            if (value != null) {
+                child.put(name, value);
+            }
+        }
+        for (Map.Entry<String, String> entry : parentEnvironment.entrySet()) {
+            String name = entry.getKey();
+            if (name.startsWith("LC_") || name.startsWith("LLAMA_")) {
+                child.put(name, entry.getValue());
+            }
+        }
+        return child;
+    }
+
+    private static Path workingDirectory(Path artifactPath) {
+        Path parent = artifactPath.toAbsolutePath().getParent();
+        return parent != null ? parent : Paths.get(System.getProperty("java.io.tmpdir"));
     }
 
     private static void killProcess(Process process) {

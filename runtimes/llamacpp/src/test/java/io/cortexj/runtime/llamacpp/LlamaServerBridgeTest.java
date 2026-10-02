@@ -150,6 +150,14 @@ class LlamaServerBridgeTest {
     }
 
     @Test
+    void descriptorDeclaresStatelessThreadSafety() {
+        assertEquals(io.cortexj.runtime.ThreadSafety.STATELESS,
+                new LlamaCppProvider().descriptor().threadSafety(),
+                "llama-server is a concurrent HTTP server - the descriptor must not "
+                        + "force the platform to serialize access");
+    }
+
+    @Test
     void probeReportsServerBridgeWhenBinaryPresent() throws Exception {
         Path fakeServer = tempDir.resolve("llama-server");
         Files.write(fakeServer, "stub".getBytes(StandardCharsets.UTF_8));
