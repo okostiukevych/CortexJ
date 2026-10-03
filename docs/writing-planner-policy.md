@@ -59,3 +59,38 @@ Policies are pure functions of (candidate, context) — unit test them directly 
 synthetic candidates. For integration, register the policy on a platform built with
 test providers (see `planner/src/test` for fixtures) and assert the plan outcome and
 the explanation text.
+
+---
+
+## Benchmark hints (spec 126)
+
+Besides writing a custom `ExecutionPolicy`, a team can encode measured
+performance into planning decisions with a locally supplied hints file —
+no code, no benchmark learning, fully deterministic.
+
+Drop `benchmarks.properties` into the platform working directory
+(`<CORTEXJ_HOME>`, by default `~/.cortexj`), or point
+`-Dcortexj.benchmarks.file=<path>` at a file elsewhere:
+
+```properties
+# bench.<runtime>,<family>,<quantization>,<device>,<metric>=<value>
+# runtime / family / quantization may be '*' (wildcard); device is cpu/gpu/npu/*
+
+bench.llamacpp,qwen3,*,cpu,throughputTokensPerSecond=85
+bench.onnx,qwen3,*,cpu,throughputTokensPerSecond=40
+bench.onnx,qwen3,*,cpu,latencyMillis=180
+bench.llamacpp,qwen3,*,cpu,memoryGb=5.2
+```
+
+- `family` matches as a lowercase substring of the model reference
+  (`qwen3` matches `Qwen/Qwen3-8B`)
+- metrics: `throughputTokensPerSecond` (higher better), `latencyMillis`
+  (lower better), `memoryGb` (lower better)
+- scoring is a bounded, deterministic function of the file alone: throughput
+  contributes up to +15 points normalized to the file's maximum, latency up
+  to +10 normalized to the file's minimum, memory up to +5 normalized to the
+  file's minimum — the same file always produces the same plan
+- applied adjustments appear in the plan explanation
+  (`benchmark:throughput 85.0 t/s (+15)`)
+- malformed or unknown entries are ignored with a WARNING (never a plan
+  failure); an unreadable file is not applied

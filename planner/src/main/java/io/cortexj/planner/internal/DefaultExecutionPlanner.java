@@ -24,6 +24,7 @@ import io.cortexj.planner.Planner;
 import io.cortexj.planner.ReasonCode;
 import io.cortexj.planner.internal.constraint.HardConstraint;
 import io.cortexj.planner.internal.constraint.HardConstraints;
+import io.cortexj.planner.internal.scoring.BenchmarkScoringRule;
 import io.cortexj.planner.internal.scoring.ScoringRules;
 import io.cortexj.runtime.DeviceType;
 import io.cortexj.runtime.RuntimeDescriptor;
@@ -72,6 +73,9 @@ public final class DefaultExecutionPlanner implements Planner {
         this.memoryEstimator = new MemoryEstimator();
         this.constraints = HardConstraints.defaults();
         this.scoringRules = ScoringRules.defaults();
+        if (!inputs.benchmarkHints.isEmpty()) {
+            this.scoringRules.add(new BenchmarkScoringRule(inputs.benchmarkHints));
+        }
     }
 
     @Override
