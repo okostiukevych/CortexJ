@@ -1,5 +1,7 @@
 package io.cortexj.planner.internal;
 
+import io.cortexj.ErrorCode;
+import io.cortexj.error.PlanningException;
 import io.cortexj.hardware.EnvironmentProfile;
 import io.cortexj.hardware.HardwareProfile;
 import io.cortexj.observability.PlatformEventListener;
@@ -132,6 +134,9 @@ public final class PlannerInputs {
             return inspector.inspectOrNull(artifact.artifact().format(), path);
         } catch (RuntimeException e) {
             return null;
+        } catch (Throwable e) {
+            throw new PlanningException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                    "Artifact inspection failed with an unexpected error: " + e, e);
         }
     }
 

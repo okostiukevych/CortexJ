@@ -180,6 +180,9 @@ public final class DefaultExecutionPlanner implements Planner {
             boolean artifactMatches = !lockfile.pinsArtifact()
                     || (candidate.artifact() != null && lockfile.artifactFile().equals(candidate.artifact().id()));
             if (runtimeMatches && artifactMatches) {
+                if (lockfile.pinsArtifact() && lockfile.artifactSha256() != null) {
+                    verifyArtifactChecksum(lockfile, candidate);
+                }
                 matching.add(candidate);
             } else {
                 pinRejections.add(new SupportReport.RejectedCandidate(candidate,
@@ -203,6 +206,32 @@ public final class DefaultExecutionPlanner implements Planner {
         }
         outcome.viable.retainAll(matching);
         outcome.rejected.addAll(pinRejections);
+    }
+
+    private void verifyArtifactChecksum(ModelLockfile lockfile, ExecutionCandidate candidate) {
+        Checksum checksum = candidate.artifact().checksum();
+        if (checksum == null) {
+            PlanningException unverifiable = new PlanningException(ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
+                    "PINNED_PLAN mode: artifact '" + lockfile.artifactFile()
+                            + "' declares no checksum; the lockfile sha256 pin cannot be verified.",
+                    "The artifact is unpinned/unverifiable; use a repository that publishes a sha256 checksum "
+                            + "for '" + lockfile.artifactFile() + "' or regenerate the lockfile explicitly.");
+            unverifiable.detail("lockfileArtifact", lockfile.artifactFile());
+            unverifiable.detail("lockfileSha256", lockfile.artifactSha256());
+            throw unverifiable;
+        }
+        if (!checksum.value().equalsIgnoreCase(lockfile.artifactSha256())) {
+            PlanningException mismatch = new PlanningException(ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
+                    "PINNED_PLAN mode: artifact '" + lockfile.artifactFile() + "' sha256 mismatch: lockfile sha '"
+                            + lockfile.artifactSha256() + "' does not match resolved sha '"
+                            + checksum.value() + "'.",
+                    "The repository content changed under the same artifact name; re-verify the model "
+                            + "or update the lockfile explicitly.");
+            mismatch.detail("lockfileArtifact", lockfile.artifactFile());
+            mismatch.detail("lockfileSha256", lockfile.artifactSha256());
+            mismatch.detail("resolvedSha256", checksum.value());
+            throw mismatch;
+        }
     }
 
     public SupportReport inspect(ExecutionRequest request) {
