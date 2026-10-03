@@ -23,7 +23,10 @@ public final class HfTokenizer {
 
     public static TokenEncoder load(Path tokenizerJson) throws IOException {
         ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(Files.newInputStream(tokenizerJson));
+        JsonNode root;
+        try (java.io.InputStream input = Files.newInputStream(tokenizerJson)) {
+            root = mapper.readTree(input);
+        }
         JsonNode model = root.path("model");
         String type = model.path("type").asText("");
         if (type.equals("WordPiece") || type.equals("BertWordPiece")) {

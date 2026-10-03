@@ -19,6 +19,8 @@ public final class GgufDocument {
     public static final int TENSOR_F16 = 1;
     public static final int TENSOR_BF16 = 30;
 
+    private static final int MAX_TENSOR_DIMENSIONS = 63;
+
     public static final class KeyValue {
 
         public final String key;
@@ -132,6 +134,9 @@ public final class GgufDocument {
         for (long i = 0; i < tensorCount; i++) {
             String name = reader.readString();
             int dimensions = reader.readInt32();
+            if (dimensions < 1 || dimensions > MAX_TENSOR_DIMENSIONS) {
+                throw new GgufFormatException("unreasonable GGUF tensor dimension count: " + dimensions);
+            }
             long[] shape = new long[dimensions];
             for (int d = 0; d < dimensions; d++) {
                 shape[d] = reader.readInt64();

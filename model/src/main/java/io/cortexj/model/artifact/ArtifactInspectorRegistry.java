@@ -4,6 +4,7 @@ import io.cortexj.model.ArtifactFormat;
 import io.cortexj.spi.artifact.ArtifactInspection;
 import io.cortexj.spi.artifact.ArtifactInspector;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -14,7 +15,13 @@ import java.util.ServiceLoader;
 
 public final class ArtifactInspectorRegistry {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(ArtifactInspectorRegistry.class.getName());
+
+    private static final int CACHE_LIMIT = 64;
+
     private final List<ArtifactInspector> inspectors;
+    private final Map<java.nio.file.Path, CachedInspection> cache;
 
     public ArtifactInspectorRegistry() {
         this(loadDefaults());
@@ -32,6 +39,12 @@ public final class ArtifactInspectorRegistry {
             }
         });
         this.inspectors = Collections.unmodifiableList(list);
+        this.cache = Collections.synchronizedMap(new LinkedHashMap<java.nio.file.Path, CachedInspection>() {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<java.nio.file.Path, CachedInspection> eldest) {
+                return size() > CACHE_LIMIT;
+            }
+        });
     }
 
     private static List<ArtifactInspector> loadDefaults() {
@@ -39,11 +52,20 @@ public final class ArtifactInspectorRegistry {
         found.add(new GgufArtifactInspector());
         found.add(new SafetensorsInspector());
         found.add(new OnnxLightInspector());
-        try {
-            for (ArtifactInspector inspector : ServiceLoader.load(ArtifactInspector.class)) {
-                found.add(inspector);
+        ServiceLoader<ArtifactInspector> loader = ServiceLoader.load(ArtifactInspector.class);
+        java.util.Iterator<ArtifactInspector> iterator = loader.iterator();
+        while (true) {
+            try {
+                if (!iterator.hasNext()) {
+                    break;
+                }
+                ArtifactInspector candidate = iterator.next();
+                if (candidate != null) {
+                    found.add(candidate);
+                }
+            } catch (Throwable entryFailure) {
+                LOG.warning("skipping unloadable ArtifactInspector service entry: " + entryFailure);
             }
-        } catch (Throwable ignored) {
         }
         return found;
     }
@@ -59,13 +81,55 @@ public final class ArtifactInspectorRegistry {
 
     public ArtifactInspection inspectOrNull(ArtifactFormat format, java.nio.file.Path path) {
         ArtifactInspector inspector = forFormat(format);
-        if (inspector == null) {
+        if (inspector == null || path == null) {
             return null;
         }
         try {
-            return inspector.inspect(path);
+            return inspectCached(inspector, path);
         } catch (RuntimeException e) {
+            LOG.warning("artifact inspection failed for " + path + " (" + format + "): " + e);
             return null;
+        }
+    }
+
+    private ArtifactInspection inspectCached(ArtifactInspector inspector, java.nio.file.Path path) {
+        long size = 0L;
+        long lastModified = 0L;
+        boolean statable = false;
+        try {
+            java.nio.file.attribute.BasicFileAttributes attributes =
+                    java.nio.file.Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class);
+            if (attributes.isRegularFile()) {
+                size = attributes.size();
+                lastModified = attributes.lastModifiedTime().toMillis();
+                statable = true;
+            }
+        } catch (IOException e) {
+            statable = false;
+        }
+        if (statable) {
+            CachedInspection cached = cache.get(path);
+            if (cached != null && cached.size == size && cached.lastModified == lastModified) {
+                return cached.inspection;
+            }
+        }
+        ArtifactInspection inspection = inspector.inspect(path);
+        if (statable) {
+            cache.put(path, new CachedInspection(size, lastModified, inspection));
+        }
+        return inspection;
+    }
+
+    private static final class CachedInspection {
+
+        final long size;
+        final long lastModified;
+        final ArtifactInspection inspection;
+
+        CachedInspection(long size, long lastModified, ArtifactInspection inspection) {
+            this.size = size;
+            this.lastModified = lastModified;
+            this.inspection = inspection;
         }
     }
 

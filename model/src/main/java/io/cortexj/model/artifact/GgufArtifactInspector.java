@@ -4,6 +4,7 @@ import io.cortexj.model.ArtifactFormat;
 import io.cortexj.spi.artifact.ArtifactInspection;
 import io.cortexj.spi.artifact.ArtifactInspector;
 
+import java.io.BufferedInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -18,6 +19,10 @@ import java.util.List;
 public final class GgufArtifactInspector implements ArtifactInspector {
 
     private static final int GGUF_MAGIC = 0x46554747;
+
+    private static final long MAX_STRING_LENGTH = 1024L * 1024L;
+    private static final long MAX_ARRAY_ELEMENTS = 1024L * 1024L;
+    private static final int MAX_METADATA_DEPTH = 8;
 
     private static final int T_UINT8 = 0;
     private static final int T_INT8 = 1;
@@ -40,10 +45,10 @@ public final class GgufArtifactInspector implements ArtifactInspector {
 
     @Override
     public ArtifactInspection inspect(Path artifact) {
-        try (InputStream input = Files.newInputStream(artifact)) {
+        try (InputStream input = new BufferedInputStream(Files.newInputStream(artifact), 64 * 1024)) {
             return inspectStream(input);
         } catch (IOException e) {
-            throw new IllegalArgumentException("Cannot read GGUF artifact " + artifact + ": " + e.getMessage(), e);
+            throw new MalformedArtifactException("Cannot read GGUF artifact " + artifact + ": " + e.getMessage(), e);
         }
     }
 
@@ -171,8 +176,8 @@ public final class GgufArtifactInspector implements ArtifactInspector {
 
         String readString() throws IOException {
             long length = readLong();
-            if (length < 0 || length > 64L * 1024L * 1024L) {
-                throw new EOFException("Unreasonable string length: " + length);
+            if (length < 0 || length > MAX_STRING_LENGTH) {
+                throw new MalformedArtifactException("Unreasonable GGUF string length: " + length);
             }
             byte[] bytes = new byte[(int) length];
             int offset = 0;
@@ -187,6 +192,10 @@ public final class GgufArtifactInspector implements ArtifactInspector {
         }
 
         Object readValue(int valueType) throws IOException {
+            return readValue(valueType, 0);
+        }
+
+        Object readValue(int valueType, int depth) throws IOException {
             switch (valueType) {
                 case T_UINT8: return Integer.valueOf(readUnsignedByte());
                 case T_INT8: return Integer.valueOf((byte) readUnsignedByte());
@@ -202,14 +211,22 @@ public final class GgufArtifactInspector implements ArtifactInspector {
                 case T_BOOL: return Boolean.valueOf(readUnsignedByte() != 0);
                 case T_STRING: return readString();
                 case T_ARRAY: {
+                    if (depth >= MAX_METADATA_DEPTH) {
+                        throw new MalformedArtifactException(
+                                "GGUF metadata nested deeper than " + MAX_METADATA_DEPTH + " levels");
+                    }
                     int elementType = readerArrayType();
+                    if (!isScalarElementType(elementType)) {
+                        throw new MalformedArtifactException(
+                                "GGUF metadata arrays must contain scalar elements, got element type " + elementType);
+                    }
                     long length = readLong();
-                    if (length < 0 || length > 1024L * 1024L) {
-                        throw new EOFException("Unreasonable array length: " + length);
+                    if (length < 0 || length > MAX_ARRAY_ELEMENTS) {
+                        throw new MalformedArtifactException("Unreasonable array length: " + length);
                     }
                     List<Object> values = new ArrayList<Object>();
                     for (long i = 0; i < length; i++) {
-                        values.add(readValue(elementType));
+                        values.add(readValue(elementType, depth + 1));
                     }
                     return values;
                 }
@@ -219,6 +236,13 @@ public final class GgufArtifactInspector implements ArtifactInspector {
                 default:
                     throw new EOFException("Unsupported GGUF metadata value type: " + valueType);
             }
+        }
+
+        private static boolean isScalarElementType(int elementType) {
+            if (elementType >= T_UINT8 && elementType <= T_STRING) {
+                return true;
+            }
+            return elementType >= T_UINT64 && elementType <= T_FLOAT64;
         }
 
         private int readerArrayType() throws IOException {

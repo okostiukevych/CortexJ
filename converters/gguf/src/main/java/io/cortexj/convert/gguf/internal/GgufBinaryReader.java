@@ -13,6 +13,11 @@ import java.util.List;
  */
 public final class GgufBinaryReader {
 
+    private static final long MAX_STRING_LENGTH = 1024L * 1024L;
+    private static final long MAX_BYTE_BLOCK_LENGTH = 64L * 1024L * 1024L;
+    private static final long MAX_ARRAY_ELEMENTS = 1024L * 1024L;
+    private static final int MAX_METADATA_DEPTH = 8;
+
     private final InputStream input;
 
     public GgufBinaryReader(InputStream input) {
@@ -51,8 +56,8 @@ public final class GgufBinaryReader {
 
     public String readString() throws IOException {
         long length = readInt64();
-        if (length < 0 || length > 512L * 1024L * 1024L) {
-            throw new IOException("unreasonable GGUF string length: " + length);
+        if (length < 0 || length > MAX_STRING_LENGTH) {
+            throw new GgufFormatException("unreasonable GGUF string length: " + length);
         }
         byte[] bytes = new byte[(int) length];
         readFully(bytes);
@@ -60,6 +65,9 @@ public final class GgufBinaryReader {
     }
 
     public byte[] readBytes(long count) throws IOException {
+        if (count < 0 || count > MAX_BYTE_BLOCK_LENGTH) {
+            throw new GgufFormatException("unreasonable GGUF byte count: " + count);
+        }
         byte[] bytes = new byte[(int) count];
         readFully(bytes);
         return bytes;
@@ -136,6 +144,10 @@ public final class GgufBinaryReader {
     }
 
     public Object readValue(int type) throws IOException {
+        return readValue(type, 0);
+    }
+
+    public Object readValue(int type, int depth) throws IOException {
         switch (type) {
             case Types.UINT8:
                 return Integer.valueOf(read() & 0xFF);
@@ -156,11 +168,22 @@ public final class GgufBinaryReader {
             case Types.STRING:
                 return readString();
             case Types.ARRAY:
+                if (depth >= MAX_METADATA_DEPTH) {
+                    throw new GgufFormatException(
+                            "GGUF metadata nested deeper than " + MAX_METADATA_DEPTH + " levels");
+                }
                 int elementType = readInt32();
+                if (!isScalarElementType(elementType)) {
+                    throw new GgufFormatException(
+                            "GGUF metadata arrays must contain scalar elements, got element type " + elementType);
+                }
                 long count = readInt64();
+                if (count < 0 || count > MAX_ARRAY_ELEMENTS) {
+                    throw new GgufFormatException("unreasonable GGUF array length: " + count);
+                }
                 List<Object> values = new ArrayList<Object>();
                 for (long i = 0; i < count; i++) {
-                    values.add(readValue(elementType));
+                    values.add(readValue(elementType, depth + 1));
                 }
                 return new ArrayValue(elementType, values);
             case Types.UINT64:
@@ -170,7 +193,14 @@ public final class GgufBinaryReader {
             case Types.FLOAT64:
                 return Double.valueOf(readFloat64());
             default:
-                throw new IOException("unsupported GGUF metadata value type: " + type);
+                throw new GgufFormatException("unsupported GGUF metadata value type: " + type);
         }
+    }
+
+    private static boolean isScalarElementType(int elementType) {
+        if (elementType >= Types.UINT8 && elementType <= Types.STRING) {
+            return true;
+        }
+        return elementType >= Types.UINT64 && elementType <= Types.FLOAT64;
     }
 }
