@@ -7,6 +7,7 @@ import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.cortexj.observability.PlatformEvent;
 import io.cortexj.observability.PlatformEventListener;
@@ -29,6 +30,7 @@ public final class OtelEventListener implements PlatformEventListener {
     private final LongCounter inferenceCounter;
     private final LongCounter downloadCounter;
     private final LongCounter downloadFailureCounter;
+    private final LongCounter modelLoadedCounter;
     private final LongCounter bytesDownloadedCounter;
     private final io.opentelemetry.api.metrics.DoubleHistogram inferenceHistogram;
     private final Map<String, Span> spansByModel = new ConcurrentHashMap<String, Span>();
@@ -51,6 +53,9 @@ public final class OtelEventListener implements PlatformEventListener {
                 .build();
         this.downloadFailureCounter = meter.counterBuilder("cortexj.artifact.download.failures")
                 .setDescription("Failed artifact downloads")
+                .build();
+        this.modelLoadedCounter = meter.counterBuilder("cortexj.model.loaded")
+                .setDescription("Models loaded into runtimes")
                 .build();
         this.bytesDownloadedCounter = meter.counterBuilder("cortexj.artifact.downloaded.bytes")
                 .setDescription("Bytes downloaded into the cache")
@@ -79,15 +84,16 @@ public final class OtelEventListener implements PlatformEventListener {
         }
         switch (event.type()) {
             case MODEL_RESOLUTION_STARTED:
-                spansByModel.putIfAbsent(spanKey(event), tracer.spanBuilder("cortexj.model.resolution")
-                        .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
-                        .startSpan());
+                startSpan(event, "cortexj.model.resolution");
                 break;
             case MODEL_RESOLUTION_COMPLETED:
                 endSpan(event);
                 break;
+            case DOWNLOAD_STARTED:
+                startSpan(event, "cortexj.artifact.download");
+                break;
             case MODEL_LOADED:
-                meter.counterBuilder("cortexj.model.loaded").build().add(1, attributes);
+                modelLoadedCounter.add(1, attributes);
                 break;
             case DOWNLOAD_COMPLETED:
                 downloadCounter.add(1, attributes);
@@ -98,12 +104,21 @@ public final class OtelEventListener implements PlatformEventListener {
                 downloadFailureCounter.add(1, attributes);
                 endSpan(event);
                 break;
+            case FALLBACK_APPLIED:
+                endSpan(event);
+                break;
             case INFERENCE_COMPLETED:
                 inferenceCounter.add(1, attributes);
                 break;
             default:
                 break;
         }
+    }
+
+    private void startSpan(PlatformEvent event, String name) {
+        spansByModel.putIfAbsent(spanKey(event), tracer.spanBuilder(name)
+                .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
+                .startSpan());
     }
 
     private void recordBytes(PlatformEvent event) {
@@ -122,6 +137,7 @@ public final class OtelEventListener implements PlatformEventListener {
         if (span != null) {
             if (event.level() == PlatformEvent.Level.ERROR) {
                 span.setAttribute("cortexj.error", event.message());
+                span.setStatus(StatusCode.ERROR, event.message());
             }
             span.end();
         }
@@ -130,7 +146,7 @@ public final class OtelEventListener implements PlatformEventListener {
     private static String spanKey(PlatformEvent event) {
         String model = event.attributes().getOrDefault("model", "");
         String artifact = event.attributes().getOrDefault("artifact", "");
-        return event.type() + ":" + model + ":" + artifact;
+        return model + ":" + artifact;
     }
 
     private static Attributes attributes(PlatformEvent event) {

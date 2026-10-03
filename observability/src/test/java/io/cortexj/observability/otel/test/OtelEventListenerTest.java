@@ -2,14 +2,21 @@ package io.cortexj.observability.otel.test;
 
 import io.cortexj.observability.PlatformEvent;
 import io.cortexj.observability.otel.OtelEventListener;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,6 +99,105 @@ class OtelEventListenerTest {
         MetricData bytesMetric = metric(reader, "cortexj.artifact.downloaded.bytes");
         assertEquals(0L, bytesMetric == null ? 0L : sum(bytesMetric));
         assertEquals(1L, sum(metric(reader, "cortexj.artifact.downloads")));
+    }
+
+    @Test
+    void completedLoadEndsAllSpans() {
+        InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        listener.onEvent(event(PlatformEvent.Type.MODEL_RESOLUTION_STARTED, PlatformEvent.Level.INFO,
+                "resolving", "qwen3", null, null));
+        listener.onEvent(event(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED, PlatformEvent.Level.INFO,
+                "resolved", "qwen3", null, null));
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_STARTED, PlatformEvent.Level.INFO,
+                "downloading", "qwen3", "qwen3.gguf", null));
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
+                "downloaded", "qwen3", "qwen3.gguf", "1048576"));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(2, spans.size());
+        assertEquals("cortexj.model.resolution", spans.get(0).getName());
+        assertEquals("cortexj.artifact.download", spans.get(1).getName());
+        AttributeKey<String> modelKey = AttributeKey.stringKey("cortexj.model");
+        for (SpanData span : spans) {
+            assertTrue(span.hasEnded());
+        }
+        assertEquals("qwen3", spans.get(0).getAttributes().get(modelKey));
+        assertEquals("qwen3", spans.get(1).getAttributes().get(modelKey));
+    }
+
+    @Test
+    void failedLoadEndsSpanWithErrorStatus() {
+        InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_STARTED, PlatformEvent.Level.INFO,
+                "downloading", "qwen3", "qwen3.gguf", null));
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.ERROR,
+                "boom", "qwen3", "qwen3.gguf", null));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(1, spans.size());
+        SpanData span = spans.get(0);
+        assertEquals("cortexj.artifact.download", span.getName());
+        assertTrue(span.hasEnded());
+        assertEquals(StatusCode.ERROR, span.getStatus().getStatusCode());
+        assertEquals("boom", span.getAttributes().get(AttributeKey.stringKey("cortexj.error")));
+    }
+
+    @Test
+    void fallbackAppliedEndsOpenResolutionSpan() {
+        InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        listener.onEvent(event(PlatformEvent.Type.MODEL_RESOLUTION_STARTED, PlatformEvent.Level.INFO,
+                "resolving", "qwen3", null, null));
+        listener.onEvent(event(PlatformEvent.Type.FALLBACK_APPLIED, PlatformEvent.Level.WARNING,
+                "load failed; trying fallback", "qwen3", null, null));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(1, spans.size());
+        SpanData span = spans.get(0);
+        assertEquals("cortexj.model.resolution", span.getName());
+        assertTrue(span.hasEnded());
+        assertEquals(StatusCode.UNSET, span.getStatus().getStatusCode());
+    }
+
+    @Test
+    void modelLoadedCounterIsReusedAcrossEvents() {
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        SdkMeterProvider provider = SdkMeterProvider.builder()
+                .registerMetricReader(reader)
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setMeterProvider(provider).build());
+
+        for (int i = 0; i < 3; i++) {
+            listener.onEvent(event(PlatformEvent.Type.MODEL_LOADED, PlatformEvent.Level.INFO,
+                    "loaded", "qwen3", null, null));
+        }
+        assertEquals(3L, sum(metric(reader, "cortexj.model.loaded")));
+        int streamsAfterFirstBatch = reader.collectAllMetrics().size();
+
+        for (int i = 0; i < 3; i++) {
+            listener.onEvent(event(PlatformEvent.Type.MODEL_LOADED, PlatformEvent.Level.INFO,
+                    "loaded", "qwen3", null, null));
+        }
+        assertEquals(6L, sum(metric(reader, "cortexj.model.loaded")));
+        assertEquals(streamsAfterFirstBatch, reader.collectAllMetrics().size());
     }
 
     private static MetricData metric(InMemoryMetricReader reader, String name) {
