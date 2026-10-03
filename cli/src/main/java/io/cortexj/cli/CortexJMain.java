@@ -134,7 +134,9 @@ public final class CortexJMain {
             for (io.cortexj.StarterInfo starter : java.util.ServiceLoader.load(io.cortexj.StarterInfo.class)) {
                 starters.add(starter);
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable failure) {
+            System.err.println("warning: starter detection failed: " + failure);
+            System.err.println("  (continuing without starters - check the classpath for cortexj starter artifacts)");
         }
         if (starters.isEmpty()) {
             System.out.println("  (none on classpath)");
@@ -322,11 +324,24 @@ public final class CortexJMain {
         }
         String authOption = optionValue(args, "--auth");
         if (authOption != null) {
+            warnCommandLineAuth();
             System.setProperty("cortexj.server.auth", authOption.trim());
         }
+        // register the shutdown hook before the model loads in the CortexJServer
+        // constructor so Ctrl+C during a long load still tears the runtime down
+        java.util.concurrent.atomic.AtomicReference<io.cortexj.server.CortexJServer> serverRef =
+                new java.util.concurrent.atomic.AtomicReference<io.cortexj.server.CortexJServer>();
+        Runtime.getRuntime().addShutdownHook(serverShutdownHook(serverRef, platform));
         io.cortexj.server.CortexJServer cortexjServer =
                 new io.cortexj.server.CortexJServer(platform, model);
-        int bound = cortexjServer.start(port);
+        serverRef.set(cortexjServer);
+        int bound;
+        try {
+            bound = cortexjServer.start(port);
+        } catch (java.io.IOException e) {
+            platform.close();
+            throw e;
+        }
         System.out.println("cortexj-server listening on "
                 + (cortexjServer.boundAddress().getHostAddress()) + ":" + bound);
         if (System.getProperty("cortexj.server.bind") != null) {
@@ -334,18 +349,38 @@ public final class CortexJMain {
                     + "to require bearer authentication");
         }
         System.out.println("endpoints: /v1/models, /v1/chat/completions (stream), /v1/embeddings");
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-            @Override
-            public void run() {
-                cortexjServer.stop();
-            }
-        }));
         try {
             Thread.currentThread().join();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
         return 0;
+    }
+
+    static Thread serverShutdownHook(
+            final java.util.concurrent.atomic.AtomicReference<io.cortexj.server.CortexJServer> serverRef,
+            final CortexJ platform) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runServerShutdownHook(serverRef, platform);
+            }
+        });
+    }
+
+    static void runServerShutdownHook(
+            java.util.concurrent.atomic.AtomicReference<io.cortexj.server.CortexJServer> serverRef,
+            CortexJ platform) {
+        io.cortexj.server.CortexJServer server = serverRef.get();
+        if (server != null) {
+            server.stop();
+        }
+        platform.close();
+    }
+
+    static void warnCommandLineAuth() {
+        System.err.println("warning: --auth places the bearer token on the command line where it is "
+                + "visible in process listings (ps); prefer the CORTEXJ_SERVER_AUTH environment variable");
     }
 
     private static int convert(String[] args) {
@@ -379,7 +414,10 @@ public final class CortexJMain {
             try {
                 resolved = repository.resolve(io.cortexj.model.ModelReference.of(model), context);
                 break;
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException e) {
+                System.err.println("convert failed: " + e.toString());
+                System.err.println("check the model id and network access, or run 'cortexj pull <model>' "
+                        + "to cache artifacts before converting");
                 return 2;
             }
         }
@@ -484,9 +522,20 @@ public final class CortexJMain {
         return 1;
     }
 
-    private static io.cortexj.cache.CacheStorage defaultCache() {
-        String home = System.getProperty("user.home", ".");
-        return new io.cortexj.cache.CacheStorage(java.nio.file.Paths.get(home, ".cortexj", "cache"));
+    static io.cortexj.cache.CacheStorage defaultCache() {
+        return new io.cortexj.cache.CacheStorage(cacheHome().resolve("cache"));
+    }
+
+    static java.nio.file.Path cacheHome() {
+        String explicit = System.getProperty("cortexj.home");
+        if (explicit == null || explicit.isEmpty()) {
+            explicit = System.getenv("CORTEXJ_HOME");
+        }
+        if (explicit != null && !explicit.isEmpty()) {
+            return java.nio.file.Paths.get(explicit);
+        }
+        String userHome = System.getProperty("user.home", ".");
+        return java.nio.file.Paths.get(userHome, ".cortexj");
     }
 
     private static String modelArg(String[] args) {
