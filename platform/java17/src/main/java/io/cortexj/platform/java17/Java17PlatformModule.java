@@ -21,8 +21,11 @@ public final class Java17PlatformModule implements PlatformModule {
 
     @Override
     public java.util.concurrent.ExecutorService createIoExecutor() {
-        return java.util.concurrent.Executors.newFixedThreadPool(
-                Math.max(8, Runtime.getRuntime().availableProcessors() * 2),
-                PlatformModule.daemonThreadFactory("cortexj-io"));
+        int width = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
+        return new java.util.concurrent.ThreadPoolExecutor(
+                width, width, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(256),
+                PlatformModule.daemonThreadFactory("cortexj-io"),
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 }

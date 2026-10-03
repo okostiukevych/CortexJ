@@ -226,7 +226,14 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 }
             };
             if (executor != null) {
-                executor.execute(worker);
+                try {
+                    executor.execute(worker);
+                } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                    publisher.fail(new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                            "Stream rejected: the IO executor queue is saturated ("
+                                    + saturated.getMessage() + ").",
+                            "Retry when in-flight streams drain or reduce concurrent streams."));
+                }
             } else {
                 worker.run();
             }

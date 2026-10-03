@@ -1,5 +1,6 @@
 package io.cortexj.core;
 
+import io.cortexj.ErrorCode;
 import io.cortexj.error.CortexJException;
 import io.cortexj.error.InferenceException;
 import io.cortexj.inference.InferenceRequest;
@@ -383,12 +384,21 @@ public final class DefaultModelHandle implements ModelHandle {
     public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
         requireActive("executeAsync");
         if (serializeAccess) {
-            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
-                @Override
-                public InferenceResponse get() {
-                    return execute(request);
-                }
-            }, platform.asyncExecutor());
+            try {
+                return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, platform.asyncExecutor());
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                CompletableFuture<InferenceResponse> rejected = new CompletableFuture<InferenceResponse>();
+                rejected.completeExceptionally(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "Async inference rejected: the async executor queue is saturated "
+                                + "(" + saturated.getMessage() + ").",
+                        "Retry when in-flight async calls drain, or use the blocking execute()."));
+                return rejected;
+            }
         }
         return model.executeAsync(request);
     }
