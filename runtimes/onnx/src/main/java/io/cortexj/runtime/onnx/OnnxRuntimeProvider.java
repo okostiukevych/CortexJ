@@ -40,7 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.logging.Logger;
 
-public final class OnnxRuntimeProvider implements RuntimeProvider {
+public class OnnxRuntimeProvider implements RuntimeProvider {
 
     private static final Logger LOG = Logger.getLogger(OnnxRuntimeProvider.class.getName());
 
@@ -81,7 +81,8 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             io.cortexj.error.RuntimeUnavailableException failure =
                     new io.cortexj.error.RuntimeUnavailableException(ErrorCode.RUNTIME_NOT_INSTALLED,
                             "ONNX Runtime native library is not available: " + e.getMessage(),
-                            "Add the 'onnxruntime' dependency (bundled natives) or use another runtime provider.");
+                            "Add the 'onnxruntime' dependency (bundled natives) or use another runtime provider.",
+                            e);
             failure.detail("runtime", id.value());
             return RuntimeProbeResult.unavailable("ONNX Runtime native library could not be loaded", failure);
         }
@@ -123,15 +124,17 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
     @Override
     public ModelRuntime open(RuntimeOpenRequest request) {
         environment();
-        return new OnnxModelRuntime(environment());
+        return new OnnxModelRuntime(environment(), request.executor());
     }
 
     final class OnnxModelRuntime implements ModelRuntime {
 
         private final OrtEnvironment env;
+        private final java.util.concurrent.ExecutorService executor;
 
-        OnnxModelRuntime(OrtEnvironment env) {
+        OnnxModelRuntime(OrtEnvironment env, java.util.concurrent.ExecutorService executor) {
             this.env = env;
+            this.executor = executor;
         }
 
         @Override
@@ -156,7 +159,7 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                 session = env.createSession(modelPath.toString(),
                         new OrtSession.SessionOptions());
                 io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer = loadTokenizer(modelPath);
-                return new OnnxModel(session, tokenizer);
+                return new OnnxModel(session, tokenizer, firstInputName(session), executor);
             } catch (io.cortexj.error.CortexJException e) {
                 closeQuietly(session);
                 throw e;
@@ -177,6 +180,11 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         private void closeQuietly(OrtSession session) {
             closeSessionQuietly(session);
+        }
+
+        private String firstInputName(OrtSession session) {
+            java.util.Set<String> names = session.getInputNames();
+            return names.isEmpty() ? null : names.iterator().next();
         }
 
         private io.cortexj.model.token.HfTokenizer.TokenEncoder loadTokenizer(Path modelPath) {
@@ -206,15 +214,25 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
     final class OnnxModel implements RuntimeModel, io.cortexj.inference.EmbeddingCapability {
         private final OrtSession session;
         private final io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer;
+        private final java.util.concurrent.ExecutorService executor;
+        // resolved once at load: session.getInputNames() is a native call that
+        // must not sit on the inference hot path (GitHub #67)
+        final String inputName;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean();
-        // guards native session use against close(): close-during-embed waits
-        // for the in-flight session.run() instead of tearing it down (TOCTOU fix, audit H-1)
-        private final Object nativeSessionLock = new Object();
+        // inference holds the READ lock so embeds run concurrently (OrtSession.run
+        // is documented thread-safe, GitHub #67); close() holds the WRITE lock so
+        // it waits for in-flight inference instead of tearing the native session
+        // down under it (TOCTOU guarantee, audit H-1)
+        private final java.util.concurrent.locks.ReentrantReadWriteLock inferenceLock =
+                new java.util.concurrent.locks.ReentrantReadWriteLock();
 
-        OnnxModel(OrtSession session, io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer) {
+        OnnxModel(OrtSession session, io.cortexj.model.token.HfTokenizer.TokenEncoder tokenizer,
+                  String inputName, java.util.concurrent.ExecutorService executor) {
             this.session = session;
             this.tokenizer = tokenizer;
+            this.inputName = inputName;
+            this.executor = executor;
         }
 
         @Override
@@ -237,7 +255,15 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
 
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
-            return CompletableFuture.completedFuture(execute(request));
+            if (executor == null) {
+                return CompletableFuture.completedFuture(execute(request));
+            }
+            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                @Override
+                public InferenceResponse get() {
+                    return execute(request);
+                }
+            }, executor);
         }
 
         @Override
@@ -261,16 +287,20 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             for (int i = 0; i < ids.length; i++) {
                 longIds[i] = ids[i];
             }
-            synchronized (nativeSessionLock) {
+            java.util.concurrent.locks.Lock readLock = inferenceLock.readLock();
+            readLock.lock();
+            try {
                 if (closed.get()) {
                     throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                             "model is closed", "Reopen the model handle.");
                 }
                 try (OnnxTensor input = OnnxTensor.createTensor(environment(),
                         LongBuffer.wrap(longIds), new long[]{1, longIds.length})) {
-                    String inputName = session.getInputNames().iterator().next();
+                    String sessionInputName = inputName != null
+                            ? inputName
+                            : session.getInputNames().iterator().next();
                     Map<String, OnnxTensor> inputs = new LinkedHashMap<String, OnnxTensor>();
-                    inputs.put(inputName, input);
+                    inputs.put(sessionInputName, input);
                     try (OrtSession.Result result = session.run(inputs)) {
                         float[][] raw = (float[][]) result.get(0).getValue();
                         return meanPool(raw);
@@ -281,6 +311,8 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
                     failure.detail("runtime", id.value());
                     throw failure;
                 }
+            } finally {
+                readLock.unlock();
             }
         }
 
@@ -306,11 +338,15 @@ public final class OnnxRuntimeProvider implements RuntimeProvider {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            synchronized (nativeSessionLock) {
+            java.util.concurrent.locks.Lock writeLock = inferenceLock.writeLock();
+            writeLock.lock();
+            try {
                 try {
                     session.close();
                 } catch (Exception ignored) {
                 }
+            } finally {
+                writeLock.unlock();
             }
         }
     }

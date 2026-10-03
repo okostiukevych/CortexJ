@@ -44,7 +44,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.logging.Logger;
 
-public final class DjlProvider implements RuntimeProvider {
+public class DjlProvider implements RuntimeProvider {
 
     public static final String ENGINE_NAME = "OnnxRuntime";
     public static final String DJL_VERSION = "0.38.0";
@@ -80,12 +80,13 @@ public final class DjlProvider implements RuntimeProvider {
     public RuntimeProbeResult probe(RuntimeProbeContext context) {
         List<String> engines = new ArrayList<String>();
         try {
-            engines.addAll(Engine.getAllEngines());
+            engines.addAll(discoverEngines());
         } catch (Throwable discoveryFailure) {
             NativeRuntimeException failure = new NativeRuntimeException(
                     ErrorCode.NATIVE_LIBRARY_MISSING,
                     "DJL engine discovery failed: " + discoveryFailure,
-                    "Verify the ai.djl:api dependency and classpath integrity.");
+                    "Verify the ai.djl:api dependency and classpath integrity.",
+                    discoveryFailure);
             failure.detail("runtime", id.value());
             return RuntimeProbeResult.unavailable(
                     "DJL engine discovery failed on this machine", failure);
@@ -109,6 +110,10 @@ public final class DjlProvider implements RuntimeProvider {
                 "DJL is on the classpath but no ONNX engine artifacts are installed", failure);
     }
 
+    java.util.Collection<String> discoverEngines() {
+        return Engine.getAllEngines();
+    }
+
     @Override
     public RuntimeSupport evaluate(RuntimeEvaluationRequest request) {
         if (request.artifact() == null || request.artifact().format() != ArtifactFormat.ONNX) {
@@ -130,11 +135,16 @@ public final class DjlProvider implements RuntimeProvider {
                                     + " and its native artifacts to the assembly.")
                     : probe.error();
         }
-        return new DjlModelRuntime();
+        return new DjlModelRuntime(request.executor());
     }
 
     final class DjlModelRuntime implements ModelRuntime {
 
+        private final java.util.concurrent.ExecutorService executor;
+
+        DjlModelRuntime(java.util.concurrent.ExecutorService executor) {
+            this.executor = executor;
+        }
         @Override
         public RuntimeId runtimeId() {
             return id;
@@ -186,7 +196,7 @@ public final class DjlProvider implements RuntimeProvider {
                     model.close();
                 }
             }
-            return new DjlModel(model, tokenizer);
+            return new DjlModel(model, tokenizer, executor);
         }
 
         private HfTokenizer.TokenEncoder loadTokenizer(Path modelDirectory) {
@@ -211,14 +221,22 @@ public final class DjlProvider implements RuntimeProvider {
 
         private final Model model;
         private final HfTokenizer.TokenEncoder tokenizer;
+        private final java.util.concurrent.ExecutorService executor;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean();
-        // guards native predictor use against close() (TOCTOU fix, audit H-1)
-        private final Object nativeSessionLock = new Object();
+        // inference holds the READ lock so embeds run concurrently (GitHub #67);
+        // close() holds the WRITE lock so it waits for in-flight inference
+        // instead of tearing the model down under it (TOCTOU guarantee, audit H-1).
+        // DJL Predictor thread-safety is engine-dependent, so a fresh
+        // NDManager + Predictor is still created per call under the read lock.
+        private final java.util.concurrent.locks.ReentrantReadWriteLock inferenceLock =
+                new java.util.concurrent.locks.ReentrantReadWriteLock();
 
-        DjlModel(Model model, HfTokenizer.TokenEncoder tokenizer) {
+        DjlModel(Model model, HfTokenizer.TokenEncoder tokenizer,
+                 java.util.concurrent.ExecutorService executor) {
             this.model = model;
             this.tokenizer = tokenizer;
+            this.executor = executor;
         }
 
         @Override
@@ -241,7 +259,15 @@ public final class DjlProvider implements RuntimeProvider {
 
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
-            return CompletableFuture.completedFuture(execute(request));
+            if (executor == null) {
+                return CompletableFuture.completedFuture(execute(request));
+            }
+            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                @Override
+                public InferenceResponse get() {
+                    return execute(request);
+                }
+            }, executor);
         }
 
         @Override
@@ -263,7 +289,9 @@ public final class DjlProvider implements RuntimeProvider {
             for (int i = 0; i < ids.length; i++) {
                 longIds[i] = ids[i];
             }
-            synchronized (nativeSessionLock) {
+            java.util.concurrent.locks.Lock readLock = inferenceLock.readLock();
+            readLock.lock();
+            try {
                 if (closed.get()) {
                     throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                             "model is closed", "Reopen the model handle.");
@@ -289,6 +317,8 @@ public final class DjlProvider implements RuntimeProvider {
                     failure.detail("runtime", id.value());
                     throw failure;
                 }
+            } finally {
+                readLock.unlock();
             }
         }
 
@@ -312,8 +342,12 @@ public final class DjlProvider implements RuntimeProvider {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            synchronized (nativeSessionLock) {
+            java.util.concurrent.locks.Lock writeLock = inferenceLock.writeLock();
+            writeLock.lock();
+            try {
                 model.close();
+            } finally {
+                writeLock.unlock();
             }
         }
     }
