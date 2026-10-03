@@ -61,6 +61,9 @@ public class CortexJVerifyMojo extends AbstractMojo {
         if (bundle != null) {
             log(DeploymentVerifier.checkBundle(bundle), failures);
         }
+        if (lockfile != null && bundle != null) {
+            log(DeploymentVerifier.checkLockfileAgainstBundle(lockfile, bundle), failures);
+        }
         if (model != null || requiredRuntime != null) {
             log(DeploymentVerifier.checkRuntimes(model, requiredRuntime), failures);
         }

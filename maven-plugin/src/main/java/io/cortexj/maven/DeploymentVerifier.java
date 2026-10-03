@@ -97,6 +97,84 @@ public final class DeploymentVerifier {
     }
 
     /**
+     * Cross-checks a lockfile against an air-gap bundle when both are configured
+     * (spec 94 + audit #60): the lockfile sha256 pin must match the sha recorded
+     * in the bundle manifest for the pinned artifact.
+     */
+    public static Result checkLockfileAgainstBundle(File lockfile, File bundle) {
+        List<String> issues = new ArrayList<String>();
+        if (lockfile == null || bundle == null) {
+            return new Result(true, new ArrayList<String>());
+        }
+        if (!lockfile.isFile() || !bundle.isDirectory()) {
+            return new Result(true, new ArrayList<String>());
+        }
+        io.cortexj.planner.ModelLockfile pinned;
+        try {
+            pinned = io.cortexj.planner.ModelLockfile.readFrom(lockfile.toPath());
+        } catch (Exception malformed) {
+            issues.add("lockfile is not valid: " + malformed.getMessage());
+            return new Result(false, issues);
+        }
+        java.nio.file.Path manifestPath = bundle.toPath()
+                .resolve(io.cortexj.repository.local.bundle.ModelBundler.MANIFEST_FILE);
+        if (!java.nio.file.Files.isRegularFile(manifestPath)) {
+            issues.add("bundle has no " + io.cortexj.repository.local.bundle.ModelBundler.MANIFEST_FILE
+                    + " manifest to cross-check against the lockfile");
+            return new Result(false, issues);
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode manifest = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(manifestPath.toFile());
+            String manifestId = manifest.path("id").asText(null);
+            if (manifestId != null && pinned.model() != null
+                    && !pinned.model().equals(manifestId)) {
+                issues.add("lockfile model '" + pinned.model()
+                        + "' does not match bundle model '" + manifestId + "'");
+            }
+            if (pinned.revision() != null) {
+                String manifestRevision = manifest.path("revision").asText(null);
+                if (manifestRevision != null && !pinned.revision().equals(manifestRevision)) {
+                    issues.add("lockfile revision '" + pinned.revision()
+                            + "' does not match bundle revision '" + manifestRevision + "'");
+                }
+            }
+            if (pinned.pinsArtifact() && pinned.artifactSha256() != null) {
+                String pinnedFile = pinned.artifactFile();
+                String matchSha = null;
+                boolean found = false;
+                for (com.fasterxml.jackson.databind.JsonNode entry : manifest.path("artifacts")) {
+                    if (pinnedFile == null || pinnedFile.equals(entry.path("file").asText())) {
+                        found = true;
+                        matchSha = entry.path("sha256").asText(null);
+                        if (pinnedFile != null) {
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    issues.add("lockfile pins artifact '" + pinnedFile
+                            + "' which is not present in the bundle manifest");
+                } else if (matchSha == null
+                        || !matchSha.equalsIgnoreCase(pinned.artifactSha256())) {
+                    issues.add("lockfile sha256 pin '" + pinned.artifactSha256()
+                            + "' does not match the bundle manifest sha '"
+                            + (matchSha == null ? "<missing>" : matchSha)
+                            + "' for artifact '" + pinnedFile + "'");
+                }
+            }
+        } catch (Exception malformed) {
+            issues.add("bundle manifest is not readable: " + malformed.getMessage());
+        }
+        if (!issues.isEmpty()) {
+            return new Result(false, issues);
+        }
+        List<String> ok = new ArrayList<String>();
+        ok.add("lockfile pins match the bundle manifest (model/revision/sha256)");
+        return new Result(true, ok);
+    }
+
+    /**
      * Verifies an air-gap bundle before deployment (spec 62.3/94).
      */
     public static Result checkBundle(File bundle) {

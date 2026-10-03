@@ -61,8 +61,70 @@ class DeploymentVerifierTest {
     }
 
     @Test
-    void bundleCheckDetectsTamperingAndMissingManifests() throws Exception {
-        Path empty = tempDir.resolve("empty-bundle");
+    void lockfileAgainstBundleCrossCheck() throws Exception {
+        Path bundle = tempDir.resolve("x-bundle");
+        Files.createDirectories(bundle);
+        Path artifact = bundle.resolve("model.gguf");
+        Files.write(artifact, new byte[]{1, 2, 3});
+        String digest = sha(artifact);
+        StringBuilder json = new StringBuilder();
+        json.append("{")
+                .append("\"id\":\"b/model\",")
+                .append("\"revision\":\"r1\",")
+                .append("\"artifacts\":[{")
+                .append("\"file\":\"model.gguf\",")
+                .append("\"format\":\"GGUF\",")
+                .append("\"size\":3,")
+                .append("\"sha256\":\"").append(digest).append("\",")
+                .append("\"integrity\":\"sha256-verified\"")
+                .append("}]")
+                .append("}");
+        Files.write(bundle.resolve("cortexj-model.json"),
+                Collections.singletonList(json.toString()));
+
+        Path lock = tempDir.resolve("x.lock");
+        Files.write(lock, Arrays.asList(
+                "model: b/model",
+                "revision: r1",
+                "artifact:",
+                "  file: model.gguf",
+                "  sha256: " + digest.toUpperCase(),
+                "runtime:",
+                "  id: llamacpp"));
+        DeploymentVerifier.Result match = DeploymentVerifier.checkLockfileAgainstBundle(lock.toFile(), bundle.toFile());
+        assertTrue(match.ok, String.valueOf(match.messages));
+
+        Path swapped = tempDir.resolve("swapped.lock");
+        Files.write(swapped, Arrays.asList(
+                "model: b/model",
+                "revision: r1",
+                "artifact:",
+                "  file: model.gguf",
+                "  sha256: deadbeef",
+                "runtime:",
+                "  id: llamacpp"));
+        DeploymentVerifier.Result mismatch = DeploymentVerifier.checkLockfileAgainstBundle(swapped.toFile(), bundle.toFile());
+        assertFalse(mismatch.ok);
+        assertTrue(mismatch.messages.get(0).contains("does not match the bundle manifest sha"),
+                String.valueOf(mismatch.messages));
+
+        Path wrongModel = tempDir.resolve("wrong-model.lock");
+        Files.write(wrongModel, Arrays.asList(
+                "model: other/model",
+                "revision: r1",
+                "artifact:",
+                "  file: model.gguf",
+                "  sha256: " + digest,
+                "runtime:",
+                "  id: llamacpp"));
+        DeploymentVerifier.Result modelMismatch = DeploymentVerifier.checkLockfileAgainstBundle(wrongModel.toFile(), bundle.toFile());
+        assertFalse(modelMismatch.ok);
+        assertTrue(modelMismatch.messages.get(0).contains("does not match bundle model"),
+                String.valueOf(modelMismatch.messages));
+    }
+
+    @Test
+    void bundleCheckDetectsTamperingAndMissingManifests() throws Exception {        Path empty = tempDir.resolve("empty-bundle");
         Files.createDirectories(empty);
         DeploymentVerifier.Result missing = DeploymentVerifier.checkBundle(empty.toFile());
         assertFalse(missing.ok);
