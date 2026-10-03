@@ -70,16 +70,18 @@ class CacheEvictionTest {
     }
 
     @Test
-    void clearRemovesEverything() throws Exception {
+    void clearRemovesUnpinnedAndKeepsPinned() throws Exception {
         CacheStorage cache = storage();
         store(cache, "a", 100);
         store(cache, "b", 100);
         cache.pin("repo", "rev1", "a");
 
         long freed = cache.clear();
-        assertEquals(200L, freed);
-        List<CacheEntry> entries = cache.list();
-        assertTrue(entries.isEmpty(), "cache must be empty after clear");
+        assertEquals(100L, freed, "freed must count only the deleted unpinned artifact");
+        assertTrue(cache.contains("repo", "rev1", "a"), "pinned artifact must survive clear");
+        assertFalse(cache.contains("repo", "rev1", "b"), "unpinned artifact must be removed by clear");
+        assertTrue(cache.isPinned("repo", "rev1", "a"), "clear must not destroy the pinned marker");
+        assertEquals(1, cache.list().size(), "only the pinned artifact survives clear");
     }
 
     @Test

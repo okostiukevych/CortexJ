@@ -2,6 +2,7 @@ package io.cortexj.cache;
 
 import io.cortexj.ErrorCode;
 import io.cortexj.error.ArtifactIntegrityException;
+import io.cortexj.error.ArtifactResolutionException;
 import io.cortexj.model.Checksum;
 import io.cortexj.observability.PlatformEvent;
 import io.cortexj.observability.PlatformEventListener;
@@ -25,6 +26,8 @@ public final class CacheStorage {
     private static final long EVICT_TEMP_GRACE_MILLIS = 3_600_000L;
     private static final int ATOMIC_REPLACE_RETRIES = 5;
     private static final long ATOMIC_REPLACE_BACKOFF_MILLIS = 20L;
+    private static final long LARGE_WRITE_USABLE_SPACE_THRESHOLD_BYTES = 64L * 1024L * 1024L;
+    private static final long LARGE_WRITE_USABLE_SPACE_MARGIN_BYTES = 64L * 1024L * 1024L;
     private static final java.util.concurrent.atomic.AtomicLong TEMP_SEQUENCE =
             new java.util.concurrent.atomic.AtomicLong();
 
@@ -43,6 +46,7 @@ public final class CacheStorage {
     private final java.util.concurrent.atomic.AtomicLong listCalls =
             new java.util.concurrent.atomic.AtomicLong();
     private volatile PlatformEventListener eventListener = PlatformEventListener.NOOP;
+    private volatile java.util.function.LongSupplier usableSpaceProbe;
 
     public CacheStorage(Path root) {
         this(root, DEFAULT_MAX_SIZE_BYTES);
@@ -51,8 +55,28 @@ public final class CacheStorage {
     public CacheStorage(Path root, long maxSizeBytes) {
         this.root = root;
         this.maxSizeBytes = maxSizeBytes;
+        this.usableSpaceProbe = defaultUsableSpaceProbe();
         for (int i = 0; i < LOCK_STRIPES; i++) {
             this.keyLocks[i] = new Object();
+        }
+    }
+
+    private java.util.function.LongSupplier defaultUsableSpaceProbe() {
+        return new java.util.function.LongSupplier() {
+            @Override
+            public long getAsLong() {
+                try {
+                    return Files.getFileStore(root).getUsableSpace();
+                } catch (IOException e) {
+                    return Long.MAX_VALUE;
+                }
+            }
+        };
+    }
+
+    void setUsableSpaceProbeForTesting(java.util.function.LongSupplier probe) {
+        if (probe != null) {
+            this.usableSpaceProbe = probe;
         }
     }
 
@@ -197,6 +221,11 @@ public final class CacheStorage {
     }
 
     public Path put(String repositoryId, String revision, String artifactId, Checksum expectedChecksum, InputStream content) throws IOException {
+        // audit GitHub #72: when the incremental index already says over-limit,
+        // evict BEFORE the temp copy instead of doubling peak disk usage
+        if (maxSizeBytes > 0 && trackedInitialized && trackedBytes.get() > maxSizeBytes) {
+            evictToFit(0L);
+        }
         Path target = artifactPath(repositoryId, revision, artifactId);
         Path parentDirectory = target.getParent();
         if (parentDirectory != null) {
@@ -214,6 +243,17 @@ public final class CacheStorage {
             throw e;
         }
         try {
+            // audit GitHub #72: an artifact larger than the whole cap can never
+            // fit - reject before eviction instead of evicting every other entry
+            if (maxSizeBytes > 0 && bytesCopied > maxSizeBytes) {
+                throw new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                        "Artifact " + artifactId + " is " + bytesCopied
+                                + " bytes, exceeding the cache cap of " + maxSizeBytes + " bytes.",
+                        "Raise the cache cap or choose a smaller variant.")
+                        .detail("artifact", artifactId)
+                        .detail("artifactBytes", String.valueOf(bytesCopied))
+                        .detail("capBytes", String.valueOf(maxSizeBytes));
+            }
             if (expectedChecksum != null) {
                 if (!Checksums.verify(temp, expectedChecksum.algorithm(), expectedChecksum.value())) {
                     Files.deleteIfExists(temp);
@@ -228,67 +268,87 @@ public final class CacheStorage {
             if (maxSizeBytes > 0) {
                 evictToFit(bytesCopied);
             }
-            synchronized (keyLock(target)) {
-                // atomic replace first: no delete->move window where concurrent
-                // get()/contains() would report "not cached" (audit M-5b); the
-                // manifest write happens under the same lock so a concurrent
-                // get() can never pair the new artifact with the stale manifest
-                // and verify-and-delete it
-                boolean moved = false;
-                try {
-                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                    moved = true;
-                } catch (IOException atomicReplaceUnsupported) {
-                    // fall through to the fallback ladder
+            if (bytesCopied > LARGE_WRITE_USABLE_SPACE_THRESHOLD_BYTES) {
+                // audit GitHub #72: free-space pre-check before committing a
+                // large artifact - eviction above already reclaimed what it
+                // could, so this measures the real headroom left for the move
+                long usableSpace = usableSpaceProbe.getAsLong();
+                if (usableSpace < bytesCopied + LARGE_WRITE_USABLE_SPACE_MARGIN_BYTES) {
+                    throw new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                            "Not enough usable disk space to store artifact " + artifactId
+                                    + ": " + usableSpace + " bytes free, need "
+                                    + (bytesCopied + LARGE_WRITE_USABLE_SPACE_MARGIN_BYTES) + " bytes.",
+                            "Free disk space or raise the cache cap; the temp copy was discarded.")
+                            .detail("artifact", artifactId)
+                            .detail("artifactBytes", String.valueOf(bytesCopied))
+                            .detail("usableBytes", String.valueOf(usableSpace));
                 }
-                if (!moved) {
-                    // the atomic replace can fail transiently - a scanner
-                    // (Windows Defender on CI runners) holds the freshly written
-                    // temp file open without share-delete - without actually
-                    // rejecting the replace. Retry with a short backoff BEFORE
-                    // any delete: failed attempts never touch the target, so it
-                    // stays present the whole time and concurrent get() and
-                    // contains() never observe a missing-artifact window.
-                    for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
-                        try {
-                            Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        try {
-                            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                            moved = true;
-                        } catch (IOException retryFailed) {
-                            // scanner still holding the file; keep backing off
-                        }
-                    }
-                }
-                if (!moved) {
-                    // replace-on-rename without an explicit delete: rename(2)
-                    // atomically replaces an existing target on POSIX, and the
-                    // Windows atomic path is MoveFileEx(REPLACE_EXISTING) - the
-                    // target is never left missing, unlike an explicit delete
-                    // followed by a separate move, whose gap a concurrent get()
-                    // observes when a scanner delays the rename (Windows CI
-                    // flake, audit M-5b)
+            }
+            synchronized (evictionLock) {
+                synchronized (keyLock(target)) {
+                    // atomic replace first: no delete->move window where concurrent
+                    // get()/contains() would report "not cached" (audit M-5b); the
+                    // manifest write happens under the same lock so a concurrent
+                    // get() can never pair the new artifact with the stale manifest
+                    // and verify-and-delete it
+                    boolean moved = false;
                     try {
-                        Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
+                        Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                         moved = true;
-                    } catch (IOException atomicFailed) {
-                        // last resort: filesystems that reject the atomic
-                        // replace entirely - non-atomic replace-on-move keeps
-                        // the gap inside a single JDK move call at worst
-                        Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (IOException atomicReplaceUnsupported) {
+                        // fall through to the fallback ladder
                     }
+                    if (!moved) {
+                        // the atomic replace can fail transiently - a scanner
+                        // (Windows Defender on CI runners) holds the freshly written
+                        // temp file open without share-delete - without actually
+                        // rejecting the replace. Retry with a short backoff BEFORE
+                        // any delete: failed attempts never touch the target, so it
+                        // stays present the whole time and concurrent get() and
+                        // contains() never observe a missing-artifact window.
+                        for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
+                            try {
+                                Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                            try {
+                                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                                moved = true;
+                            } catch (IOException retryFailed) {
+                                // scanner still holding the file; keep backing off
+                            }
+                        }
+                    }
+                    if (!moved) {
+                        // replace-on-rename without an explicit delete: rename(2)
+                        // atomically replaces an existing target on POSIX, and the
+                        // Windows atomic path is MoveFileEx(REPLACE_EXISTING) - the
+                        // target is never left missing, unlike an explicit delete
+                        // followed by a separate move, whose gap a concurrent get()
+                        // observes when a scanner delays the rename (Windows CI
+                        // flake, audit M-5b)
+                        try {
+                            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
+                            moved = true;
+                        } catch (IOException atomicFailed) {
+                            // last resort: filesystems that reject the atomic
+                            // replace entirely - non-atomic replace-on-move keeps
+                            // the gap inside a single JDK move call at worst
+                            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                    }
+                    writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
                 }
-            writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
-        }
-        trackedBytes.addAndGet(bytesCopied);
-        eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
-                    PlatformEvent.Level.INFO,
-                    "artifact stored: " + artifactId,
-                    null, System.currentTimeMillis()));
+                // audit GitHub #71: the size credit lands under the eviction lock
+                // so a concurrent clear()/purge() can never lose it via set(0)
+                trackedBytes.addAndGet(bytesCopied);
+            }
+            eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
+                        PlatformEvent.Level.INFO,
+                        "artifact stored: " + artifactId,
+                        null, System.currentTimeMillis()));
             return target;
         } catch (IOException | RuntimeException failure) {
             // audit M-9: no stranded temps on any failure path - a failed
@@ -389,17 +449,9 @@ public final class CacheStorage {
     }
 
     public long clear() throws IOException {
-        List<CacheEntry> entries = list();
-        long freed = 0L;
-        for (CacheEntry entry : entries) {
-            if (Files.deleteIfExists(entry.path())) {
-                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
-                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"));
-                freed += entry.sizeBytes();
-            }
+        synchronized (evictionLock) {
+            return deleteEvictableAndRebaseline();
         }
-        trackedBytes.set(0L);
-        return freed;
     }
 
     public long evictToFit(long incomingBytes) throws IOException {
@@ -463,18 +515,49 @@ public final class CacheStorage {
         return listCalls.get();
     }
 
+    long trackedBytesForTesting() {
+        return trackedBytes.get();
+    }
+
     private static boolean isTempEntry(CacheEntry entry) {
         return fileNameOf(entry.path()).contains(".part-");
     }
 
     public long purge() throws IOException {
-        long freed = 0L;
-        for (CacheEntry entry : list()) {
-            freed += entry.sizeBytes();
-            Files.deleteIfExists(entry.path());
-            deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+        synchronized (evictionLock) {
+            return deleteEvictableAndRebaseline();
         }
-        trackedBytes.set(0L);
+    }
+
+    private long deleteEvictableAndRebaseline() throws IOException {
+        // audit GitHub #71: clear/purge run under the eviction lock and never
+        // touch pinned artifacts or in-flight download partials; freed counts
+        // only entries actually deleted and the size index is re-baselined
+        // from the surviving tree instead of a blind set(0) that would erase
+        // concurrent put() credits
+        List<CacheEntry> entries = list();
+        long now = System.currentTimeMillis();
+        long freed = 0L;
+        long tracked = 0L;
+        for (CacheEntry entry : entries) {
+            if (isActivePartial(entry)) {
+                continue;
+            }
+            if (Files.isRegularFile(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"))) {
+                tracked += entry.sizeBytes();
+                continue;
+            }
+            if (Files.deleteIfExists(entry.path())) {
+                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+                freed += entry.sizeBytes();
+                continue;
+            }
+            if (!isTempEntry(entry) || now - entry.lastModifiedMillis() >= EVICT_TEMP_GRACE_MILLIS) {
+                tracked += entry.sizeBytes();
+            }
+        }
+        trackedBytes.set(tracked);
+        trackedInitialized = true;
         return freed;
     }
 

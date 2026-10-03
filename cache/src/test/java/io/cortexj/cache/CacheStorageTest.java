@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,6 +23,21 @@ class CacheStorageTest {
 
     private static InputStream bytes(String value) {
         return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static InputStream bytes(int size, char fill) {
+        byte[] data = new byte[size];
+        java.util.Arrays.fill(data, (byte) fill);
+        return new ByteArrayInputStream(data);
+    }
+
+    private static boolean anyTempLeft(CacheStorage storage) throws IOException {
+        for (CacheEntry entry : storage.list()) {
+            if (entry.path().getFileName().toString().contains(".part-")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Test
@@ -86,5 +102,61 @@ class CacheStorageTest {
         assertEquals(
                 "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
                 Checksums.sha256Hex("hello".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void oversizedArtifactIsRejectedWithoutEviction() throws IOException {
+        CacheStorage storage = new CacheStorage(tempDir, 4096L);
+        for (int i = 0; i < 4; i++) {
+            storage.put("hf", "rev1", "artifact-" + i + ".gguf", null, bytes(900, 'a'));
+        }
+        long trackedBefore = storage.trackedBytesForTesting();
+
+        try {
+            storage.put("hf", "rev1", "huge.gguf", null, bytes(8192, 'h'));
+            org.junit.jupiter.api.Assertions.fail("expected ArtifactResolutionException");
+        } catch (io.cortexj.error.ArtifactResolutionException expected) {
+            assertEquals(io.cortexj.ErrorCode.ARTIFACT_TOO_LARGE, expected.code(),
+                    "an artifact larger than the cache cap must surface as ARTIFACT_TOO_LARGE");
+        }
+
+        for (int i = 0; i < 4; i++) {
+            assertTrue(storage.contains("hf", "rev1", "artifact-" + i + ".gguf"),
+                    "the oversized put must not evict existing entries");
+        }
+        assertTrue(!storage.contains("hf", "rev1", "huge.gguf"),
+                "the oversized artifact must not be stored");
+        assertFalse(anyTempLeft(storage), "the rejected put must leave no temp behind");
+        assertEquals(trackedBefore, storage.trackedBytesForTesting(),
+                "the rejected put must not change the size index");
+    }
+
+    @Test
+    void putRejectsLargeWriteWhenUsableSpaceBelowArtifactPlusMargin() throws IOException {
+        CacheStorage storage = new CacheStorage(tempDir);
+        storage.setUsableSpaceProbeForTesting(() -> 1L);
+
+        try {
+            storage.put("hf", "rev1", "large.gguf", null, bytes(68157440, 'l'));
+            org.junit.jupiter.api.Assertions.fail("expected ArtifactResolutionException");
+        } catch (io.cortexj.error.ArtifactResolutionException expected) {
+            assertEquals(io.cortexj.ErrorCode.ARTIFACT_TOO_LARGE, expected.code(),
+                    "a large write without usable disk space must surface as ARTIFACT_TOO_LARGE");
+        }
+
+        assertEquals(0L, storage.trackedBytesForTesting(),
+                "the rejected large write must not credit the size index");
+        assertFalse(anyTempLeft(storage), "the rejected large write must leave no temp behind");
+
+        storage.put("hf", "rev1", "small.gguf", null, bytes(64, 's'));
+        assertTrue(storage.contains("hf", "rev1", "small.gguf"),
+                "small writes bypass the usable-space pre-check and must still land");
+
+        storage.setUsableSpaceProbeForTesting(() -> Long.MAX_VALUE);
+        storage.put("hf", "rev1", "large-ok.gguf", null, bytes(68157440, 'l'));
+        assertTrue(storage.contains("hf", "rev1", "large-ok.gguf"),
+                "with enough usable space the large write must land");
+        assertEquals(storage.totalSizeBytes(), storage.trackedBytesForTesting(),
+                "the size index must match the real tree after successful puts");
     }
 }
