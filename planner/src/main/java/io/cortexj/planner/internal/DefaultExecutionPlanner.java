@@ -414,6 +414,7 @@ public final class DefaultExecutionPlanner implements Planner {
 
         ExecutionCandidate.Builder builder = ExecutionCandidate.builder(descriptor.id().value())
                 .artifact(converted)
+                .license(resolved.descriptor().license())
                 .device(support.proposedDevice() == null ? DeviceType.CPU : support.proposedDevice())
                 .requiresDownload(!localFile && !cached)
                 .conversion(step)
@@ -580,6 +581,7 @@ public final class DefaultExecutionPlanner implements Planner {
 
         ExecutionCandidate.Builder builder = ExecutionCandidate.builder(descriptor.id().value())
                 .artifact(artifact)
+                .license(resolved.descriptor().license())
                 .device(support.proposedDevice() == null ? DeviceType.CPU : support.proposedDevice())
                 .requiresDownload(!localFile && !cached);
         if (localFile) {

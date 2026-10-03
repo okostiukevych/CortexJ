@@ -19,6 +19,7 @@ public final class ExecutionCandidate {
     private final double score;
     private final Map<String, String> notes;
     private final ConversionStep conversion;
+    private final String license;
 
     private ExecutionCandidate(Builder builder) {
         this.runtimeId = builder.runtimeId;
@@ -30,6 +31,7 @@ public final class ExecutionCandidate {
         this.score = builder.score;
         this.notes = Collections.unmodifiableMap(new LinkedHashMap<String, String>(builder.notes));
         this.conversion = builder.conversion;
+        this.license = builder.license;
     }
 
     public String runtimeId() {
@@ -70,6 +72,10 @@ public final class ExecutionCandidate {
 
     public ConversionStep conversion() {
         return conversion;
+    }
+
+    public String license() {
+        return license;
     }
 
     public boolean requiresConversion() {
@@ -136,6 +142,7 @@ public final class ExecutionCandidate {
         private boolean requiresDownload;
         private double score;
         private ConversionStep conversion;
+        private String license;
         private final Map<String, String> notes = new LinkedHashMap<String, String>();
 
         private Builder(String runtimeId) {
@@ -182,6 +189,11 @@ public final class ExecutionCandidate {
 
         public Builder conversion(ConversionStep step) {
             this.conversion = step;
+            return this;
+        }
+
+        public Builder license(String license) {
+            this.license = license;
             return this;
         }
 
