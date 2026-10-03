@@ -168,7 +168,8 @@ public final class DefaultCortexJ implements CortexJ {
                             resolved.remoteRuntimeAllowed,
                             CortexJInfo.VERSION,
                             resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes,
-                            resolved.runtimeConfiguration()));
+                            resolved.runtimeConfiguration(),
+                            loadBenchmarkHints(resolved.workingDirectory)));
 
             this.models = new DefaultModels(this);
             this.resolvedConfiguration = resolved;
@@ -319,6 +320,30 @@ public final class DefaultCortexJ implements CortexJ {
         shutdownExecutor(ownsExecutor ? ioExecutor : null);
         shutdownExecutor(asyncExecutor);
         shutdownExecutor(downloadExecutor);
+    }
+
+    private static io.cortexj.planner.benchmark.BenchmarkHints loadBenchmarkHints(
+            java.nio.file.Path workingDirectory) {
+        String explicit = System.getProperty(io.cortexj.planner.benchmark.BenchmarkHints.SYSPROP);
+        java.nio.file.Path file = explicit != null && !explicit.trim().isEmpty()
+                ? java.nio.file.Paths.get(explicit.trim())
+                : workingDirectory.resolve(io.cortexj.planner.benchmark.BenchmarkHints.FILE_NAME);
+        if (!java.nio.file.Files.isRegularFile(file)) {
+            return io.cortexj.planner.benchmark.BenchmarkHints.empty();
+        }
+        try {
+            io.cortexj.planner.benchmark.BenchmarkHints hints =
+                    io.cortexj.planner.benchmark.BenchmarkHints.fromFile(file);
+            if (!hints.warnings().isEmpty()) {
+                LOG.warning("cortexj: benchmark hints file " + file
+                        + " has ignored entries: " + hints.warnings());
+            }
+            return hints;
+        } catch (java.io.IOException unreadable) {
+            LOG.warning("cortexj: benchmark hints file " + file
+                    + " could not be read and was NOT applied: " + unreadable);
+            return io.cortexj.planner.benchmark.BenchmarkHints.empty();
+        }
     }
 
     private static java.nio.file.Path enterprisePolicyFile(java.nio.file.Path workingDirectory) {
