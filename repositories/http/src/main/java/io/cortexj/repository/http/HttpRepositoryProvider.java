@@ -29,12 +29,20 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
     private static final int READ_TIMEOUT = 30_000;
     private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
     private static final String METADATA_TTL_PROPERTY = "cortexj.http.metadata.ttlMillis";
+    private static final int HEAD_CACHE_MAX_ENTRIES = 256;
 
     private final RepositoryId id = RepositoryId.of("http");
     // short-TTL HEAD cache (audit H-14): repeated resolve() of the same URL
-    // must not pay a blocking HEAD round-trip every time
-    private final java.util.concurrent.ConcurrentHashMap<String, CachedHead> headCache =
-            new java.util.concurrent.ConcurrentHashMap<String, CachedHead>();
+    // must not pay a blocking HEAD round-trip every time. Bounded with
+    // eviction on access (audit #83): TTL governs freshness, not residency -
+    // stale or surplus entries must not linger for the lifetime of the JVM
+    private final java.util.Map<String, CachedHead> headCache = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<String, CachedHead>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedHead> eldest) {
+                    return size() > HEAD_CACHE_MAX_ENTRIES;
+                }
+            });
 
     private static final class CachedHead {
         final HeadInfo info;
@@ -110,8 +118,12 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         long ttl = metadataTtlMillis();
         if (ttl > 0) {
             CachedHead cached = headCache.get(url);
-            if (cached != null && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
-                return cached.info;
+            if (cached != null) {
+                if (System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
+                    return cached.info;
+                }
+                // audit #83: evict the expired entry instead of leaving it resident
+                headCache.remove(url);
             }
         }
         HeadInfo fresh = head(url);
@@ -160,8 +172,12 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
                     info.revision = "unversioned-" + Integer.toHexString(url.hashCode());
                 }
                 return info;
-            } finally {
+            } catch (IOException probeFailure) {
                 connection.disconnect();
+                throw probeFailure;
+            } catch (RuntimeException probeFailure) {
+                connection.disconnect();
+                throw probeFailure;
             }
         } catch (IOException e) {
             ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,

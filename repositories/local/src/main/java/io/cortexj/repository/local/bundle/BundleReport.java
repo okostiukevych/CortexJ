@@ -9,12 +9,19 @@ public final class BundleReport {
     private final String modelId;
     private final String revision;
     private final int verifiedArtifacts;
+    private final int unverifiedArtifacts;
     private final List<String> issues;
 
     public BundleReport(String modelId, String revision, int verifiedArtifacts, List<String> issues) {
+        this(modelId, revision, verifiedArtifacts, 0, issues);
+    }
+
+    public BundleReport(String modelId, String revision, int verifiedArtifacts,
+                        int unverifiedArtifacts, List<String> issues) {
         this.modelId = modelId;
         this.revision = revision;
         this.verifiedArtifacts = verifiedArtifacts;
+        this.unverifiedArtifacts = unverifiedArtifacts;
         this.issues = Collections.unmodifiableList(new ArrayList<String>(issues));
     }
 
@@ -28,6 +35,10 @@ public final class BundleReport {
 
     public int verifiedArtifacts() {
         return verifiedArtifacts;
+    }
+
+    public int unverifiedArtifacts() {
+        return unverifiedArtifacts;
     }
 
     public List<String> issues() {

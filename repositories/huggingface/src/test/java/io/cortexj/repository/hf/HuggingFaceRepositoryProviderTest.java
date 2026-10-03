@@ -81,6 +81,46 @@ class HuggingFaceRepositoryProviderTest {
     }
 
     @Test
+    void checksumLessArtifactCarriesTrustNote() throws Exception {
+        String json = "{\"id\":\"x/y\",\"sha\":\"abc\",\"gated\":false,\"siblings\":["
+                + "{\"rfilename\":\"model.gguf\",\"size\":1234}]}";
+        ResolvedModel model = provider.parseModelInfo("x/y", mapper.readTree(json));
+        String trustNote = model.descriptor().trustNote();
+        assertTrue(trustNote != null && trustNote.contains("sha256 not verified against the Hugging Face LFS blob"),
+                "a checksum-less artifact must carry a trust note explaining why it is untrusted, got: " + trustNote);
+    }
+
+    @Test
+    void lfsVerifiedGatedModelCarriesNoTrustNote() throws Exception {
+        String json = "{\"id\":\"x/y\",\"sha\":\"abc\",\"gated\":true,\"siblings\":["
+                + "{\"rfilename\":\"model.gguf\",\"size\":1234,"
+                + "\"blob\":{\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"size\":1234}}]}";
+        ResolvedModel model = provider.parseModelInfo("x/y", mapper.readTree(json));
+        assertEquals(null, model.descriptor().trustNote(),
+                "an LFS-verified gated model must not carry a trust note");
+    }
+
+    @Test
+    void lfsVerifiedNonGatedModelNotesCommunityProvenance() throws Exception {
+        String json = "{\"id\":\"x/y\",\"sha\":\"abc\",\"siblings\":["
+                + "{\"rfilename\":\"model.gguf\",\"size\":1234,"
+                + "\"blob\":{\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"size\":1234}}]}";
+        ResolvedModel model = provider.parseModelInfo("x/y", mapper.readTree(json));
+        assertEquals("community upload without verified provenance", model.descriptor().trustNote(),
+                "an LFS-verified but non-gated model must still be marked as unverified provenance");
+    }
+
+    @Test
+    void gatedStringVariantIsTreatedAsGated() throws Exception {
+        String json = "{\"id\":\"x/y\",\"sha\":\"abc\",\"gated\":\"manual\",\"siblings\":["
+                + "{\"rfilename\":\"model.gguf\",\"size\":1234,"
+                + "\"blob\":{\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"size\":1234}}]}";
+        ResolvedModel model = provider.parseModelInfo("x/y", mapper.readTree(json));
+        assertEquals(null, model.descriptor().trustNote(),
+                "gated:'manual' is a provenance signal and must suppress the community note");
+    }
+
+    @Test
     void offlineModeYieldsClearError() {
         ResolutionContext offline = ResolutionContext.create(true, null, null, null);
         ModelResolutionException exception = assertThrows(ModelResolutionException.class,

@@ -37,6 +37,9 @@ public final class ModelBundler {
     public static final String MANIFEST_FILE = "cortexj-model.json";
     private static final int CONNECT_TIMEOUT = 15_000;
     private static final int READ_TIMEOUT = 300_000;
+    // mirrors core DownloadManager's DEFAULT_MAX_ARTIFACT_BYTES (core is not
+    // a dependency of this module)
+    private static final long DEFAULT_MAX_ARTIFACT_BYTES = 100L * 1024L * 1024L * 1024L;
 
     private final List<ModelRepositoryProvider> repositories;
     private final CacheStorage cache;
@@ -81,6 +84,7 @@ public final class ModelBundler {
             String fileName = sanitizeFileName(artifact.artifact().id());
             Path target = outputDirectory.resolve(fileName);
             obtainInto(artifact, resolved, target, context);
+            verifyDeclaredChecksum(artifact, fileName, target);
             String sha256;
             try {
                 sha256 = Checksums.sha256Hex(target);
@@ -93,6 +97,9 @@ public final class ModelBundler {
             entry.put("format", artifact.artifact().format().name());
             entry.put("size", sizeOf(target));
             entry.put("sha256", sha256);
+            // audit #76: only a repository-declared checksum may be recorded
+            // as verified; otherwise the gap must stay visible in the manifest
+            entry.put("integrity", artifact.artifact().checksum() != null ? "sha256-verified" : "unverified");
             String quantization = artifact.artifact().metadata().get("quantization");
             if (quantization != null) {
                 entry.put("quantization", quantization);
@@ -116,13 +123,17 @@ public final class ModelBundler {
         String modelId = null;
         String revision = null;
         int verified = 0;
+        int unverified = 0;
 
         if (!Files.isRegularFile(manifestPath)) {
             issues.add("bundle has no " + MANIFEST_FILE);
-            return new BundleReport(null, null, 0, issues);
+            return new BundleReport(null, null, 0, 0, issues);
         }
         try {
-            JsonNode manifest = mapper.readTree(Files.newInputStream(manifestPath));
+            JsonNode manifest;
+            try (InputStream manifestInput = Files.newInputStream(manifestPath)) {
+                manifest = mapper.readTree(manifestInput);
+            }
             modelId = manifest.path("id").asText(null);
             revision = manifest.path("revision").asText(null);
             if (modelId == null || modelId.isEmpty()) {
@@ -153,12 +164,17 @@ public final class ModelBundler {
                         continue;
                     }
                 }
-                verified++;
+                if ("unverified".equalsIgnoreCase(entry.path("integrity").asText(""))) {
+                    // audit #76: unverified entries are reported honestly, not counted as verified
+                    unverified++;
+                } else {
+                    verified++;
+                }
             }
         } catch (IOException e) {
             issues.add("cannot read bundle manifest: " + e.getMessage());
         }
-        return new BundleReport(modelId, revision, verified, issues);
+        return new BundleReport(modelId, revision, verified, unverified, issues);
     }
 
     private ResolvedModel resolve(ModelReference reference, ResolutionContext context) {
@@ -222,6 +238,17 @@ public final class ModelBundler {
     }
 
     private void downloadInto(ResolvedArtifact artifact, Path target) throws IOException {
+        long declaredSize = artifact.artifact().sizeBytes();
+        if (declaredSize > DEFAULT_MAX_ARTIFACT_BYTES) {
+            ArtifactResolutionException tooLarge = new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                    "Artifact " + artifact.artifact().id() + " declared size " + declaredSize
+                            + " exceeds the configured maximum of " + DEFAULT_MAX_ARTIFACT_BYTES + " bytes.",
+                    "Raise the maximum artifact size or choose a smaller variant.");
+            tooLarge.detail("artifact", artifact.artifact().id());
+            tooLarge.detail("declaredBytes", String.valueOf(declaredSize));
+            throw tooLarge;
+        }
+        long cap = declaredSize > 0 ? declaredSize : DEFAULT_MAX_ARTIFACT_BYTES;
         Path temp = target.resolveSibling(target.getFileName() + ".part-" + Long.toHexString(System.nanoTime()));
         URL url = new URL(artifact.location().toString());
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -242,6 +269,20 @@ public final class ModelBundler {
                     byte[] buffer = new byte[64 * 1024];
                     int read;
                     while ((read = input.read(buffer)) >= 0) {
+                        // audit #59: the byte cap must be enforced inside the
+                        // copy loop - a hostile server must not stream
+                        // unbounded bytes before any check fires
+                        if (copied + read > cap) {
+                            ArtifactResolutionException tooLarge = new ArtifactResolutionException(
+                                    ErrorCode.ARTIFACT_TOO_LARGE,
+                                    "Artifact " + artifact.artifact().id() + " streamed " + (copied + read)
+                                            + " bytes, exceeding the cap of " + cap + " bytes.",
+                                    "Raise the maximum artifact size or choose a smaller variant.");
+                            tooLarge.detail("artifact", artifact.artifact().id());
+                            tooLarge.detail("streamedBytes", String.valueOf(copied + read));
+                            tooLarge.detail("limitBytes", String.valueOf(cap));
+                            throw tooLarge;
+                        }
                         output.write(buffer, 0, read);
                         copied += read;
                     }
@@ -260,8 +301,13 @@ public final class ModelBundler {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
             }
             moved = true;
-        } finally {
+        } catch (IOException downloadFailure) {
             connection.disconnect();
+            throw downloadFailure;
+        } catch (RuntimeException downloadFailure) {
+            connection.disconnect();
+            throw downloadFailure;
+        } finally {
             if (!moved) {
                 // audit M-10: a failed or truncated download must not strand
                 // a model-sized partial next to the bundle
@@ -270,6 +316,35 @@ public final class ModelBundler {
                 } catch (IOException ignored) {
                 }
             }
+        }
+    }
+
+    private void verifyDeclaredChecksum(ResolvedArtifact artifact, String fileName, Path target) {
+        io.cortexj.model.Checksum declared = artifact.artifact().checksum();
+        if (declared == null) {
+            return;
+        }
+        // audit #76: the bytes must match the checksum declared by the
+        // repository BEFORE the manifest records them as verified, or a
+        // tampered download is laundered into a "verified" bundle
+        String actual;
+        try {
+            actual = Checksums.sha256Hex(target);
+        } catch (IOException e) {
+            throw new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                    "Cannot hash bundled artifact " + fileName + ": " + e.getMessage(), e);
+        }
+        if (!declared.value().equals(actual)) {
+            try {
+                Files.deleteIfExists(target);
+            } catch (IOException ignored) {
+            }
+            ArtifactResolutionException mismatch = new ArtifactResolutionException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                    "Bundled artifact " + fileName + " does not match the checksum declared by the repository: "
+                            + "the bundle would have recorded tampered content as verified.",
+                    "Verify the repository source; re-run the bundle from a trusted mirror.");
+            mismatch.detail("artifact", artifact.artifact().id());
+            throw mismatch;
         }
     }
 
@@ -282,6 +357,23 @@ public final class ModelBundler {
                     "Manifest artifact paths must stay inside the bundle directory.");
             failure.detail("path", child);
             throw failure;
+        }
+        try {
+            // audit #73: normalize() does not resolve symlinks - containment
+            // must hold for the real path or a bundle entry can link
+            // outside the root and be hashed/read through the link
+            Path realRoot = normalizedRoot.toRealPath();
+            Path realResolved = resolved.toRealPath();
+            if (!realResolved.startsWith(realRoot)) {
+                ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                        "Bundle artifact path resolves outside the bundle directory through a symlink: " + child,
+                        "Manifest artifact paths must stay inside the bundle directory "
+                                + "and must not symlink outside it.");
+                escaped.detail("path", child);
+                throw escaped;
+            }
+        } catch (IOException e) {
+            // missing artifact entry: fall back to the lexical check above
         }
         return resolved;
     }
