@@ -21,9 +21,10 @@ import io.cortexj.spi.repository.TokenSupplier;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,17 +39,26 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     public static final String HF_TOKEN_ENV = "HF_TOKEN";
     public static final String CORTEXJ_HF_TOKEN_ENV = "CORTEXJ_HF_TOKEN";
 
+    private static final int MAX_REDIRECTS = 5;
+    private static final int METADATA_CACHE_MAX_ENTRIES = 256;
+    private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
+    private static final String METADATA_TTL_PROPERTY = "cortexj.hf.metadata.ttlMillis";
+
     private final RepositoryId id = RepositoryId.of("huggingface");
     private final ObjectMapper mapper = new ObjectMapper();
     private final String apiBase;
     private final TokenSupplier defaultTokenSupplier;
     // short-TTL metadata cache (audit H-14): repeated plan()/load() of the
-    // same reference must not pay a blocking HF API round-trip every time
-    private final java.util.concurrent.ConcurrentHashMap<String, CachedMetadata> metadataCache =
-            new java.util.concurrent.ConcurrentHashMap<String, CachedMetadata>();
-
-    private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
-    private static final String METADATA_TTL_PROPERTY = "cortexj.hf.metadata.ttlMillis";
+    // same reference must not pay a blocking HF API round-trip every time.
+    // Bounded with eviction on access (audit #83): stale or surplus entries
+    // must not linger for the lifetime of the JVM.
+    private final Map<String, CachedMetadata> metadataCache = Collections.synchronizedMap(
+            new LinkedHashMap<String, CachedMetadata>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedMetadata> eldest) {
+                    return size() > METADATA_CACHE_MAX_ENTRIES;
+                }
+            });
 
     private static final class CachedMetadata {
         final JsonNode node;
@@ -151,6 +161,7 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
 
         List<ResolvedArtifact> artifacts = new ArrayList<ResolvedArtifact>();
         JsonNode siblings = response.path("siblings");
+        boolean unverifiedArtifact = false;
         for (Iterator<JsonNode> it = siblings.elements(); it.hasNext(); ) {
             JsonNode sibling = it.next();
             String fileName = sibling.path("rfilename").asText(null);
@@ -187,6 +198,9 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                     }
                 }
             }
+            if (checksum == null) {
+                unverifiedArtifact = true;
+            }
             String quantization = io.cortexj.model.descriptor.DescriptorEnricher.quantizationFromFileName(fileName);
             Map<String, String> metadata = new LinkedHashMap<String, String>();
             if (quantization != null) {
@@ -198,6 +212,20 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             HfArtifact artifact = new HfArtifact(canonicalId + "/" + fileName, format, size, checksum, metadata);
             Map<String, String> headers = new LinkedHashMap<String, String>();
             artifacts.add(new HfResolvedArtifact(artifact, URI.create(downloadUrl), headers));
+        }
+
+        // audit #61: a community upload or an artifact without a verified LFS
+        // sha256 must not silently pass as trusted - TRUSTED_ONLY blocks only
+        // when the descriptor carries a trustNote
+        List<String> trustReasons = new ArrayList<String>();
+        if (unverifiedArtifact) {
+            trustReasons.add("artifact sha256 not verified against the Hugging Face LFS blob");
+        }
+        if (!gatedModel(response)) {
+            trustReasons.add("community upload without verified provenance");
+        }
+        if (!trustReasons.isEmpty()) {
+            builder.trustNote(String.join("; ", trustReasons));
         }
 
         if (revision == null) {
@@ -212,8 +240,12 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
         long ttl = metadataTtlMillis();
         if (ttl > 0) {
             CachedMetadata cached = metadataCache.get(slug);
-            if (cached != null && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
-                return cached.node;
+            if (cached != null) {
+                if (System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
+                    return cached.node;
+                }
+                // audit #83: evict the expired entry instead of leaving it resident
+                metadataCache.remove(slug);
             }
         }
         JsonNode response = fetchModelInfoFromApi(slug, token);
@@ -224,43 +256,152 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     }
 
     private JsonNode fetchModelInfoFromApi(String slug, String token) {
-        HttpURLConnection connection = null;
+        // audit #78: the slug must be URI-encoded or a '#' silently turns
+        // ?blobs=true into a fragment and the LFS sha256s are lost
+        URI location;
         try {
-            URL url = new URL(apiBase + "/api/models/" + slug + "?blobs=true");
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(10_000);
-            connection.setReadTimeout(30_000);
-            connection.setRequestProperty("Accept", "application/json");
-            if (token != null && !token.isEmpty()) {
-                connection.setRequestProperty("Authorization", "Bearer " + token);
-            }
-            int status = connection.getResponseCode();
-            if (status == 404) {
-                ModelResolutionException notFound = new ModelResolutionException(ErrorCode.MODEL_NOT_FOUND,
-                        "Hugging Face model not found: " + slug,
-                        "Check the model id (expected 'owner/name').");
-                notFound.detail("model", slug);
-                throw notFound;
-            }
-            if (status != 200) {
-                ModelResolutionException failed = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
-                        "Hugging Face API returned status " + status + " for " + slug, "Retry later or check network access.");
-                failed.detail("status", String.valueOf(status));
-                throw failed;
-            }
-            try (InputStream input = connection.getInputStream()) {
-                return mapper.readTree(input);
-            }
-        } catch (IOException e) {
+            location = URI.create(apiBase + "/api/models/" + encodeSlug(slug) + "?blobs=true");
+        } catch (IllegalArgumentException e) {
             throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
-                    "Cannot reach Hugging Face for model " + slug + ": " + e.getMessage(),
-                    "Verify network access to huggingface.co.", e);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
+                    "Invalid Hugging Face apiBase or model slug: " + apiBase + "/" + slug,
+                    "Check the apiBase configuration and the model id (expected 'owner/name').", e);
+        }
+        Map<String, String> headers = new LinkedHashMap<String, String>();
+        headers.put("Accept", "application/json");
+        if (token != null && !token.isEmpty()) {
+            headers.put("Authorization", "Bearer " + token);
+        }
+        URI current = location;
+        // audit #78: auto-redirects are disabled and hops are followed manually -
+        // a redirect of the API base must not leak the bearer token cross-origin
+        for (int hop = 0; hop < MAX_REDIRECTS; hop++) {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) current.toURL().openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(10_000);
+                connection.setReadTimeout(30_000);
+                connection.setInstanceFollowRedirects(false);
+                for (Map.Entry<String, String> header : headers.entrySet()) {
+                    connection.setRequestProperty(header.getKey(), header.getValue());
+                }
+                int status = connection.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    String target = connection.getHeaderField("Location");
+                    if (target == null) {
+                        throw new IOException("Redirect without Location header from " + current);
+                    }
+                    URI next = current.resolve(target);
+                    String nextScheme = next.getScheme() == null ? "" : next.getScheme();
+                    if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
+                        ModelResolutionException rejected = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                                "Redirect target uses a non-http(s) scheme: " + next,
+                                "Redirect hops must stay http(s); metadata fetch aborted before "
+                                        + "any credential reached the target.");
+                        rejected.detail("redirectTarget", next.toString());
+                        throw rejected;
+                    }
+                    if (!sameOrigin(current, next)) {
+                        headers = stripCredentials(headers);
+                    }
+                    connection.disconnect();
+                    current = next;
+                    continue;
+                }
+                if (status == 404) {
+                    ModelResolutionException notFound = new ModelResolutionException(ErrorCode.MODEL_NOT_FOUND,
+                            "Hugging Face model not found: " + slug,
+                            "Check the model id (expected 'owner/name').");
+                    notFound.detail("model", slug);
+                    throw notFound;
+                }
+                if (status != 200) {
+                    ModelResolutionException failed = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                            "Hugging Face API returned status " + status + " for " + slug, "Retry later or check network access.");
+                    failed.detail("status", String.valueOf(status));
+                    throw failed;
+                }
+                try (InputStream input = connection.getInputStream()) {
+                    return mapper.readTree(input);
+                }
+            } catch (IOException e) {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+                throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                        "Cannot reach Hugging Face for model " + slug + ": " + e.getMessage(),
+                        "Verify network access to huggingface.co.", e);
+            } catch (RuntimeException e) {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+                throw e;
             }
         }
+        ModelResolutionException tooMany = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                "Too many redirects while fetching Hugging Face metadata for " + slug,
+                "Check the apiBase configuration for redirect loops.");
+        tooMany.detail("redirects", String.valueOf(MAX_REDIRECTS));
+        throw tooMany;
+    }
+
+    static String encodeSlug(String slug) {
+        String[] segments = slug.split("/");
+        StringBuilder encoded = new StringBuilder();
+        for (int i = 0; i < segments.length; i++) {
+            if (i > 0) {
+                encoded.append('/');
+            }
+            try {
+                encoded.append(URLEncoder.encode(segments[i], "UTF-8").replace("+", "%20"));
+            } catch (UnsupportedEncodingException e) {
+                encoded.append(segments[i]);
+            }
+        }
+        return encoded.toString();
+    }
+
+    private static boolean gatedModel(JsonNode response) {
+        JsonNode gated = response.get("gated");
+        if (gated == null || gated.isNull()) {
+            return false;
+        }
+        if (gated.isBoolean()) {
+            return gated.asBoolean();
+        }
+        String text = gated.asText("").trim();
+        return !text.isEmpty() && !"false".equalsIgnoreCase(text);
+    }
+
+    private static boolean sameOrigin(URI a, URI b) {
+        if (a.getScheme() == null || b.getScheme() == null
+                || !a.getScheme().equalsIgnoreCase(b.getScheme())) {
+            return false;
+        }
+        if (a.getHost() == null || b.getHost() == null
+                || !a.getHost().equalsIgnoreCase(b.getHost())) {
+            return false;
+        }
+        return effectivePort(a) == effectivePort(b);
+    }
+
+    private static int effectivePort(URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static Map<String, String> stripCredentials(Map<String, String> headers) {
+        Map<String, String> stripped = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            String name = entry.getKey();
+            if ("Authorization".equalsIgnoreCase(name) || "Cookie".equalsIgnoreCase(name)) {
+                continue;
+            }
+            stripped.put(name, entry.getValue());
+        }
+        return stripped;
     }
 
     private static String token(ResolutionContext context) {

@@ -38,6 +38,18 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
     private final RepositoryId id = RepositoryId.of("local");
     private final ObjectMapper mapper = new ObjectMapper();
     private static final long CHECKSUM_INLINE_LIMIT_BYTES = 256L * 1024L * 1024L;
+    private static final int CHECKSUM_CACHE_MAX_ENTRIES = 64;
+
+    // audit #83: re-hashing up to 256MB inline on every resolve is not free -
+    // memoize the digest keyed by (path, size, lastModified) in a small
+    // access-order map
+    private static final Map<String, String> CHECKSUM_CACHE = Collections.synchronizedMap(
+            new LinkedHashMap<String, String>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > CHECKSUM_CACHE_MAX_ENTRIES;
+                }
+            });
 
     @Override
     public RepositoryId id() {
@@ -98,7 +110,10 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
             throw failure;
         }
         try {
-            JsonNode manifest = mapper.readTree(Files.newInputStream(manifestPath));
+            JsonNode manifest;
+            try (java.io.InputStream manifestInput = Files.newInputStream(manifestPath)) {
+                manifest = mapper.readTree(manifestInput);
+            }
             java.nio.file.Path directoryName = directory.getFileName();
             String canonicalId = manifest.path("id")
                     .asText(directoryName == null ? "local" : directoryName.toString());
@@ -133,7 +148,7 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
                 long size = Files.isRegularFile(artifactPath) ? sizeOf(artifactPath) : artifactNode.path("size").asLong(0L);
                 String sha256 = artifactNode.path("sha256").asText(null);
                 if (sha256 == null && Files.isRegularFile(artifactPath) && size < CHECKSUM_INLINE_LIMIT_BYTES) {
-                    sha256 = sha256Hex(artifactPath);
+                    sha256 = cachedSha256Hex(artifactPath);
                 }
                 Map<String, String> metadata = new LinkedHashMap<String, String>();
                 if (artifactNode.has("quantization")) {
@@ -156,7 +171,7 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
         String fileNameString = fileName == null ? "model" : fileName.toString();
         ArtifactFormat format = ArtifactFormat.fromFileName(fileNameString);
         long size = sizeOf(file);
-        String sha256 = size < CHECKSUM_INLINE_LIMIT_BYTES ? sha256Hex(file) : null;
+        String sha256 = size < CHECKSUM_INLINE_LIMIT_BYTES ? cachedSha256Hex(file) : null;
         String canonicalId = fileNameString;
         String revision = "local-" + size + "-" + (sha256 == null ? Long.toHexString(file.toAbsolutePath().hashCode()) : sha256.substring(0, 12));
 
@@ -202,7 +217,49 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
             failure.detail("path", child);
             throw failure;
         }
+        try {
+            // audit #73: normalize() does not resolve symlinks - containment
+            // must hold for the real path or a manifest entry can link
+            // outside the root and be read through the link
+            Path realRoot = normalizedRoot.toRealPath();
+            Path realResolved = resolved.toRealPath();
+            if (!realResolved.startsWith(realRoot)) {
+                ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                        "Artifact path resolves outside the model directory through a symlink: " + child,
+                        "Manifest artifact paths must stay inside the model directory "
+                                + "and must not symlink outside it.");
+                escaped.detail("path", child);
+                throw escaped;
+            }
+        } catch (IOException e) {
+            // missing artifact entry: fall back to the lexical check above
+        }
         return resolved;
+    }
+
+    private static String cacheKey(Path path) {
+        try {
+            return path.toAbsolutePath() + "|" + Files.size(path) + "|"
+                    + Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static String cachedSha256Hex(Path path) {
+        String key = cacheKey(path);
+        if (key == null) {
+            return sha256Hex(path);
+        }
+        String cached = CHECKSUM_CACHE.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        String computed = sha256Hex(path);
+        if (computed != null) {
+            CHECKSUM_CACHE.put(key, computed);
+        }
+        return computed;
     }
 
     private static long sizeOf(Path path) {
