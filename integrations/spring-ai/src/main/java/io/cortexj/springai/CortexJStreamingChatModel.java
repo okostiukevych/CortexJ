@@ -71,7 +71,7 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
                     stream.close();
                 }
             }));
-        }, FluxSink.OverflowStrategy.BUFFER);
+        }, FluxSink.OverflowStrategy.LATEST);
     }
 
     @Override
