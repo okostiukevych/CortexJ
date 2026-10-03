@@ -325,4 +325,61 @@ class LlamaServerModelAsyncTest {
             model.close();
         }
     }
+
+    @Test
+    void streamSubmissionRejectionIsTypedErrorNotSilentQueueing() throws Exception {
+        java.util.concurrent.ThreadPoolExecutor saturated = new java.util.concurrent.ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(1),
+                Executors.defaultThreadFactory(),
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+        final CountDownLatch blocker = new CountDownLatch(1);
+        saturated.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    blocker.await(15, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        saturated.execute(new Runnable() {
+            @Override
+            public void run() {
+            }
+        });
+        RuntimeModel model = loadModel(saturated);
+        try {
+            io.cortexj.inference.TextGenerationCapability generator =
+                    (io.cortexj.inference.TextGenerationCapability) model;
+            final AtomicReference<io.cortexj.error.CortexJException> failure =
+                    new AtomicReference<io.cortexj.error.CortexJException>();
+            final CountDownLatch rejected = new CountDownLatch(1);
+            generator.stream(io.cortexj.inference.GenerationRequest.prompt("hi"))
+                    .subscribe(new io.cortexj.stream.TokenConsumer() {
+                        @Override
+                        public void onToken(io.cortexj.stream.Token token) {
+                        }
+
+                        @Override
+                        public void onComplete(io.cortexj.stream.StreamCompletion completion) {
+                        }
+
+                        @Override
+                        public void onError(io.cortexj.error.CortexJException error) {
+                            failure.set(error);
+                            rejected.countDown();
+                        }
+                    });
+            assertTrue(rejected.await(5, TimeUnit.SECONDS),
+                    "a saturated IO pool must reject loudly via onError, not queue silently");
+            assertTrue(failure.get().getMessage().contains("queue is saturated"),
+                    "rejection must explain the saturation, got: " + failure.get().getMessage());
+        } finally {
+            blocker.countDown();
+            saturated.shutdownNow();
+            model.close();
+        }
+    }
 }

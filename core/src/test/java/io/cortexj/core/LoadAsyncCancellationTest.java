@@ -377,4 +377,54 @@ class LoadAsyncCancellationTest {
             platform.close();
         }
     }
+
+    @Test
+    void downloadPoolSaturationIsLoudTypedRejection() throws Exception {
+        String oldWidth = System.getProperty("cortexj.download.width");
+        String oldQueue = System.getProperty("cortexj.download.queue");
+        System.setProperty("cortexj.download.width", "1");
+        System.setProperty("cortexj.download.queue", "1");
+        GatedRuntimeLoadProvider provider = new GatedRuntimeLoadProvider("gated-saturate-runtime", false);
+        DefaultCortexJ platform = null;
+        try {
+            platform = (DefaultCortexJ) CortexJ.builder()
+                    .runtimeProvider(provider)
+                    .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                    .workingDirectory(tempDir.resolve("saturate-work"))
+                    .build();
+            Future<ModelHandle> running = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            assertTrue(provider.loadEntered.await(10, TimeUnit.SECONDS),
+                    "the first load must occupy the single download thread");
+            Future<ModelHandle> queued = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            Future<ModelHandle> rejected = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            try {
+                rejected.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("a saturated download pool must not accept the third load");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                assertTrue(expected.getCause() instanceof ModelLoadException,
+                        "rejection must surface as a typed ModelLoadException, got: " + expected.getCause());
+                assertTrue(expected.getCause().getMessage().contains("too many concurrent downloads"),
+                        "rejection must explain the saturation, got: " + expected.getCause().getMessage());
+            }
+            assertTrue(!queued.isCancelled(), "the queued load must survive saturation");
+            provider.releaseLoad.countDown();
+            running.get(10, TimeUnit.SECONDS);
+            queued.get(10, TimeUnit.SECONDS);
+        } finally {
+            if (platform != null) {
+                provider.releaseLoad.countDown();
+                platform.close();
+            }
+            if (oldWidth == null) {
+                System.clearProperty("cortexj.download.width");
+            } else {
+                System.setProperty("cortexj.download.width", oldWidth);
+            }
+            if (oldQueue == null) {
+                System.clearProperty("cortexj.download.queue");
+            } else {
+                System.setProperty("cortexj.download.queue", oldQueue);
+            }
+        }
+    }
 }
