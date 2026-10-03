@@ -1,6 +1,7 @@
 package io.cortexj.server.test;
 
 import io.cortexj.CortexJ;
+import io.cortexj.error.CortexJException;
 import io.cortexj.model.ModelDescriptor;
 import io.cortexj.model.ModelHandle;
 import io.cortexj.model.ModelReference;
@@ -17,6 +18,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class CortexJServerBindAuthTest {
 
@@ -172,6 +174,7 @@ class CortexJServerBindAuthTest {
             connection.setDoOutput(true);
             connection.setConnectTimeout(5_000);
             connection.setReadTimeout(5_000);
+            connection.setRequestProperty("Content-Type", "application/json");
             if (authHeader != null) {
                 connection.setRequestProperty("Authorization", authHeader);
             }
@@ -220,13 +223,34 @@ class CortexJServerBindAuthTest {
             CortexJServer server = new CortexJServer(new EchoPlatform(), "server/test-model");
             try {
                 server.start(0);
-                assertTrue(!server.boundAddress().isLoopbackAddress(),
-                        "explicit opt-in must allow non-loopback binding");
+                fail("a non-loopback bind without auth must be refused with a typed error");
+            } catch (CortexJException refused) {
+                assertEquals("CORTEXJ-SERVER-4020", refused.code(),
+                        "the refusal must be a typed configuration error");
             } finally {
                 server.stop();
             }
         } finally {
             System.clearProperty("cortexj.server.bind");
+        }
+    }
+
+    @Test
+    void insecureBindAcknowledgementAllowsNonLoopbackStart() throws Exception {
+        System.setProperty("cortexj.server.bind", "0.0.0.0");
+        System.setProperty("cortexj.server.insecureBind", "true");
+        try {
+            CortexJServer server = new CortexJServer(new EchoPlatform(), "server/test-model");
+            try {
+                server.start(0);
+                assertTrue(!server.boundAddress().isLoopbackAddress(),
+                        "an explicit insecure acknowledgement must allow non-loopback binding");
+            } finally {
+                server.stop();
+            }
+        } finally {
+            System.clearProperty("cortexj.server.bind");
+            System.clearProperty("cortexj.server.insecureBind");
         }
     }
 

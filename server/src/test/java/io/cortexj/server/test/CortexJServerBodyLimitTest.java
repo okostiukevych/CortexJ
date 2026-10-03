@@ -23,6 +23,7 @@ class CortexJServerBodyLimitTest {
             if (chunked) {
                 connection.setChunkedStreamingMode(1024);
             }
+            connection.setRequestProperty("Content-Type", "application/json");
             OutputStream output = connection.getOutputStream();
             output.write(body.getBytes(StandardCharsets.UTF_8));
             output.close();
