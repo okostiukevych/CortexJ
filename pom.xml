@@ -48,6 +48,8 @@
     <module>runtimes/onnx</module>
     <module>runtimes/llamacpp</module>
     <module>runtimes/djl</module>
+    <module>runtimes/isolated</module>
+    <module>worker</module>
     <module>converters/gguf</module>
     <module>converters/safetensors</module>
     <module>server</module>
