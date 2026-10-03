@@ -26,6 +26,9 @@ import java.util.concurrent.TimeUnit;
 
 public final class DefaultCortexJ implements CortexJ {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(DefaultCortexJ.class.getName());
+
     private final Configuration resolvedConfiguration;
     private final ResolutionContext resolutionContext;
     private final EnvironmentSnapshot snapshot;
@@ -135,12 +138,23 @@ public final class DefaultCortexJ implements CortexJ {
                 }
             };
 
+            java.util.List<io.cortexj.spi.policy.ExecutionPolicy> policies =
+                    new java.util.ArrayList<io.cortexj.spi.policy.ExecutionPolicy>(
+                            configuration.executionPolicies());
+            io.cortexj.planner.policy.EnterpriseRuntimePolicy enterprisePolicy =
+                    loadEnterprisePolicy(resolved.workingDirectory);
+            if (enterprisePolicy != null) {
+                policies.add(enterprisePolicy);
+                LOG.info("cortexj: enterprise runtime policy applied from "
+                        + enterprisePolicyFile(resolved.workingDirectory));
+            }
+
             this.planner = new io.cortexj.planner.internal.DefaultExecutionPlanner(
                     new io.cortexj.planner.internal.PlannerInputs(
                             runtimeProviders,
                             repositoryProviders,
                             converters,
-                            configuration.executionPolicies(),
+                            policies,
                             new io.cortexj.model.artifact.ArtifactInspectorRegistry(),
                             snapshot.environment,
                             snapshot.hardware,
@@ -305,6 +319,36 @@ public final class DefaultCortexJ implements CortexJ {
         shutdownExecutor(ownsExecutor ? ioExecutor : null);
         shutdownExecutor(asyncExecutor);
         shutdownExecutor(downloadExecutor);
+    }
+
+    private static java.nio.file.Path enterprisePolicyFile(java.nio.file.Path workingDirectory) {
+        String explicit = System.getProperty(io.cortexj.planner.policy.EnterpriseRuntimePolicy.SYSPROP);
+        if (explicit != null && !explicit.trim().isEmpty()) {
+            return java.nio.file.Paths.get(explicit.trim());
+        }
+        return workingDirectory.resolve(io.cortexj.planner.policy.EnterpriseRuntimePolicy.FILE_NAME);
+    }
+
+    private static io.cortexj.planner.policy.EnterpriseRuntimePolicy loadEnterprisePolicy(
+            java.nio.file.Path workingDirectory) {
+        java.nio.file.Path file = enterprisePolicyFile(workingDirectory);
+        if (!java.nio.file.Files.isRegularFile(file)) {
+            return null;
+        }
+        try {
+            io.cortexj.planner.policy.EnterpriseRuntimePolicy policy =
+                    io.cortexj.planner.policy.EnterpriseRuntimePolicy.fromFile(file);
+            if (!policy.isRestrictive()) {
+                LOG.warning("cortexj: enterprise runtime policy file " + file
+                        + " is present but declares no restrictions; ignoring it");
+                return null;
+            }
+            return policy;
+        } catch (java.io.IOException unreadable) {
+            LOG.warning("cortexj: enterprise runtime policy file " + file
+                    + " could not be read and was NOT applied: " + unreadable);
+            return null;
+        }
     }
 
     private static int positiveIntProperty(String key, int fallback) {

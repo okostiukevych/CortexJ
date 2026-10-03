@@ -51,3 +51,44 @@ always does; Hugging Face marks community models).
 - Native libraries are probed, not assumed: probe failures are honest and actionable.
 - llama.cpp is optional; the recommended path (`llama-server` + `openai-remote`)
   isolates native code outside the JVM entirely.
+
+## Enterprise runtime policy (§128)
+
+An organization can enforce a centrally supplied runtime policy without writing code:
+drop `enterprise-policy.properties` into the platform working directory
+(`<CORTEXJ_HOME>`, by default `~/.cortexj`) — or point
+`-Dcortexj.enterprise.policy=<path>` at a file elsewhere. Every plan then applies
+the policy; rejected candidates appear in the plan explanation with a clear reason.
+
+Supported keys (all optional; absent = unrestricted):
+
+```properties
+# comma-separated runtime ids that must never be used
+forbiddenRuntimes=llamacpp,djl
+
+# false = cache/local-only operation: candidates requiring a download are rejected
+allowDownloads=false
+
+# comma-separated license whitelist; artifacts without an approved license are rejected
+approvedLicenses=apache-2.0,mit
+
+# true = artifacts without a declared checksum cannot be planned
+requireVerifiedArtifacts=true
+
+# false = non-CPU (GPU/NPU) device candidates are rejected
+allowGpu=false
+
+# false = remote runtimes are rejected (default remote set: openai-remote)
+allowRemote=false
+remoteRuntimes=vendor-cloud,openai-remote
+```
+
+Behavior notes:
+
+- The file is applied automatically at platform construction; the effective policy
+  file path is logged at INFO.
+- An unreadable file is NOT applied and logs a WARNING (fail-open by design: an ops
+  typo must not silently disable the platform) — check the logs after rollout.
+- A file that declares no restrictions is ignored with a WARNING (no silent no-ops).
+- The policy composes with user-supplied `ExecutionPolicy` instances from the
+  builder; all of them must allow a candidate.
