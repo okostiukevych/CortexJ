@@ -246,12 +246,13 @@ Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 - `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
   and the exact remediation: *replace with cortexj-starter-java8*.
 
-318 automated tests across ~80 test classes: planner synthetic matrices (determinism, hard
-constraints, JVM/quality/offline policies), provider TCK (lifecycle, streaming, cancellation,
-registration contracts), concurrency/race regression suite (double-close, cold-load races,
-close-during-stream, cancellation - tagged `concurrency`), download integrity + retry matrix,
-cache safety + amortized eviction, resource-leak assertions (process exit, executor termination,
-temp cleanup, handle closure), and end-to-end load→plan→execute→close cycles.
+~457 automated tests across ~126 test classes: planner synthetic matrices (determinism, hard
+constraints, JVM/quality/offline policies, benchmark hints, enterprise policy rules), provider
+TCK (lifecycle, streaming, cancellation, registration contracts), concurrency/race regression
+suite (double-close, cold-load races, close-during-stream, cancellation - tagged `concurrency`),
+download integrity + retry matrix, cache safety + amortized eviction, resource-leak assertions
+(process exit, executor termination, temp cleanup, handle closure), isolated-worker child-JVM
+round-trips (crash, streaming, leaks), and end-to-end load→plan→execute→close cycles.
 
 ## Configuration priority
 
