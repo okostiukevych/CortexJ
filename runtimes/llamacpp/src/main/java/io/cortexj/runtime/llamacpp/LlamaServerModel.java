@@ -342,8 +342,12 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 throw new IOException("HTTP " + status + " from llama-server");
             }
             return readAll(connection.getInputStream());
-        } finally {
+        } catch (IOException requestFailure) {
             connection.disconnect();
+            throw requestFailure;
+        } catch (RuntimeException requestFailure) {
+            connection.disconnect();
+            throw requestFailure;
         }
     }
 

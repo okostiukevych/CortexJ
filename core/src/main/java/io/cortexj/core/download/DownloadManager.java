@@ -317,6 +317,7 @@ public final class DownloadManager {
                         artifact.artifact().checksum(), content);
             }
         } catch (java.io.IOException downloadFailure) {
+            connection.disconnect();
             if (downloadFailure instanceof DownloadStatusException
                     && ((DownloadStatusException) downloadFailure).deletePartial) {
                 try {
@@ -328,14 +329,13 @@ public final class DownloadManager {
             // keep the partial file for the next resume attempt
             throw downloadFailure;
         } catch (RuntimeException downloadFailure) {
+            connection.disconnect();
             try {
                 java.nio.file.Files.deleteIfExists(resumeFile);
             } catch (IOException ignored) {
                 // best effort cleanup
             }
             throw downloadFailure;
-        } finally {
-            connection.disconnect();
         }
     }
 

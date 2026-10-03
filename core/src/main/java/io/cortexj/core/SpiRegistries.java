@@ -50,8 +50,8 @@ public final class SpiRegistries {
                     found.add(candidate);
                 }
             } catch (Throwable entryFailure) {
-                LOG.fine("skipping unloadable " + type.getSimpleName()
-                        + " entry: " + entryFailure.getMessage());
+                LOG.warning("skipping unloadable " + type.getSimpleName()
+                        + " entry: " + entryFailure);
             }
         }
         return found;
