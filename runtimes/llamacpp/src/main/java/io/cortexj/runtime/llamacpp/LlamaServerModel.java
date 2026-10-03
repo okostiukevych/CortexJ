@@ -150,12 +150,20 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 throw new IllegalStateException("Token stream supports a single subscription");
             }
             liveStreams.add(LlamaServerTokenStream.this);
-            ioExecutor.execute(new Runnable() {
-                @Override
-                public void run() {
-                    runSse(consumer);
-                }
-            });
+            try {
+                ioExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        runSse(consumer);
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                liveStreams.remove(LlamaServerTokenStream.this);
+                consumer.onError(new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                        "Stream rejected: the IO executor queue is saturated ("
+                                + saturated.getMessage() + ").",
+                        "Retry when in-flight streams drain or reduce concurrent streams."));
+            }
             return new StreamSubscription() {
                 private final AtomicBoolean subscriptionCancelled = new AtomicBoolean(false);
 
