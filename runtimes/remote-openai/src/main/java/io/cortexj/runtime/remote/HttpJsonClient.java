@@ -112,8 +112,12 @@ final class HttpJsonClient {
                     ? connection.getInputStream()
                     : connection.getErrorStream();
             return new Response(status, readAll(stream));
-        } finally {
+        } catch (IOException requestFailure) {
             connection.disconnect();
+            throw requestFailure;
+        } catch (RuntimeException requestFailure) {
+            connection.disconnect();
+            throw requestFailure;
         }
     }
 
