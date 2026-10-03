@@ -123,6 +123,8 @@ Layering rules (enforced by module boundaries):
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
 | `cortexj-runtime-llamacpp` | llama.cpp provider: probe, **managed llama-server process bridge** (blocking + SSE execution), honest diagnostics |
 | `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
+| `cortexj-runtime-isolated` | Isolated native worker mode (spec 127): child-JVM runtime host for crash isolation, opt-in per runtime |
+| `cortexj-worker` | Worker host main: NDJSON stdio protocol bridging a RuntimeProvider inside a child JVM |
 | `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/histograms/spans |
 | `cortexj-streaming-flow` | Java `Flow.Publisher` streaming adapter (Java 11+) |
 | `cortexj-convert-gguf` | Deterministic GGUF F32↔F16 converter (Level C, provenance manifests) |
@@ -170,6 +172,12 @@ Layering rules (enforced by module boundaries):
   through Level C planning); multimodal/task planning (§47): a runtime must support at
   least one task the model offers; spec 78-84 examples are compilable
   (`cortexj-examples`); declarative API ships (`cortexj-declarative`)
+- **M10** — future track pulled forward: **enterprise runtime policy** (§128,
+  `enterprise-policy.properties` auto-applied: forbid runtimes/downloads/licenses/
+  unverified artifacts/GPU/remote execution), **benchmark-aware planner hints** (§126,
+  `benchmarks.properties` — deterministic bounded scoring, no learning), **isolated
+  native worker** (§127, `cortexj-runtime-isolated` + `cortexj-worker`: child-JVM
+  runtime host with crash isolation, public API unchanged)
 
 Full spec-conformance passes additionally delivered: cache eviction policies
 (pinned/age-cap/manual + `cache list/clean` CLI), trust policies (TRUSTED_ONLY /
@@ -182,8 +190,11 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **~80 test classes / 318 tests green on JDK 25** (12 gated
-skips are loud assumeTrue, never silent); GitHub Actions CI matrix runs
+Current test matrix: **~126 test classes / ~457 tests green on JDK 25** (13 gated
+skips are loud assumeTrue, never silent); the full 2026-10-01 audit pass (31 issues
+resolved: concurrency refcount races, carrier pinning, executor bounds, download
+caps/retry/resume validation, parser hardening, server hardening, pinned in-use
+artifacts) is regression-tested. GitHub Actions CI matrix runs
 JDK 8/11/17/21/25 on ubuntu/macos/windows, JPMS lanes (`mvn -Pjpms`),
 SpotBugs + CodeQL + JaCoCo coverage lanes (issue #53), and gated self-hosted
 GPU lanes (CUDA/Metal per spec 70).
@@ -196,12 +207,15 @@ and orphan-free teardown on Ctrl+C/close/failure) when
 `jar --describe-module`); §60 server mode ships as `cortexj-server` +
 `cortexj server` CLI; §93/94 ship as `cortexj-maven-plugin` (`cortexj:verify`).
 
-Everything required by the spec's v1.0 scope (§105) and DoD (§107/108) is implemented.
-Remaining items are only what the spec itself marks as impossible, optional, or future:
-JInfer (artifact absent from Maven Central — §107.5 requires MVP to work without it),
-GPU CI lanes (require self-hosted CUDA/Metal runners — prepared and gated), server
-multimodal endpoints (§60 "future"), and the `cortexj-declarative` evolution beyond
-prompt+validation (§48/§49). Before a public 1.0 release: Maven Central publishing,
+Everything required by the spec's v1.0 scope (§105) and DoD (§107/108) is implemented,
+and the three locally-tractable future items are pulled forward (M10): enterprise
+runtime policy (§128), benchmark-aware planner hints (§126), isolated native worker
+mode (§127). Remaining items are only what the spec itself marks as impossible,
+optional, or future: JInfer (artifact absent from Maven Central — §107.5 requires
+MVP to work without it), GPU CI lanes (require self-hosted CUDA/Metal runners —
+prepared and gated), server multimodal endpoints (§60 "future"), and the
+`cortexj-declarative` evolution beyond prompt+validation (§48/§49).
+Before a public 1.0 release: Maven Central publishing,
 the API stability freeze process (§73/74 — tiers documented, `compat` profile ready),
 and a signed-off production security review cycle on top of the recorded one.
 
