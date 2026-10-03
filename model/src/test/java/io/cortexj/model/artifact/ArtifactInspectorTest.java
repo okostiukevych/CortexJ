@@ -15,8 +15,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ArtifactInspectorTest {
@@ -147,5 +150,127 @@ class ArtifactInspectorTest {
         assertNotNull(inspection);
         assertEquals("llama", inspection.architecture());
         Files.deleteIfExists(temp);
+    }
+
+    private static byte[] ggufWithNestedArray() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        writeInt(bytes, GGUF_MAGIC);
+        writeInt(bytes, 3);
+        writeLong(bytes, 0L);
+        writeLong(bytes, 1L);
+        writeString(bytes, "test.array");
+        writeInt(bytes, 10);
+        writeInt(bytes, 10);
+        writeLong(bytes, 2L);
+        writeLong(bytes, 2L);
+        return bytes.toByteArray();
+    }
+
+    private static byte[] ggufWithStringLength(long length) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        writeInt(bytes, GGUF_MAGIC);
+        writeInt(bytes, 3);
+        writeLong(bytes, 0L);
+        writeLong(bytes, 1L);
+        writeString(bytes, "test.string");
+        writeInt(bytes, 8);
+        writeLong(bytes, length);
+        return bytes.toByteArray();
+    }
+
+    private static byte[] ggufWithArrayLength(long length) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        writeInt(bytes, GGUF_MAGIC);
+        writeInt(bytes, 3);
+        writeLong(bytes, 0L);
+        writeLong(bytes, 1L);
+        writeString(bytes, "test.array");
+        writeInt(bytes, 10);
+        writeInt(bytes, 5);
+        writeLong(bytes, length);
+        return bytes.toByteArray();
+    }
+
+    @Test
+    void ggufInspectorRejectsNestedArrays() throws IOException {
+        GgufArtifactInspector inspector = new GgufArtifactInspector();
+        MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
+                () -> inspector.inspectStream(new ByteArrayInputStream(ggufWithNestedArray())));
+        assertTrue(e.getMessage().contains("scalar elements"));
+    }
+
+    @Test
+    void ggufInspectorRejectsHugeStrings() throws IOException {
+        GgufArtifactInspector inspector = new GgufArtifactInspector();
+        MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
+                () -> inspector.inspectStream(new ByteArrayInputStream(ggufWithStringLength(2L * 1024L * 1024L))));
+        assertTrue(e.getMessage().contains("string length"));
+    }
+
+    @Test
+    void ggufInspectorRejectsHugeArrayLength() throws IOException {
+        GgufArtifactInspector inspector = new GgufArtifactInspector();
+        MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
+                () -> inspector.inspectStream(
+                        new ByteArrayInputStream(ggufWithArrayLength(1024L * 1024L + 1L))));
+        assertTrue(e.getMessage().contains("array length"));
+    }
+
+    @Test
+    void ggufInspectorDepthCounterRejectsExcessiveNesting() throws IOException {
+        GgufArtifactInspector.GgufReader reader =
+                new GgufArtifactInspector.GgufReader(new ByteArrayInputStream(new byte[64]));
+        MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
+                () -> reader.readValue(10, 8));
+        assertTrue(e.getMessage().contains("nested deeper"));
+    }
+
+    @Test
+    void safetensorsInspectorRejectsHeaderLargerThanFile() throws IOException {
+        Path temp = Files.createTempFile("huge-header", ".safetensors");
+        try {
+            byte[] prefix = new byte[8];
+            ByteBuffer.wrap(prefix).order(ByteOrder.LITTLE_ENDIAN).putLong(10L * 1024L * 1024L);
+            Files.write(temp, prefix);
+            SafetensorsInspector inspector = new SafetensorsInspector();
+            MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
+                    () -> inspector.inspect(temp));
+            assertTrue(e.getMessage().contains("file size"));
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    @Test
+    void registryMemoizesInspectionUntilArtifactChanges() throws IOException {
+        Path temp = Files.createTempFile("memo-model", ".gguf");
+        try {
+            byte[] original = ggufBytes();
+            Files.write(temp, original);
+            Files.setLastModifiedTime(temp, java.nio.file.attribute.FileTime.fromMillis(1000L));
+            ArtifactInspectorRegistry registry = new ArtifactInspectorRegistry();
+            ArtifactInspection first = registry.inspectOrNull(ArtifactFormat.GGUF, temp);
+            ArtifactInspection second = registry.inspectOrNull(ArtifactFormat.GGUF, temp);
+            assertNotNull(first);
+            assertSame(first, second);
+
+            byte[] bigger = new byte[original.length + 1];
+            System.arraycopy(original, 0, bigger, 0, original.length);
+            Files.write(temp, bigger);
+            Files.setLastModifiedTime(temp, java.nio.file.attribute.FileTime.fromMillis(2000L));
+            ArtifactInspection third = registry.inspectOrNull(ArtifactFormat.GGUF, temp);
+            assertNotNull(third);
+            assertNotSame(first, third);
+            assertEquals(first.architecture(), third.architecture());
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    @Test
+    void registryReturnsNullForMissingArtifact() throws IOException {
+        ArtifactInspectorRegistry registry = new ArtifactInspectorRegistry();
+        Path missing = Files.createTempDirectory("registry-missing").resolve("nope.gguf");
+        assertNull(registry.inspectOrNull(ArtifactFormat.GGUF, missing));
     }
 }

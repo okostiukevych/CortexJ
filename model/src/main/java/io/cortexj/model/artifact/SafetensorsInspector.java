@@ -6,6 +6,7 @@ import io.cortexj.model.ArtifactFormat;
 import io.cortexj.spi.artifact.ArtifactInspection;
 import io.cortexj.spi.artifact.ArtifactInspector;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -16,7 +17,7 @@ import java.util.Iterator;
 
 public final class SafetensorsInspector implements ArtifactInspector {
 
-    private static final int HEADER_LIMIT_BYTES = 100 * 1024 * 1024;
+    private static final int HEADER_LIMIT_BYTES = 64 * 1024 * 1024;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -27,19 +28,33 @@ public final class SafetensorsInspector implements ArtifactInspector {
 
     @Override
     public ArtifactInspection inspect(Path artifact) {
-        try (InputStream input = Files.newInputStream(artifact)) {
-            return inspectStream(input);
+        long fileSize;
+        try {
+            fileSize = Files.size(artifact);
         } catch (IOException e) {
-            throw new IllegalArgumentException("Cannot read safetensors artifact " + artifact + ": " + e.getMessage(), e);
+            throw new MalformedArtifactException("Cannot read safetensors artifact " + artifact + ": " + e.getMessage(), e);
+        }
+        try (InputStream input = new BufferedInputStream(Files.newInputStream(artifact), 64 * 1024)) {
+            return inspectStream(input, fileSize);
+        } catch (IOException e) {
+            throw new MalformedArtifactException("Cannot read safetensors artifact " + artifact + ": " + e.getMessage(), e);
         }
     }
 
     public ArtifactInspection inspectStream(InputStream input) throws IOException {
+        return inspectStream(input, Long.MAX_VALUE);
+    }
+
+    private ArtifactInspection inspectStream(InputStream input, long availableBytes) throws IOException {
         byte[] lengthBytes = new byte[8];
         readFully(input, lengthBytes);
         long headerLength = ByteBuffer.wrap(lengthBytes).order(ByteOrder.LITTLE_ENDIAN).getLong();
         if (headerLength <= 0 || headerLength > HEADER_LIMIT_BYTES) {
-            throw new IllegalArgumentException("Not a safetensors file: unreasonable header length " + headerLength);
+            throw new MalformedArtifactException("Not a safetensors file: unreasonable header length " + headerLength);
+        }
+        if (availableBytes != Long.MAX_VALUE && headerLength > availableBytes - 8L) {
+            throw new MalformedArtifactException("Not a safetensors file: declared header length " + headerLength
+                    + " exceeds file size " + availableBytes);
         }
         byte[] headerBytes = new byte[(int) headerLength];
         readFully(input, headerBytes);
