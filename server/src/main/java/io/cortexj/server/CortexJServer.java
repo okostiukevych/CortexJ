@@ -1,5 +1,6 @@
 package io.cortexj.server;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -18,11 +19,19 @@ import io.cortexj.model.ModelReference;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Optional embedded server mode (spec 60): exposes an OpenAI-compatible local
@@ -30,23 +39,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class CortexJServer {
 
-    private static final long DEFAULT_STREAM_AWAIT_MILLIS = 120_000L;
+    private static final long DEFAULT_STREAM_AWAIT_MILLIS = 1_800_000L;
     private static final long DEFAULT_MAX_BODY_BYTES = 8L * 1024L * 1024L;
+    private static final int SATURATION_HEADROOM_THREADS = 4;
+    private static final int MIN_QUEUED_REQUESTS = 64;
+    private static final String GENERIC_ERROR_MESSAGE = "internal error, see server logs";
 
     private final CortexJ platform;
     private final ModelHandle model;
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final long streamAwaitMillis;
+    private final long maxBodyBytes;
     private final String authToken;
     private static final java.util.logging.Logger LOG =
             java.util.logging.Logger.getLogger(CortexJServer.class.getName());
 
     private volatile com.sun.net.httpserver.HttpServer httpServer;
-    private java.util.concurrent.ExecutorService requestExecutor;
+    private ThreadPoolExecutor requestExecutor;
+    private Semaphore admission;
 
     public CortexJServer(CortexJ platform, String modelReference) {
-        this(platform, modelReference, DEFAULT_STREAM_AWAIT_MILLIS);
+        this(platform, modelReference, 0L);
     }
 
     public CortexJServer(CortexJ platform, String modelReference, long streamAwaitMillis) {
@@ -54,6 +68,11 @@ public final class CortexJServer {
     }
 
     /**
+     * @param streamAwaitMillis explicit ceiling for holding an SSE exchange open;
+     *                          when {@code <= 0} the system property
+     *                          {@code cortexj.server.streamAwaitMillis} applies, then the
+     *                          30-minute default. On timeout the upstream generation is
+     *                          cancelled and an SSE error frame is emitted before close.
      * @param authToken optional bearer token enforced on every /v1/* route;
      *                  when {@code null} no auth is required (loopback-only
      *                  bind remains the network guard)
@@ -62,8 +81,31 @@ public final class CortexJServer {
                          String authToken) {
         this.platform = platform;
         this.model = platform.models().load(ModelReference.of(modelReference));
-        this.streamAwaitMillis = streamAwaitMillis > 0 ? streamAwaitMillis : DEFAULT_STREAM_AWAIT_MILLIS;
+        this.streamAwaitMillis = resolveStreamAwaitMillis(streamAwaitMillis);
+        this.maxBodyBytes = positiveLongProperty("cortexj.server.maxBodyBytes", DEFAULT_MAX_BODY_BYTES);
         this.authToken = authToken == null || authToken.trim().isEmpty() ? null : authToken.trim();
+    }
+
+    private static long resolveStreamAwaitMillis(long explicit) {
+        if (explicit > 0) {
+            return explicit;
+        }
+        return positiveLongProperty("cortexj.server.streamAwaitMillis", DEFAULT_STREAM_AWAIT_MILLIS);
+    }
+
+    private static long positiveLongProperty(String name, long fallback) {
+        String value = System.getProperty(name);
+        if (value != null && !value.trim().isEmpty()) {
+            try {
+                long parsed = Long.parseLong(value.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException ignored) {
+                // fall back to the default
+            }
+        }
+        return fallback;
     }
 
     private static String defaultAuthToken() {
@@ -82,43 +124,55 @@ public final class CortexJServer {
         // security default (audit H-10): loopback only; listening on all
         // interfaces requires an explicit opt-in via -Dcortexj.server.bind=...
         String bindAddress = System.getProperty("cortexj.server.bind");
-        InetSocketAddress address = bindAddress != null && !bindAddress.trim().isEmpty()
-                ? new InetSocketAddress(bindAddress.trim(), port)
-                : new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port);
-        httpServer = com.sun.net.httpserver.HttpServer.create(address, 0);
-        requestExecutor = java.util.concurrent.Executors.newCachedThreadPool(
-                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server"));
+        InetAddress bindHost = bindAddress != null && !bindAddress.trim().isEmpty()
+                ? InetAddress.getByName(bindAddress.trim())
+                : InetAddress.getLoopbackAddress();
+        // audit (GitHub #82): a non-loopback bind without auth exposes an
+        // unauthenticated LLM endpoint on the network; require a token or an
+        // explicit insecure acknowledgment
+        if (!bindHost.isLoopbackAddress() && authToken == null && !insecureBindAllowed()) {
+            throw new CortexJException("CORTEXJ-SERVER-4020",
+                    "refusing to bind a non-loopback address (" + bindHost.getHostAddress()
+                            + ") without authentication: this exposes an unauthenticated "
+                            + "LLM endpoint on the network",
+                    "set a bearer token (CORTEXJ_SERVER_AUTH or -Dcortexj.server.auth), or "
+                            + "acknowledge the risk explicitly with "
+                            + "-Dcortexj.server.insecureBind=true");
+        }
+        httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(bindHost, port), 0);
+        int workers = Math.max(8, 2 * Runtime.getRuntime().availableProcessors());
+        requestExecutor = new ThreadPoolExecutor(
+                workers + SATURATION_HEADROOM_THREADS, workers + SATURATION_HEADROOM_THREADS,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(Math.max(MIN_QUEUED_REQUESTS, workers)),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server"),
+                new ThreadPoolExecutor.AbortPolicy());
         httpServer.setExecutor(requestExecutor);
-        httpServer.createContext("/v1/models", exchange -> {
-            if (!authorized(exchange)) {
-                return;
-            }
-            respondJson(exchange, 200, modelsPayload());
-        });
-        httpServer.createContext("/v1/chat/completions", exchange -> {
-            if (!authorized(exchange)) {
-                return;
-            }
-            try {
-                handleChat(exchange);
-            } catch (CortexJException failure) {
-                respondError(exchange, failure.code(), failure.getMessage());
-            } catch (Exception failure) {
-                respondError(exchange, "CORTEXJ-SERVER-5000", String.valueOf(failure));
-            }
-        });
-        httpServer.createContext("/v1/embeddings", exchange -> {
-            if (!authorized(exchange)) {
-                return;
-            }
-            try {
-                handleEmbeddings(exchange);
-            } catch (CortexJException failure) {
-                respondError(exchange, failure.code(), failure.getMessage());
-            } catch (Exception failure) {
-                respondError(exchange, "CORTEXJ-SERVER-5000", String.valueOf(failure));
-            }
-        });
+        admission = new Semaphore(workers);
+        httpServer.createContext("/v1/models", exchange ->
+                dispatch(exchange, (ctx, headersSent) -> {
+                    if (!authorized(ctx, headersSent)) {
+                        return;
+                    }
+                    respondJson(ctx, headersSent, 200, modelsPayload());
+                }));
+        httpServer.createContext("/v1/chat/completions", exchange ->
+                dispatch(exchange, (ctx, headersSent) -> {
+                    if (!authorized(ctx, headersSent)) {
+                        return;
+                    }
+                    handleChat(ctx, headersSent);
+                }));
+        httpServer.createContext("/v1/embeddings", exchange ->
+                dispatch(exchange, (ctx, headersSent) -> {
+                    if (!authorized(ctx, headersSent)) {
+                        return;
+                    }
+                    handleEmbeddings(ctx, headersSent);
+                }));
+        httpServer.createContext("/", exchange ->
+                dispatch(exchange, (ctx, headersSent) ->
+                        respondError(ctx, headersSent, 404, "CORTEXJ-SERVER-4040", "unknown path")));
         httpServer.start();
         running.set(true);
         return httpServer.getAddress().getPort();
@@ -146,8 +200,46 @@ public final class CortexJServer {
         return httpServer == null ? null : httpServer.getAddress().getAddress();
     }
 
-    private boolean authorized(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+    private static boolean insecureBindAllowed() {
+        return Boolean.parseBoolean(System.getProperty("cortexj.server.insecureBind"));
+    }
+
+    private void dispatch(com.sun.net.httpserver.HttpExchange exchange, ExchangeHandler handler) {
+        if (admission == null || !admission.tryAcquire()) {
+            respondServiceUnavailable(exchange);
+            return;
+        }
+        AtomicBoolean headersSent = new AtomicBoolean(false);
+        try {
+            handler.handle(exchange, headersSent);
+        } catch (CortexJException failure) {
+            LOG.log(java.util.logging.Level.SEVERE,
+                    "request failed: " + failure.code(), failure);
+            respondError(exchange, headersSent, 500, failure.code(), GENERIC_ERROR_MESSAGE);
+        } catch (Exception failure) {
+            LOG.log(java.util.logging.Level.SEVERE, "request failed", failure);
+            respondError(exchange, headersSent, 500, "CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE);
+        } finally {
+            admission.release();
+        }
+    }
+
+    private interface ExchangeHandler {
+        void handle(com.sun.net.httpserver.HttpExchange exchange,
+                    AtomicBoolean headersSent) throws IOException;
+    }
+
+    private boolean authorized(com.sun.net.httpserver.HttpExchange exchange,
+                               AtomicBoolean headersSent) throws IOException {
         if (authToken == null) {
+            // audit (GitHub #82): with no auth token the loopback bind is the only
+            // guard, so a Host header pointing elsewhere (CSRF/DNS rebinding) must
+            // be rejected
+            if (!isLoopbackHost(exchange.getRequestHeaders().getFirst("Host"))) {
+                respondError(exchange, headersSent, 403, "CORTEXJ-SERVER-4030",
+                        "forbidden: unauthenticated access is restricted to loopback hosts");
+                return false;
+            }
             return true;
         }
         String header = exchange.getRequestHeaders().getFirst("Authorization");
@@ -156,9 +248,42 @@ public final class CortexJServer {
             return true;
         }
         exchange.getResponseHeaders().add("WWW-Authenticate", "Bearer realm=\"cortexj\"");
-        respondJson(exchange, 401, errorPayload("CORTEXJ-SERVER-4010",
+        respondJson(exchange, headersSent, 401, errorPayload("CORTEXJ-SERVER-4010",
                 "unauthorized: a valid bearer token is required"));
         return false;
+    }
+
+    private static boolean isLoopbackHost(String hostHeader) {
+        if (hostHeader == null) {
+            return false;
+        }
+        String host = hostHeader.trim();
+        if (host.isEmpty()) {
+            return false;
+        }
+        if (host.startsWith("[")) {
+            int end = host.indexOf(']');
+            if (end < 0) {
+                return false;
+            }
+            host = host.substring(1, end);
+        } else {
+            int portSeparator = host.lastIndexOf(':');
+            if (portSeparator >= 0) {
+                host = host.substring(0, portSeparator);
+            }
+        }
+        if (host.isEmpty()) {
+            return false;
+        }
+        if ("localhost".equalsIgnoreCase(host)) {
+            return true;
+        }
+        try {
+            return InetAddress.getByName(host).isLoopbackAddress();
+        } catch (UnknownHostException unresolvable) {
+            return false;
+        }
     }
 
     private static boolean constantTimeEquals(String left, String right) {
@@ -178,14 +303,16 @@ public final class CortexJServer {
         return payload;
     }
 
-    private void handleChat(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+    private void handleChat(com.sun.net.httpserver.HttpExchange exchange,
+                            AtomicBoolean headersSent) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod())) {
-            respondError(exchange, "CORTEXJ-SERVER-4000", "method not allowed");
+            exchange.getResponseHeaders().add("Allow", "POST");
+            respondError(exchange, headersSent, 405, "CORTEXJ-SERVER-4050", "method not allowed");
             return;
         }
-        JsonNode body = readBody(exchange);
+        JsonNode body = readBody(exchange, headersSent);
         if (body == null) {
-            // 413 already sent by readBody
+            // an error response was already sent by readBody
             return;
         }
         boolean stream = body.path("stream").asBoolean(false);
@@ -209,7 +336,7 @@ public final class CortexJServer {
         }
 
         if (stream) {
-            respondStream(exchange, generator, request.build());
+            respondStream(exchange, headersSent, generator, request.build());
             return;
         }
         GenerationResponse response = generator.generate(request.build());
@@ -229,73 +356,112 @@ public final class CortexJServer {
         usage.put("completion_tokens",
                 response.usage().isKnown() ? response.usage().outputTokens() : 0);
         usage.put("total_tokens", response.usage().totalTokens());
-        respondJson(exchange, 200, payload);
+        respondJson(exchange, headersSent, 200, payload);
     }
 
     private void respondStream(com.sun.net.httpserver.HttpExchange exchange,
+                               AtomicBoolean headersSent,
                                TextGenerationCapability generator,
                                GenerationRequest request) throws IOException {
         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
         exchange.sendResponseHeaders(200, 0);
+        headersSent.set(true);
         final java.util.concurrent.CountDownLatch finished =
                 new java.util.concurrent.CountDownLatch(1);
+        final AtomicBoolean clientGone = new AtomicBoolean(false);
+        final AtomicBoolean cancelledUpstream = new AtomicBoolean(false);
+        final AtomicReference<io.cortexj.stream.StreamSubscription> subscription =
+                new AtomicReference<io.cortexj.stream.StreamSubscription>();
+        // (GitHub #58): the subscription is retained so the disconnect, timeout
+        // and interrupt cleanup paths can cancel the upstream generation
         try (OutputStream output = exchange.getResponseBody()) {
-            generator.stream(request).subscribe(new io.cortexj.stream.TokenConsumer() {
-                @Override
-                public void onToken(io.cortexj.stream.Token token) {
-                    try {
-                        ObjectNode chunk = mapper.createObjectNode();
-                        chunk.put("id", "chatcmpl-stream");
-                        chunk.put("object", "chat.completion.chunk");
-                        chunk.put("model", model.descriptor().canonicalId());
-                        ArrayNode choices = chunk.putArray("choices");
-                        ObjectNode choice = choices.addObject();
-                        choice.put("index", 0);
-                        ObjectNode delta = choice.putObject("delta");
-                        delta.put("content", token.text());
-                        writeSse(output, chunk);
-                    } catch (IOException disconnected) {
-                        finished.countDown();
+            try {
+                subscription.set(generator.stream(request).subscribe(new io.cortexj.stream.TokenConsumer() {
+                    @Override
+                    public void onToken(io.cortexj.stream.Token token) {
+                        if (clientGone.get() || cancelledUpstream.get()) {
+                            return;
+                        }
+                        try {
+                            ObjectNode chunk = mapper.createObjectNode();
+                            chunk.put("id", "chatcmpl-stream");
+                            chunk.put("object", "chat.completion.chunk");
+                            chunk.put("model", model.descriptor().canonicalId());
+                            ArrayNode choices = chunk.putArray("choices");
+                            ObjectNode choice = choices.addObject();
+                            choice.put("index", 0);
+                            ObjectNode delta = choice.putObject("delta");
+                            delta.put("content", token.text());
+                            writeSse(output, chunk);
+                        } catch (IOException disconnected) {
+                            clientGone.set(true);
+                            finished.countDown();
+                            cancelSubscription(subscription.get());
+                        }
                     }
-                }
 
-                @Override
-                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
-                    try {
-                        output.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
-                        output.flush();
-                    } catch (IOException ignored) {
-                        // client disconnected
-                    } finally {
-                        finished.countDown();
+                    @Override
+                    public void onComplete(io.cortexj.stream.StreamCompletion completion) {
+                        try {
+                            output.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
+                            output.flush();
+                        } catch (IOException ignored) {
+                            // client disconnected
+                        } finally {
+                            finished.countDown();
+                        }
                     }
-                }
 
-                @Override
-                public void onError(io.cortexj.error.CortexJException error) {
-                    try {
-                        ObjectNode failure = mapper.createObjectNode();
-                        ObjectNode errorNode = failure.putObject("error");
-                        errorNode.put("code", error.code());
-                        errorNode.put("message", error.getMessage());
-                        writeSse(output, failure);
-                    } catch (IOException ignored) {
-                        // client disconnected
-                    } finally {
-                        finished.countDown();
+                    @Override
+                    public void onError(io.cortexj.error.CortexJException error) {
+                        try {
+                            writeSseError(output, error.code(), error.getMessage());
+                        } catch (IOException ignored) {
+                            // client disconnected
+                        } finally {
+                            finished.countDown();
+                        }
                     }
-                }
-            });
+                }));
+            } catch (CortexJException error) {
+                writeSseErrorQuietly(output, error.code(), error.getMessage());
+                return;
+            } catch (RuntimeException failure) {
+                LOG.log(java.util.logging.Level.SEVERE, "stream subscription failed", failure);
+                writeSseErrorQuietly(output, "CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE);
+                return;
+            }
+            if (clientGone.get()) {
+                cancelSubscription(subscription.get());
+                return;
+            }
             // hold the exchange open until the stream terminates
-            boolean terminated = finished.await(streamAwaitMillis,
-                    java.util.concurrent.TimeUnit.MILLISECONDS);
+            boolean terminated = finished.await(streamAwaitMillis, TimeUnit.MILLISECONDS);
             if (!terminated) {
-                LOG.log(java.util.logging.Level.FINE,
+                LOG.log(java.util.logging.Level.WARNING,
                         "stream hold timed out after " + streamAwaitMillis
-                                + "ms; the exchange is closed");
+                                + "ms; the upstream generation is cancelled and the exchange is closed");
+                cancelledUpstream.set(true);
+                cancelSubscription(subscription.get());
+                writeSseErrorQuietly(output, "CORTEXJ-SERVER-5040",
+                        "stream timed out after " + streamAwaitMillis
+                                + "ms; the generation was cancelled");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            cancelledUpstream.set(true);
+            cancelSubscription(subscription.get());
+        }
+    }
+
+    private void cancelSubscription(io.cortexj.stream.StreamSubscription subscription) {
+        if (subscription == null) {
+            return;
+        }
+        try {
+            subscription.cancel();
+        } catch (RuntimeException failure) {
+            LOG.log(java.util.logging.Level.FINE, "stream cancel failed", failure);
         }
     }
 
@@ -305,14 +471,28 @@ public final class CortexJServer {
         output.flush();
     }
 
-    private void handleEmbeddings(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+    private void writeSseError(OutputStream output, String code, String message) throws IOException {
+        writeSse(output, errorPayload(code, message));
+    }
+
+    private void writeSseErrorQuietly(OutputStream output, String code, String message) {
+        try {
+            writeSseError(output, code, message);
+        } catch (IOException ignored) {
+            // client disconnected
+        }
+    }
+
+    private void handleEmbeddings(com.sun.net.httpserver.HttpExchange exchange,
+                                  AtomicBoolean headersSent) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod())) {
-            respondError(exchange, "CORTEXJ-SERVER-4000", "method not allowed");
+            exchange.getResponseHeaders().add("Allow", "POST");
+            respondError(exchange, headersSent, 405, "CORTEXJ-SERVER-4050", "method not allowed");
             return;
         }
-        JsonNode body = readBody(exchange);
+        JsonNode body = readBody(exchange, headersSent);
         if (body == null) {
-            // 413 already sent by readBody
+            // an error response was already sent by readBody
             return;
         }
         EmbeddingCapability embeddings = model.capability(EmbeddingCapability.class);
@@ -343,7 +523,7 @@ public final class CortexJServer {
         ObjectNode usage = payload.putObject("usage");
         usage.put("prompt_tokens", 0);
         usage.put("total_tokens", 0);
-        respondJson(exchange, 200, payload);
+        respondJson(exchange, headersSent, 200, payload);
     }
 
     private List<io.cortexj.model.ChatMessage> chatMessages(JsonNode body) {
@@ -354,7 +534,7 @@ public final class CortexJServer {
             String content = message.path("content").asText("");
             io.cortexj.model.ChatRole chatRole;
             try {
-                chatRole = io.cortexj.model.ChatRole.valueOf(role.toUpperCase(java.util.Locale.ROOT));
+                chatRole = io.cortexj.model.ChatRole.valueOf(role.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException unknownRole) {
                 chatRole = io.cortexj.model.ChatRole.USER;
             }
@@ -377,14 +557,22 @@ public final class CortexJServer {
         }
     }
 
-    private JsonNode readBody(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+    private JsonNode readBody(com.sun.net.httpserver.HttpExchange exchange,
+                              AtomicBoolean headersSent) throws IOException {
         // audit H-11: cap the request body - a multi-GB POST (chunked or with a
-        // huge Content-Length) must not OOM the process
+        // huge Content-Length) must not OOM the process; JSON bodies only
+        String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+        if (contentType == null
+                || !contentType.trim().toLowerCase(Locale.ROOT).startsWith("application/json")) {
+            respondError(exchange, headersSent, 415, "CORTEXJ-SERVER-4150",
+                    "unsupported media type: Content-Type must be application/json");
+            return null;
+        }
         String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
         if (contentLength != null) {
             try {
-                if (Long.parseLong(contentLength.trim()) > maxBodyBytes()) {
-                    rejectTooLarge(exchange);
+                if (Long.parseLong(contentLength.trim()) > maxBodyBytes) {
+                    rejectTooLarge(exchange, headersSent);
                     return null;
                 }
             } catch (NumberFormatException ignored) {
@@ -398,45 +586,43 @@ public final class CortexJServer {
             int read;
             while ((read = input.read(chunk)) >= 0) {
                 total += read;
-                if (total > maxBodyBytes()) {
-                    rejectTooLarge(exchange);
+                if (total > maxBodyBytes) {
+                    rejectTooLarge(exchange, headersSent);
                     return null;
                 }
                 buffer.write(chunk, 0, read);
             }
             byte[] bytes = buffer.toByteArray();
             return bytes.length == 0 ? mapper.createObjectNode() : mapper.readTree(bytes);
+        } catch (JsonProcessingException malformed) {
+            respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4000",
+                    "malformed JSON request body");
+            return null;
         }
     }
 
-    private long maxBodyBytes() {
-        String property = System.getProperty("cortexj.server.maxBodyBytes");
-        if (property != null && !property.trim().isEmpty()) {
-            try {
-                return Long.parseLong(property.trim());
-            } catch (NumberFormatException ignored) {
-                // fall back to the default
-            }
-        }
-        return DEFAULT_MAX_BODY_BYTES;
-    }
-
-    private void rejectTooLarge(com.sun.net.httpserver.HttpExchange exchange) {
+    private void rejectTooLarge(com.sun.net.httpserver.HttpExchange exchange,
+                                AtomicBoolean headersSent) {
         try {
-            respondJson(exchange, 413, errorPayload("CORTEXJ-SERVER-4130",
-                    "request body too large (max " + maxBodyBytes() + " bytes)"));
+            respondJson(exchange, headersSent, 413, errorPayload("CORTEXJ-SERVER-4130",
+                    "request body too large (max " + maxBodyBytes + " bytes)"));
         } catch (IOException ignored) {
             // client gone
         }
     }
 
-    private void respondJson(com.sun.net.httpserver.HttpExchange exchange, int status,
+    private void respondJson(com.sun.net.httpserver.HttpExchange exchange,
+                             AtomicBoolean headersSent, int status,
                              ObjectNode payload) throws IOException {
         byte[] body = mapper.writeValueAsBytes(payload);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(status, body.length);
+        headersSent.set(true);
         try (OutputStream output = exchange.getResponseBody()) {
             output.write(body);
+        } catch (IOException clientGone) {
+            // headers are already on the wire; a failure here means the client
+            // went away mid-response and there is nothing left to report
         }
     }
 
@@ -448,10 +634,28 @@ public final class CortexJServer {
         return payload;
     }
 
-    private void respondError(com.sun.net.httpserver.HttpExchange exchange, String code,
-                             String message) {
+    private void respondError(com.sun.net.httpserver.HttpExchange exchange,
+                              AtomicBoolean headersSent, int status, String code,
+                              String message) {
+        if (headersSent.get()) {
+            // headers are already on the wire: a second sendResponseHeaders would
+            // throw IllegalStateException, so just close the exchange
+            exchange.close();
+            return;
+        }
         try {
-            respondJson(exchange, 500, errorPayload(code, message));
+            respondJson(exchange, headersSent, status, errorPayload(code, message));
+        } catch (IOException ignored) {
+            // client gone
+        }
+    }
+
+    private void respondServiceUnavailable(com.sun.net.httpserver.HttpExchange exchange) {
+        try {
+            exchange.getResponseHeaders().add("Retry-After", "1");
+            respondJson(exchange, new AtomicBoolean(false), 503,
+                    errorPayload("CORTEXJ-SERVER-5030",
+                            "server busy: too many in-flight requests"));
         } catch (IOException ignored) {
             // client gone
         }

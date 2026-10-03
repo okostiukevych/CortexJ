@@ -255,6 +255,7 @@ class CortexJServerTest {
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
         try (OutputStream output = connection.getOutputStream()) {
             output.write(("{\"model\":\"m\",\"stream\":true,\"messages\":"
                     + "[{\"role\":\"user\",\"content\":\"hi\"}]}")
@@ -373,11 +374,12 @@ class CortexJServerTest {
                 @Override
                 public void run() {
                     try {
-                        URL url = new URL("http://127.0.0.1:" + stalledPort + "/v1/chat/completions");
-                        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                        connection.setRequestMethod("POST");
-                        connection.setDoOutput(true);
-                        try (OutputStream output = connection.getOutputStream()) {
+                    URL url = new URL("http://127.0.0.1:" + stalledPort + "/v1/chat/completions");
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("POST");
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    try (OutputStream output = connection.getOutputStream()) {
                             output.write(("{\"model\":\"m\",\"stream\":true,\"messages\":"
                                     + "[{\"role\":\"user\",\"content\":\"hi\"}]}")
                                     .getBytes(StandardCharsets.UTF_8));
