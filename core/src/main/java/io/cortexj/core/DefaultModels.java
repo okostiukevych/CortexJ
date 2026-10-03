@@ -46,10 +46,82 @@ public final class DefaultModels implements io.cortexj.Models {
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Path>>();
     private final java.util.concurrent.locks.ReentrantReadWriteLock loadLock =
             new java.util.concurrent.locks.ReentrantReadWriteLock(true);
+    private final java.util.concurrent.ConcurrentHashMap<DefaultModelHandle, ArtifactPin> pinsByHandle =
+            new java.util.concurrent.ConcurrentHashMap<DefaultModelHandle, ArtifactPin>();
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> pinCounts =
+            new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>();
     private volatile boolean closed;
 
     DefaultModels(DefaultCortexJ platform) {
         this.platform = platform;
+    }
+
+    private static final class ArtifactPin {
+
+        final String repositoryId;
+        final String revision;
+        final String artifactId;
+
+        ArtifactPin(String repositoryId, String revision, String artifactId) {
+            this.repositoryId = repositoryId;
+            this.revision = revision;
+            this.artifactId = artifactId;
+        }
+
+        String identity() {
+            return repositoryId + '~' + revision + '~' + artifactId;
+        }
+    }
+
+    private void acquirePin(DefaultModelHandle handle, ResolvedModel resolved, ExecutionCandidate candidate) {
+        io.cortexj.model.ModelArtifact artifact = candidate.artifact();
+        if (artifact == null || artifact.format() == io.cortexj.model.ArtifactFormat.REMOTE) {
+            return;
+        }
+        String repositoryId = resolved.repository().value();
+        String revision = resolved.revision();
+        String artifactId = artifact.id();
+        io.cortexj.cache.CacheStorage cache = platform.cache();
+        if (!cache.contains(repositoryId, revision, artifactId)) {
+            return;
+        }
+        try {
+            cache.pin(repositoryId, revision, artifactId);
+        } catch (java.io.IOException pinFailure) {
+            LOG.log(java.util.logging.Level.FINE,
+                    "artifact pinning skipped for " + artifactId, pinFailure);
+            return;
+        }
+        ArtifactPin pin = new ArtifactPin(repositoryId, revision, artifactId);
+        pinsByHandle.put(handle, pin);
+        java.util.concurrent.atomic.AtomicInteger count = pinCounts.computeIfAbsent(
+                pin.identity(), new java.util.function.Function<String, java.util.concurrent.atomic.AtomicInteger>() {
+                    @Override
+                    public java.util.concurrent.atomic.AtomicInteger apply(String key) {
+                        return new java.util.concurrent.atomic.AtomicInteger();
+                    }
+                });
+        count.incrementAndGet();
+    }
+
+    private void releasePin(DefaultModelHandle handle) {
+        ArtifactPin pin = pinsByHandle.remove(handle);
+        if (pin == null) {
+            return;
+        }
+        java.util.concurrent.atomic.AtomicInteger count = pinCounts.get(pin.identity());
+        if (count == null) {
+            return;
+        }
+        if (count.decrementAndGet() <= 0) {
+            pinCounts.remove(pin.identity(), count);
+            try {
+                platform.cache().unpin(pin.repositoryId, pin.revision, pin.artifactId);
+            } catch (java.io.IOException unpinFailure) {
+                LOG.log(java.util.logging.Level.FINE,
+                        "artifact unpinning failed for " + pin.artifactId, unpinFailure);
+            }
+        }
     }
 
     @Override
@@ -271,6 +343,7 @@ public final class DefaultModels implements io.cortexj.Models {
             @Override
             public void accept(DefaultModelHandle closedHandle) {
                 openHandles.remove(closedHandle);
+                releasePin(closedHandle);
             }
         });
         handle.lifecycleTo(ModelLifecycleState.RESOLVING);
@@ -322,12 +395,15 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             handle.attach(model, runtime);
 
+            acquirePin(handle, resolved, candidate);
+
             platform.events().info(PlatformEvent.Type.MODEL_LOADED,
                     "model loaded via " + candidate.runtimeId() + " on " + candidate.device());
 
             openHandles.add(handle);
             return handle;
         } catch (RuntimeException e) {
+            releasePin(handle);
             handle.lifecycleTo(ModelLifecycleState.FAILED);
             throw e;
         }
