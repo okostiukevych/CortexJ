@@ -43,6 +43,7 @@ public final class DefaultCortexJ implements CortexJ {
     private final ExecutorService ioExecutor;
     private final boolean ownsExecutor;
     private final ExecutorService asyncExecutor;
+    private final ExecutorService downloadExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
         java.lang.Thread shutdownHook = null;
@@ -57,6 +58,7 @@ public final class DefaultCortexJ implements CortexJ {
         }
         ExecutorService ioExecutorCandidate = null;
         ExecutorService asyncExecutorCandidate = null;
+        java.util.concurrent.ThreadPoolExecutor downloadExecutorCandidate = null;
         try {
             this.snapshot = EnvironmentSnapshot.probe();
             PlatformModuleSelector.validateStarters(snapshot);
@@ -103,8 +105,18 @@ public final class DefaultCortexJ implements CortexJ {
             asyncExecutorCandidate = java.util.concurrent.Executors.newFixedThreadPool(
                     Math.max(2, Runtime.getRuntime().availableProcessors()),
                     io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"));
+            int downloadWidth = positiveIntProperty("cortexj.download.width",
+                    Math.max(4, Runtime.getRuntime().availableProcessors()));
+            int downloadQueue = positiveIntProperty("cortexj.download.queue", 64);
+            downloadExecutorCandidate = new java.util.concurrent.ThreadPoolExecutor(
+                    downloadWidth, downloadWidth, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.LinkedBlockingQueue<Runnable>(downloadQueue),
+                    io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-download"),
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+            downloadExecutorCandidate.allowCoreThreadTimeOut(true);
             this.ioExecutor = ioExecutorCandidate;
             this.asyncExecutor = asyncExecutorCandidate;
+            this.downloadExecutor = downloadExecutorCandidate;
 
             this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
                     resolved.proxyHost, resolved.proxyPort);
@@ -160,6 +172,7 @@ public final class DefaultCortexJ implements CortexJ {
             }
             shutdownExecutor(ioExecutorCandidate);
             shutdownExecutor(asyncExecutorCandidate);
+            shutdownExecutor(downloadExecutorCandidate);
             throw failure;
         }
     }
@@ -194,6 +207,10 @@ public final class DefaultCortexJ implements CortexJ {
 
     ExecutorService asyncExecutor() {
         return asyncExecutor;
+    }
+
+    ExecutorService downloadExecutor() {
+        return downloadExecutor;
     }
 
     List<RuntimeProvider> runtimeProviders() {
@@ -287,6 +304,20 @@ public final class DefaultCortexJ implements CortexJ {
         events.close();
         shutdownExecutor(ownsExecutor ? ioExecutor : null);
         shutdownExecutor(asyncExecutor);
+        shutdownExecutor(downloadExecutor);
+    }
+
+    private static int positiveIntProperty(String key, int fallback) {
+        String raw = System.getProperty(key);
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
     }
 
     private static void shutdownExecutor(ExecutorService executor) {

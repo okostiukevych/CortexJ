@@ -93,32 +93,40 @@ public final class DefaultModels implements io.cortexj.Models {
                     new java.util.concurrent.atomic.AtomicBoolean();
             final java.util.concurrent.CompletableFuture<ModelHandle> underlying =
                     new java.util.concurrent.CompletableFuture<ModelHandle>();
-            platform.asyncExecutor().execute(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        if (cancelFlag.get()) {
-                            underlying.completeExceptionally(
-                                    new java.util.concurrent.CancellationException(
-                                            "load cancelled before it started"));
-                            return;
+            try {
+                platform.downloadExecutor().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            if (cancelFlag.get()) {
+                                underlying.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "load cancelled before it started"));
+                                return;
+                            }
+                            ModelHandle handle = loadWithFallbacks(request, cancelFlag);
+                            if (cancelFlag.get()) {
+                                closeHandleAfterCancellation(handle);
+                                underlying.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "load cancelled during execution"));
+                                return;
+                            }
+                            if (!underlying.complete(handle) && cancelFlag.get()) {
+                                closeHandleAfterCancellation(handle);
+                            }
+                        } catch (Throwable failure) {
+                            underlying.completeExceptionally(failure);
                         }
-                        ModelHandle handle = loadWithFallbacks(request, cancelFlag);
-                        if (cancelFlag.get()) {
-                            closeHandleAfterCancellation(handle);
-                            underlying.completeExceptionally(
-                                    new java.util.concurrent.CancellationException(
-                                            "load cancelled during execution"));
-                            return;
-                        }
-                        if (!underlying.complete(handle) && cancelFlag.get()) {
-                            closeHandleAfterCancellation(handle);
-                        }
-                    } catch (Throwable failure) {
-                        underlying.completeExceptionally(failure);
                     }
-                }
-            });
+                });
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                underlying.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Model load rejected: too many concurrent downloads are already queued "
+                                + "(" + saturated.getMessage() + ").",
+                        "Await or cancel an in-flight loadAsync before submitting more, or raise "
+                                + "the download pool width."));
+            }
             return new CancellableLoad(underlying, cancelFlag);
         } finally {
             loadLock.readLock().unlock();

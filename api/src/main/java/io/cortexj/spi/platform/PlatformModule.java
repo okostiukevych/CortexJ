@@ -31,9 +31,12 @@ public interface PlatformModule {
 
             @Override
             public ExecutorService createIoExecutor() {
-                return java.util.concurrent.Executors.newFixedThreadPool(
-                        Math.max(8, Runtime.getRuntime().availableProcessors() * 2),
-                        daemonThreadFactory("cortexj-io"));
+                int width = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
+                return new java.util.concurrent.ThreadPoolExecutor(
+                        width, width, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                        new java.util.concurrent.LinkedBlockingQueue<Runnable>(256),
+                        daemonThreadFactory("cortexj-io"),
+                        new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
             }
         };
     }
