@@ -53,6 +53,94 @@ class TrustPolicyTest {
     }
 
     @Test
+    void trustedOnlyBlocksLocalArtifactWithoutChecksumOrNote() {
+        // audit 2026-10-07 (#143): the local provider never sets a trustNote,
+        // so an absent note used to bypass TRUSTED_ONLY entirely
+        RecordingListener listener = new RecordingListener();
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new io.cortexj.core.EndToEndLoadTest.FakeRuntimeProvider())
+                .repositoryProvider(new LocalLikeRepository(false))
+                .eventListener(listener)
+                .trustPolicy(TrustPolicy.TRUSTED_ONLY)
+                .build();
+        try {
+            ModelLoadException failure = assertThrows(ModelLoadException.class,
+                    () -> platform.models().load(ModelReference.of("local/unchecked")));
+            assertEquals(ErrorCode.SEC_POLICY_BLOCKED, failure.code());
+        } finally {
+            platform.close();
+        }
+    }
+
+    @Test
+    void trustedOnlyAllowsLocalArtifactWithChecksum() {
+        RecordingListener listener = new RecordingListener();
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new io.cortexj.core.EndToEndLoadTest.FakeRuntimeProvider())
+                .repositoryProvider(new LocalLikeRepository(true))
+                .eventListener(listener)
+                .trustPolicy(TrustPolicy.TRUSTED_ONLY)
+                .build();
+        try {
+            ModelHandle handle = platform.models().load(ModelReference.of("local/pinned"));
+            handle.close();
+        } finally {
+            platform.close();
+        }
+    }
+
+    /** Imitates the local provider: never sets a trustNote, checksum optional. */
+    static final class LocalLikeRepository implements io.cortexj.spi.repository.ModelRepositoryProvider {
+
+        private final boolean withChecksum;
+
+        LocalLikeRepository(boolean withChecksum) {
+            this.withChecksum = withChecksum;
+        }
+
+        @Override
+        public io.cortexj.spi.repository.RepositoryId id() {
+            return io.cortexj.spi.repository.RepositoryId.of("local-like");
+        }
+
+        @Override
+        public boolean supports(io.cortexj.model.ModelReference reference) {
+            return true;
+        }
+
+        @Override
+        public io.cortexj.spi.repository.ResolvedModel resolve(
+                io.cortexj.model.ModelReference reference,
+                io.cortexj.spi.repository.ResolutionContext context) {
+            final io.cortexj.model.ModelArtifact artifact =
+                    new io.cortexj.model.ModelArtifact.Abstract(
+                            "model.gguf",
+                            io.cortexj.model.ArtifactFormat.GGUF,
+                            1_000_000L,
+                            withChecksum
+                                    ? io.cortexj.model.Checksum.sha256(
+                                    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+                                    : null,
+                            java.util.Collections.<String, String>emptyMap()) {
+                    };
+            io.cortexj.model.ModelDescriptor descriptor = io.cortexj.model.ModelDescriptor
+                    .builder(reference.value())
+                    .revision("local-rev")
+                    .architecture("llama")
+                    .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
+                    .artifact(artifact)
+                    .build();
+            java.util.List<io.cortexj.spi.repository.ResolvedArtifact> artifacts =
+                    new java.util.ArrayList<io.cortexj.spi.repository.ResolvedArtifact>();
+            artifacts.add(new io.cortexj.spi.support.SimpleResolvedArtifact(artifact,
+                    java.net.URI.create("file:/tmp/definitely-missing.gguf"),
+                    java.util.Collections.<String, String>emptyMap()));
+            return new io.cortexj.spi.repository.ResolvedModel(descriptor, "local-rev",
+                    io.cortexj.spi.repository.RepositoryId.of("local-like"), artifacts);
+        }
+    }
+
+    @Test
     void allowUnsignedWithWarningLoadsAndRecordsEvent() {
         RecordingListener listener = new RecordingListener();
         CortexJ platform = platform(TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING, listener);
