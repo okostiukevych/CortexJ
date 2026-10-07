@@ -44,16 +44,50 @@ public final class CortexJServer {
     private static final int SATURATION_HEADROOM_THREADS = 4;
     private static final int MIN_QUEUED_REQUESTS = 64;
     private static final String GENERIC_ERROR_MESSAGE = "internal error, see server logs";
+    // audit 2026-10-07 (#144): fail-closed input bounds - an unbounded or
+    // NaN generation parameter pins a worker (and compounds the #146
+    // capacity ceiling) or bills a remote endpoint without consent
+    private static final double MAX_TEMPERATURE = 2.0;
+    private static final int MAX_TOKENS_CAP = 1_000_000;
+    private static final int MAX_MESSAGES = 1_000;
+    private static final int MAX_EMBEDDING_INPUTS = 512;
+    // audit 2026-10-07 (#144): per-IP failed-auth throttle - the semaphore
+    // bounds concurrency, not brute force
+    private static final int AUTH_MAX_FAILURES = 5;
+    private static final long AUTH_WINDOW_MILLIS = 60_000L;
+    private static final long AUTH_BLOCK_MILLIS = 60_000L;
 
     private final CortexJ platform;
     private final ModelHandle model;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = constrainedMapper();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final long streamAwaitMillis;
     private final long maxBodyBytes;
     private final String authToken;
+    private final java.util.concurrent.ConcurrentHashMap<String, AuthAttempts> authFailures =
+            new java.util.concurrent.ConcurrentHashMap<String, AuthAttempts>();
     private static final java.util.logging.Logger LOG =
             java.util.logging.Logger.getLogger(CortexJServer.class.getName());
+
+    /** Per-IP sliding failure counter for the bearer brute-force throttle. */
+    private static final class AuthAttempts {
+        int failures;
+        long windowStartMillis;
+        long blockedUntilMillis;
+    }
+
+    private static ObjectMapper constrainedMapper() {
+        // audit 2026-10-07 (#144): hostile nesting must not StackOverflow
+        // the server on readTree
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamReadConstraints(
+                com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                        .maxNestingDepth(100)
+                        .maxNumberLength(10000)
+                        .maxStringLength(50 * 1024 * 1024)
+                        .build());
+        return mapper;
+    }
 
     private volatile com.sun.net.httpserver.HttpServer httpServer;
     private ThreadPoolExecutor requestExecutor;
@@ -247,10 +281,83 @@ public final class CortexJServer {
                 && constantTimeEquals(header.substring(7).trim(), authToken)) {
             return true;
         }
+        // audit 2026-10-07 (#144): per-IP failed-auth throttle - 5 failures in
+        // 60 s block the IP for 60 s (429), so a weak token cannot be brute
+        // forced at line rate
+        String clientIp = clientIp(exchange);
+        if (noteAuthFailure(clientIp)) {
+            exchange.getResponseHeaders().add("Retry-After", "60");
+            respondJson(exchange, headersSent, 429, errorPayload("CORTEXJ-SERVER-4290",
+                    "too many failed authentication attempts, retry later"));
+            return false;
+        }
         exchange.getResponseHeaders().add("WWW-Authenticate", "Bearer realm=\"cortexj\"");
         respondJson(exchange, headersSent, 401, errorPayload("CORTEXJ-SERVER-4010",
                 "unauthorized: a valid bearer token is required"));
         return false;
+    }
+
+    private static String clientIp(com.sun.net.httpserver.HttpExchange exchange) {
+        try {
+            java.net.InetSocketAddress remote = exchange.getRemoteAddress();
+            if (remote != null && remote.getAddress() != null) {
+                return remote.getAddress().getHostAddress();
+            }
+        } catch (RuntimeException ignored) {
+            // fall through to the coarse key below
+        }
+        return "unknown";
+    }
+
+    /**
+     * Records one failed attempt; returns true when the IP is now blocked.
+     * Entries are reaped lazily on the next failure from any IP to bound map
+     * growth without a reaper thread.
+     */
+    private boolean noteAuthFailure(String clientIp) {
+        long now = System.currentTimeMillis();
+        AuthAttempts attempts = authFailures.get(clientIp);
+        if (attempts == null) {
+            AuthAttempts fresh = new AuthAttempts();
+            fresh.failures = 1;
+            fresh.windowStartMillis = now;
+            AuthAttempts raced = authFailures.putIfAbsent(clientIp, fresh);
+            attempts = raced == null ? fresh : raced;
+            if (raced != null) {
+                return noteAuthFailure(clientIp);
+            }
+            return false;
+        }
+        synchronized (attempts) {
+            if (now < attempts.blockedUntilMillis) {
+                return true;
+            }
+            if (now - attempts.windowStartMillis > AUTH_WINDOW_MILLIS) {
+                attempts.failures = 1;
+                attempts.windowStartMillis = now;
+                attempts.blockedUntilMillis = 0L;
+                reapAuthFailures(now);
+                return false;
+            }
+            attempts.failures++;
+            if (attempts.failures >= AUTH_MAX_FAILURES) {
+                attempts.blockedUntilMillis = now + AUTH_BLOCK_MILLIS;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private void reapAuthFailures(long now) {
+        for (java.util.Map.Entry<String, AuthAttempts> entry : authFailures.entrySet()) {
+            AuthAttempts attempts = entry.getValue();
+            synchronized (attempts) {
+                if (now >= attempts.blockedUntilMillis
+                        && now - attempts.windowStartMillis > AUTH_WINDOW_MILLIS) {
+                    authFailures.remove(entry.getKey(), attempts);
+                }
+            }
+        }
     }
 
     static boolean isLoopbackHost(String hostHeader) {
@@ -351,7 +458,11 @@ public final class CortexJServer {
         TextGenerationCapability generator = model.capability(TextGenerationCapability.class);
 
         GenerationRequest.Builder request = GenerationRequest.builder();
-        List<io.cortexj.model.ChatMessage> messages = chatMessages(body);
+        List<io.cortexj.model.ChatMessage> messages = chatMessages(body, exchange, headersSent);
+        if (messages == null) {
+            // unknown role or over-limit message list - error already sent
+            return;
+        }
         String lastUser = "";
         for (io.cortexj.model.ChatMessage message : messages) {
             request.message(message);
@@ -361,10 +472,32 @@ public final class CortexJServer {
         }
         request.prompt(lastUser);
         if (body.hasNonNull("temperature")) {
-            request.temperature(body.path("temperature").asDouble());
+            // audit 2026-10-07 (#144): NaN/negative/huge values used to flow
+            // straight into the runtime and pin a worker
+            double temperature = body.path("temperature").asDouble(Double.NaN);
+            if (Double.isNaN(temperature) || temperature < 0.0 || temperature > MAX_TEMPERATURE) {
+                respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4001",
+                        "temperature must be a number in [0, " + MAX_TEMPERATURE + "]");
+                return;
+            }
+            request.temperature(temperature);
         }
         if (body.hasNonNull("max_tokens")) {
-            request.maxTokens(body.path("max_tokens").asInt());
+            long maxTokens = body.path("max_tokens").asLong(-1L);
+            if (maxTokens < 1L || maxTokens > MAX_TOKENS_CAP) {
+                respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4002",
+                        "max_tokens must be in [1, " + MAX_TOKENS_CAP + "]");
+                return;
+            }
+            request.maxTokens((int) Math.min(maxTokens, Integer.MAX_VALUE));
+        }
+        if (body.hasNonNull("top_p")) {
+            double topP = body.path("top_p").asDouble(Double.NaN);
+            if (Double.isNaN(topP) || topP < 0.0 || topP > 1.0) {
+                respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4003",
+                        "top_p must be a number in [0, 1]");
+                return;
+            }
         }
 
         if (stream) {
@@ -541,16 +674,25 @@ public final class CortexJServer {
             // an error response was already sent by readBody
             return;
         }
-        EmbeddingCapability embeddings = model.capability(EmbeddingCapability.class);
+        EmbeddingCapability embeddings = null;
         java.util.List<String> inputs = new java.util.ArrayList<String>();
         JsonNode inputNode = body.path("input");
         if (inputNode.isArray()) {
+            // audit 2026-10-07 (#144): an unbounded input array fans out into
+            // per-input embedding work on a single worker - validate before
+            // touching the capability so bad input 400s instead of 500ing
+            if (inputNode.size() > MAX_EMBEDDING_INPUTS) {
+                respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4006",
+                        "input is limited to " + MAX_EMBEDDING_INPUTS + " entries");
+                return;
+            }
             for (JsonNode item : inputNode) {
                 inputs.add(item.asText());
             }
         } else {
             inputs.add(inputNode.asText(""));
         }
+        embeddings = model.capability(EmbeddingCapability.class);
         EmbeddingResponse response = embeddings.embed(EmbeddingRequest.texts(inputs));
         ObjectNode payload = mapper.createObjectNode();
         payload.put("object", "list");
@@ -572,17 +714,32 @@ public final class CortexJServer {
         respondJson(exchange, headersSent, 200, payload);
     }
 
-    private List<io.cortexj.model.ChatMessage> chatMessages(JsonNode body) {
+    private List<io.cortexj.model.ChatMessage> chatMessages(JsonNode body,
+            com.sun.net.httpserver.HttpExchange exchange,
+            AtomicBoolean headersSent) throws IOException {
         java.util.List<io.cortexj.model.ChatMessage> messages =
                 new java.util.ArrayList<io.cortexj.model.ChatMessage>();
-        for (JsonNode message : body.path("messages")) {
+        JsonNode array = body.path("messages");
+        if (array.isArray() && array.size() > MAX_MESSAGES) {
+            // audit 2026-10-07 (#144): an unbounded message list fans out
+            // into per-message runtime work on a single worker
+            respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4004",
+                    "messages is limited to " + MAX_MESSAGES + " entries");
+            return null;
+        }
+        for (JsonNode message : array) {
             String role = message.path("role").asText("user");
             String content = message.path("content").asText("");
             io.cortexj.model.ChatRole chatRole;
             try {
                 chatRole = io.cortexj.model.ChatRole.valueOf(role.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException unknownRole) {
-                chatRole = io.cortexj.model.ChatRole.USER;
+                // audit 2026-10-07 (#144): unknown roles used to silently
+                // become USER - fail closed so system/user boundaries cannot
+                // be smuggled past the caller
+                respondError(exchange, headersSent, 400, "CORTEXJ-SERVER-4005",
+                        "unknown message role: " + role);
+                return null;
             }
             messages.add(chatMessage(chatRole, content));
         }
@@ -658,10 +815,12 @@ public final class CortexJServer {
     }
 
     private void respondJson(com.sun.net.httpserver.HttpExchange exchange,
-                             AtomicBoolean headersSent, int status,
-                             ObjectNode payload) throws IOException {
+                              AtomicBoolean headersSent, int status,
+                              ObjectNode payload) throws IOException {
         byte[] body = mapper.writeValueAsBytes(payload);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
+        // audit 2026-10-07 (#144): no sniffing of error/JSON payloads
+        exchange.getResponseHeaders().add("X-Content-Type-Options", "nosniff");
         exchange.sendResponseHeaders(status, body.length);
         headersSent.set(true);
         try (OutputStream output = exchange.getResponseBody()) {
