@@ -194,9 +194,13 @@ public final class DownloadManager {
                     return path;
                 } catch (IOException e) {
                     lastError = e;
+                    // audit 2026-10-07 (#142): exception messages may embed the
+                    // raw artifact location (presigned query, userinfo) - the
+                    // event is log-shipped, so redact URL credentials first
                     events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
                             "download attempt " + attempt + " failed for " + artifact.artifact().id()
-                                    + ": " + e.getMessage(), attributes);
+                                    + ": " + io.cortexj.spi.support.HttpGuards.redactUrlsInText(
+                                    e.getMessage()), attributes);
                     if (isTerminal(e)) {
                         break;
                     }
@@ -252,7 +256,7 @@ public final class DownloadManager {
                     ArtifactResolutionException missing = new ArtifactResolutionException(
                             ErrorCode.ARTIFACT_MISSING,
                             "Artifact " + artifact.artifact().id() + " not found: HTTP 404 from "
-                                    + artifact.location(),
+                                    + redactedLocation(artifact),
                             "Check the repository coordinates and revision.");
                     missing.detail("artifact", artifact.artifact().id());
                     throw missing;
@@ -263,7 +267,7 @@ public final class DownloadManager {
                             "HTTP " + status + " while downloading " + artifact.artifact().id()
                                     + ": access denied.",
                             "Check the repository credentials; the artifact location was "
-                                    + artifact.location() + ".");
+                                    + redactedLocation(artifact) + ".");
                     denied.detail("artifact", artifact.artifact().id());
                     denied.detail("httpStatus", String.valueOf(status));
                     throw denied;
@@ -281,7 +285,7 @@ public final class DownloadManager {
                         ErrorCode.ARTIFACT_RESOLUTION_FAILED,
                         "HTTP " + status + " while downloading " + artifact.artifact().id(),
                         "Check network access and repository availability; the artifact location was "
-                                + artifact.location() + ".", lastError);
+                                + redactedLocation(artifact) + ".", lastError);
                 statusFailure.detail("artifact", artifact.artifact().id());
                 statusFailure.detail("httpStatus", String.valueOf(status));
                 throw statusFailure;
@@ -289,7 +293,7 @@ public final class DownloadManager {
             ArtifactResolutionException failure = new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
                     "Download failed after " + MAX_ATTEMPTS + " attempts: " + artifact.artifact().id(),
                     "Check network access and retry; the artifact location was "
-                            + artifact.location()
+                            + redactedLocation(artifact)
                             + (resumedOnce && java.nio.file.Files.exists(effectivePartial)
                             ? ". Partial progress is kept and will be resumed (HTTP Range)."
                             : ""), lastError);
@@ -312,6 +316,22 @@ public final class DownloadManager {
                     // it under contention is racy
                 }
             }
+        }
+    }
+
+    /**
+     * audit 2026-10-07 (#142): artifact locations are bearer credentials when
+     * presigned (query token) or embed userinfo - error surfaces must carry
+     * the redacted form only.
+     */
+    private static String redactedLocation(ResolvedArtifact artifact) {
+        try {
+            URI location = artifact.location() == null
+                    ? null : new URI(artifact.location().toString());
+            return io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                    location == null ? null : location.toString());
+        } catch (Exception unparseable) {
+            return "<unparseable-location>";
         }
     }
 
@@ -606,11 +626,30 @@ public final class DownloadManager {
                     if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
                         ArtifactResolutionException rejected = new ArtifactResolutionException(
                                 ErrorCode.ARTIFACT_RESOLUTION_FAILED,
-                                "Redirect target uses a non-http(s) scheme: " + next,
+                                "Redirect target uses a non-http(s) scheme: "
+                                        + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                        next.toString()),
                                 "Redirect hops must stay http(s); the download was aborted "
                                         + "before any credential or data reached the target.");
-                        rejected.detail("redirectTarget", next.toString());
+                        rejected.detail("redirectTarget", io.cortexj.spi.support.HttpGuards
+                                .redactUrlForLogging(next.toString()));
                         throw rejected;
+                    }
+                    // audit 2026-10-07 (#111): a redirect to an internal target
+                    // is still fetched by the code below - validate the hop
+                    // before any credential or data reaches it
+                    try {
+                        io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(next.toString());
+                    } catch (IllegalArgumentException blocked) {
+                        ArtifactResolutionException ssrf = new ArtifactResolutionException(
+                                ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                                "Redirect target blocked by the SSRF guard: " + blocked.getMessage(),
+                                "Redirect hops must stay on public hosts; for intranet mirrors set "
+                                        + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY
+                                        + "=true.");
+                        ssrf.detail("redirectTarget", io.cortexj.spi.support.HttpGuards
+                                .redactUrlForLogging(next.toString()));
+                        throw ssrf;
                     }
                     // audit M-18: credentials are dropped when the redirect leaves the
                     // original origin - a compromised CDN must not harvest the token;
