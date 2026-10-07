@@ -191,15 +191,19 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **~126 test classes / ~457 tests green on JDK 25** (13 gated
+Current test matrix: **~129 test classes / ~497 tests green on JDK 25** (13 gated
 skips are loud assumeTrue, never silent); the full 2026-10-01 audit pass (31 issues
 resolved: concurrency refcount races, carrier pinning, executor bounds, download
 caps/retry/resume validation, parser hardening, server hardening, pinned in-use
-artifacts) is regression-tested. GitHub Actions CI matrix runs
-JDK 8/11/17/21/25 on ubuntu/macos/windows, JPMS lanes (`mvn -Pjpms`),
-SpotBugs + JaCoCo coverage lanes (issue #53), and gated self-hosted
-GPU lanes (CUDA/Metal per spec 70). CodeQL is prepared but gated until
-GitHub Advanced Security is enabled for this private repository.
+artifacts) and the full 2026-10-05 audit pass (issues #89-#128) are
+regression-tested. GitHub Actions lanes (JDK 8/11/17/21/25 on
+ubuntu/macos/windows, JPMS lanes via `mvn -Pjpms`, SpotBugs + JaCoCo
+coverage lanes per issue #53, gated self-hosted GPU lanes per spec 70) are
+prepared and gated (`if: false`) to conserve Actions minutes - enable a lane
+to verify, disable it again after the run. CodeQL is prepared but gated until
+GitHub Advanced Security is enabled for this private repository. Local full
+verification: `mvn test` green on real JDKs 8/11/17/21/25, `mvn verify
+-Pspotbugs` clean, `mvn verify -Pcompat` skips cleanly.
 
 llama.cpp execution is real: the provider manages a `llama-server` process (health
 polling, blocking + SSE streaming, graceful shutdown incl. destroyForcibly escalation
@@ -239,8 +243,9 @@ mvn clean install
 
 Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 
-- `mvn test` green on each LTS JDK — the shared core suite (~415 tests on the
-  JDK 8 lane, ~457 on JDK 25), 0 failures on every lane
+- `mvn test` green on each LTS JDK — the shared core suite (~464 tests on the
+  JDK 8 lane, ~479 on JDK 11/17/21, ~497 on JDK 25), 0 failures on every lane
+  (verified locally on real JDKs 8/11/17/21/25)
   (JDK 8 build uses `-source/-target 8`; JDK 9+ uses `--release 8`).
 - The single shaded CLI jar runs unchanged on Java 8 through 25, reporting the correct
   JVM each time; newer platform classes are skipped gracefully on older JVMs, and the
