@@ -98,6 +98,16 @@ public final class Configuration {
                 System.getProperty(SYSPROP_PREFIX + "remote.api.key"),
                 env("CORTEXJ_REMOTE_API_KEY"),
                 env("OPENAI_API_KEY"));
+        // audit #125: system properties are exposed by jcmd VM.system_properties
+        // and hs_err dumps - credentials there deserve a loud warning
+        if (builder.remoteApiKey() == null
+                && System.getProperty(SYSPROP_PREFIX + "remote.api.key") != null
+                && !System.getProperty(SYSPROP_PREFIX + "remote.api.key").trim().isEmpty()) {
+            java.util.logging.Logger.getLogger(Configuration.class.getName()).warning(
+                    "cortexj.remote.api.key is set via a system property; system properties "
+                            + "are readable by 'jcmd VM.system_properties' and hs_err dumps - "
+                            + "prefer the CORTEXJ_REMOTE_API_KEY environment variable");
+        }
 
         String proxyHost = firstNonEmpty(builder.proxyHost(),
                 System.getProperty("cortexj.proxy.host"),
