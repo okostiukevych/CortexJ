@@ -68,6 +68,10 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         // exactly ONE onError, then the bridge stops delivering signals
         private final AtomicBoolean requestFailureSignalled = new AtomicBoolean(false);
         private boolean errorDelivered;
+        // audit #93: an upstream failure is buffered and delivered through the
+        // drain guard, never directly from the producer thread - otherwise it
+        // would race a concurrent onNext into the subscriber (Flow rule 1.3)
+        private io.cortexj.error.CortexJException upstreamError;
         // Flow contract: onNext/onComplete must be delivered serially, by at most
         // one thread at a time. The drain-owner guard serializes dispatch when the
         // publisher thread (offer/onComplete) and the subscriber thread (request)
@@ -151,8 +155,17 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                     if (cancelled.get()) {
                         return;
                     }
-                    downstream.onError(error);
+                    synchronized (lock) {
+                        if (upstreamError == null) {
+                            upstreamError = error == null
+                                    ? new io.cortexj.error.InferenceException(
+                                            io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
+                                            "token stream failed without an error")
+                                    : error;
+                        }
+                    }
                     stream.close();
+                    drain();
                 }
             }));
         }
@@ -190,6 +203,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                 if (overflowed.get() && !errorDelivered) {
                     return true;
                 }
+                if (upstreamError != null && !errorDelivered) {
+                    return true;
+                }
                 if (demand.get() > 0 && !buffered.isEmpty()) {
                     return true;
                 }
@@ -206,7 +222,7 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                 while (true) {
                     Token token = null;
                     boolean complete = false;
-                    boolean error = false;
+                    io.cortexj.error.CortexJException errorToDeliver = null;
                     synchronized (lock) {
                         if (cancelled.get()) {
                             return;
@@ -216,7 +232,16 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                             demand.decrementAndGet();
                         } else if (overflowed.get() && !errorDelivered) {
                             errorDelivered = true;
-                            error = true;
+                            errorToDeliver = new io.cortexj.error.InferenceException(
+                                    io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
+                                    "token stream buffer overflow: the subscriber lagged more than "
+                                            + bufferCapacity + " tokens behind the producer; "
+                                            + "the generation was cancelled",
+                                    "Request demand proactively or consume tokens faster; the "
+                                            + "adapter never buffers without bound.");
+                        } else if (upstreamError != null && !errorDelivered) {
+                            errorDelivered = true;
+                            errorToDeliver = upstreamError;
                         } else if (completed.get() && buffered.isEmpty() && !completionDelivered) {
                             completionDelivered = true;
                             complete = true;
@@ -224,21 +249,14 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                             return;
                         }
                     }
-                    if (error) {
-                        // explicit overflow policy: the generation is cancelled and
-                        // the subscriber gets a loud typed error - the adapter never
-                        // buffers without bound (audit M-13)
+                    if (errorToDeliver != null) {
+                        // explicit overflow/upstream-failure policy: the generation
+                        // is cancelled and the subscriber gets a loud typed error
                         stream.close();
                         if (cancelled.get()) {
                             return;
                         }
-                        downstream.onError(new io.cortexj.error.InferenceException(
-                                io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
-                                "token stream buffer overflow: the subscriber lagged more than "
-                                        + bufferCapacity + " tokens behind the producer; "
-                                        + "the generation was cancelled",
-                                "Request demand proactively or consume tokens faster; the "
-                                        + "adapter never buffers without bound."));
+                        downstream.onError(errorToDeliver);
                         return;
                     }
                     if (complete) {
