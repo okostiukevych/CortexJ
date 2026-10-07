@@ -77,9 +77,16 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         this.baseUrl = HttpJsonClient.trimSlash(baseUrl);
         this.apiKey = apiKey;
         this.ownsExecutor = executor == null;
+        // audit 2026-10-07 (#146): the fallback pool is bounded like every
+        // platform pool - newFixedThreadPool's unbounded queue used to absorb
+        // stream storms without limit. Prefers the shared platform executor
+        // (passed in) whenever core drives the load path.
         this.executor = executor == null
-                ? Executors.newFixedThreadPool(4,
-                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-remote-io"))
+                ? new java.util.concurrent.ThreadPoolExecutor(4, 4,
+                        60L, java.util.concurrent.TimeUnit.SECONDS,
+                        new java.util.concurrent.LinkedBlockingQueue<Runnable>(64),
+                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-remote-io"),
+                        new java.util.concurrent.ThreadPoolExecutor.AbortPolicy())
                 : executor;
         this.eventListener = eventListener == null ? PlatformEventListener.NOOP : eventListener;
     }

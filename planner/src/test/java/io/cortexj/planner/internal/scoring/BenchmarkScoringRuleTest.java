@@ -53,14 +53,14 @@ class BenchmarkScoringRuleTest {
         BenchmarkScoringRule rule = new BenchmarkScoringRule(file);
 
         ExecutionCandidate.Builder llamacpp = candidate("llamacpp", "q4_k_m", DeviceType.CPU);
-        rule.apply(llamacpp, null, request(), null);
+        rule.apply(llamacpp, llamacpp.build(), null, request(), null);
         double expectedThroughputBonus = 15.0d * (85.0d / 85.0d);
         double expectedLatencyBonus = 10.0d * (100.0d / 100.0d);
         assertEquals(expectedThroughputBonus + expectedLatencyBonus,
                 llamacpp.build().score(), 0.0001d);
 
         ExecutionCandidate.Builder onnx = candidate("onnx", "q4", DeviceType.CPU);
-        rule.apply(onnx, null, request(), null);
+        rule.apply(onnx, onnx.build(), null, request(), null);
         double expectedOnnxThroughputBonus = 15.0d * (40.0d / 85.0d);
         assertEquals(expectedOnnxThroughputBonus, onnx.build().score(), 0.0001d,
                 "the slower runtime must receive a proportionally smaller bonus");
@@ -77,7 +77,7 @@ class BenchmarkScoringRuleTest {
                 "bench.llamacpp,phi-4,*,cpu,throughputTokensPerSecond=85");
         BenchmarkScoringRule rule = new BenchmarkScoringRule(file);
         ExecutionCandidate.Builder other = candidate("onnx", "q4", DeviceType.CPU);
-        rule.apply(other, null, request(), null);
+        rule.apply(other, other.build(), null, request(), null);
         assertEquals(0.0d, other.build().score(), 0.0001d);
         assertFalse(other.build().notes().containsKey("benchmark:throughput"));
     }
@@ -97,7 +97,7 @@ class BenchmarkScoringRuleTest {
     private static double scoreOf(BenchmarkHints file) {
         BenchmarkScoringRule rule = new BenchmarkScoringRule(file);
         ExecutionCandidate.Builder builder = candidate("llamacpp", "q4_k_m", DeviceType.CPU);
-        rule.apply(builder, null, request(), null);
+        rule.apply(builder, builder.build(), null, request(), null);
         return builder.build().score();
     }
 
@@ -105,7 +105,7 @@ class BenchmarkScoringRuleTest {
     void emptyHintsAreNoOp() {
         BenchmarkScoringRule rule = new BenchmarkScoringRule(BenchmarkHints.empty());
         ExecutionCandidate.Builder builder = candidate("llamacpp", "q4_k_m", DeviceType.CPU);
-        rule.apply(builder, null, request(), null);
+        rule.apply(builder, builder.build(), null, request(), null);
         assertEquals(0.0d, builder.build().score(), 0.0001d);
     }
 }

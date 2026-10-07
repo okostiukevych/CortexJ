@@ -380,10 +380,13 @@ class LoadAsyncCancellationTest {
 
     @Test
     void downloadPoolSaturationIsLoudTypedRejection() throws Exception {
-        String oldWidth = System.getProperty("cortexj.download.width");
-        String oldQueue = System.getProperty("cortexj.download.queue");
-        System.setProperty("cortexj.download.width", "1");
-        System.setProperty("cortexj.download.queue", "1");
+        // audit 2026-10-07 (#146): loadAsync runs on the dedicated load pool
+        // now - saturate THAT pool (download pool saturation is covered by
+        // the downloadInsensitiveToLoadSaturation test below)
+        String oldWidth = System.getProperty("cortexj.load.width");
+        String oldQueue = System.getProperty("cortexj.load.queue");
+        System.setProperty("cortexj.load.width", "1");
+        System.setProperty("cortexj.load.queue", "1");
         GatedRuntimeLoadProvider provider = new GatedRuntimeLoadProvider("gated-saturate-runtime", false);
         DefaultCortexJ platform = null;
         try {
@@ -403,13 +406,56 @@ class LoadAsyncCancellationTest {
             } catch (java.util.concurrent.ExecutionException expected) {
                 assertTrue(expected.getCause() instanceof ModelLoadException,
                         "rejection must surface as a typed ModelLoadException, got: " + expected.getCause());
-                assertTrue(expected.getCause().getMessage().contains("too many concurrent downloads"),
+                assertTrue(expected.getCause().getMessage().contains("too many concurrent loads"),
                         "rejection must explain the saturation, got: " + expected.getCause().getMessage());
             }
             assertTrue(!queued.isCancelled(), "the queued load must survive saturation");
             provider.releaseLoad.countDown();
             running.get(10, TimeUnit.SECONDS);
             queued.get(10, TimeUnit.SECONDS);
+        } finally {
+            if (platform != null) {
+                provider.releaseLoad.countDown();
+                platform.close();
+            }
+            if (oldWidth == null) {
+                System.clearProperty("cortexj.load.width");
+            } else {
+                System.setProperty("cortexj.load.width", oldWidth);
+            }
+            if (oldQueue == null) {
+                System.clearProperty("cortexj.load.queue");
+            } else {
+                System.setProperty("cortexj.load.queue", oldQueue);
+            }
+        }
+    }
+
+    @Test
+    void downloadPoolSaturationDoesNotBlockLoads() throws Exception {
+        // audit 2026-10-07 (#146): the split contract - a saturated download
+        // pool must not starve loadAsync (and vice versa). Here the download
+        // pool is narrowed to 1x1 while the load pool stays wide: loads must
+        // still go through even though downloads would queue.
+        String oldWidth = System.getProperty("cortexj.download.width");
+        String oldQueue = System.getProperty("cortexj.download.queue");
+        System.setProperty("cortexj.download.width", "1");
+        System.setProperty("cortexj.download.queue", "1");
+        GatedRuntimeLoadProvider provider = new GatedRuntimeLoadProvider("gated-split-runtime", false);
+        DefaultCortexJ platform = null;
+        try {
+            platform = (DefaultCortexJ) CortexJ.builder()
+                    .runtimeProvider(provider)
+                    .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                    .workingDirectory(tempDir.resolve("split-work"))
+                    .build();
+            Future<ModelHandle> first = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            assertTrue(provider.loadEntered.await(10, TimeUnit.SECONDS),
+                    "the first load must start on the wide load pool");
+            Future<ModelHandle> second = platform.models().loadAsync(ModelReference.of("e2e/test-model"));
+            provider.releaseLoad.countDown();
+            first.get(10, TimeUnit.SECONDS).close();
+            second.get(10, TimeUnit.SECONDS).close();
         } finally {
             if (platform != null) {
                 provider.releaseLoad.countDown();

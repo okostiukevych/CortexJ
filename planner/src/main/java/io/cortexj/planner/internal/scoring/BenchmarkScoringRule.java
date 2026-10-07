@@ -31,12 +31,12 @@ public final class BenchmarkScoringRule implements ScoringRules.ScoringRule {
     }
 
     @Override
-    public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime,
-                      ExecutionRequest request, PlannerInputs inputs) {
+    public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot,
+                      RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
         if (hints.isEmpty()) {
             return;
         }
-        ExecutionCandidate built = candidate.build();
+        ExecutionCandidate built = snapshot;
         String runtimeId = built.runtimeId();
         String modelReference = request.model() == null ? "" : request.model().value();
         String quantization = built.quantization() == null ? "" : built.quantization();
