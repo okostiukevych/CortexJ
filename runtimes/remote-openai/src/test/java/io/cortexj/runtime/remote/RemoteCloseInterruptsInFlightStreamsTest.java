@@ -203,9 +203,11 @@ class RemoteCloseInterruptsInFlightStreamsTest {
         assertTrue(closeMillis < 5_000,
                 "close() must free the blocked SSE worker via disconnect, not wait for "
                         + "the 300s read timeout (took " + closeMillis + "ms)");
-        assertEquals(1, firstError.getCount(),
-                "a stream interrupted by close() must not deliver an error "
-                        + "(deliberate close has cancel semantics)");
+        assertTrue(firstError.await(10, TimeUnit.SECONDS),
+                "audit #95: a stream interrupted by close() must deliver a terminal "
+                        + "error instead of leaving the subscriber waiting forever");
+        assertTrue(firstError.getCount() == 0,
+                "the close terminal must arrive exactly once");
         Thread.sleep(200);
         assertTrue(noNewThreadAliveNamed("cortexj-remote-io", preExisting),
                 "no SSE worker thread of THIS runtime may survive runtime close()");

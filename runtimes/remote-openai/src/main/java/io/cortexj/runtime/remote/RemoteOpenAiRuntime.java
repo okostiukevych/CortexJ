@@ -44,7 +44,18 @@ import java.util.concurrent.Executors;
 public final class RemoteOpenAiRuntime implements ModelRuntime {
 
     private static final int SSE_POLL_MILLIS = 2_000;
+    // audit #103: a generous timeout while waiting for the response headers -
+    // a busy remote endpoint can take seconds to answer headers, and the old
+    // 2s poll timeout failed such streams with false SocketTimeoutExceptions;
+    // cancel() (which disconnects) remains the primary abort mechanism
+    private static final int SSE_HEADER_TIMEOUT_MILLIS = 30_000;
     private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
+
+    private static InferenceException closedDuringStream() {
+        return new InferenceException(ErrorCode.INFERENCE_CANCELLED,
+                "the model was closed while the stream was active",
+                "Subscribe again after re-loading the model.");
+    }
 
     private final RuntimeId runtimeId;
     private final String baseUrl;
@@ -212,12 +223,21 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     try {
                         streamSse(publisher, payload, cancelled, activeConnection);
                     } catch (final io.cortexj.error.CortexJException e) {
-                        if (cancelled.get() || runtimeClosed.get()) {
+                        if (cancelled.get()) {
+                            return;
+                        }
+                        if (runtimeClosed.get()) {
+                            // audit #95: close must deliver a terminal, not swallow it
+                            publisher.fail(closedDuringStream());
                             return;
                         }
                         publisher.fail(e);
                     } catch (final Exception e) {
-                        if (cancelled.get() || runtimeClosed.get()) {
+                        if (cancelled.get()) {
+                            return;
+                        }
+                        if (runtimeClosed.get()) {
+                            publisher.fail(closedDuringStream());
                             return;
                         }
                         publisher.fail(new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
@@ -243,47 +263,85 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         private void streamSse(io.cortexj.stream.internal.TokenStreamPublisher publisher, Map<String, Object> payload,
                                java.util.concurrent.atomic.AtomicBoolean cancelled,
                                java.util.concurrent.atomic.AtomicReference<HttpURLConnection> activeConnection) throws IOException {
-            if (cancelled.get() || runtimeClosed.get()) {
+            if (cancelled.get()) {
                 return;
             }
-            URL url = new URL(baseUrl + "/v1/chat/completions");
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            liveStreams.add(connection);
-            try {
-                connection.setRequestMethod("POST");
-                connection.setConnectTimeout(30_000);
-                // poll-style read timeout: a blocked socket read cannot be
-                // interrupted by close()/cancel() (fd close does not wake a
-                // blocked reader), so the loop wakes at short intervals and
-                // re-checks the cancel/close flags - the 300s ceiling below
-                // still bounds a silent-but-open stream
-                connection.setReadTimeout(SSE_POLL_MILLIS);
-                connection.setDoOutput(true);
-                connection.setRequestProperty("Accept", "text/event-stream");
-                connection.setRequestProperty("Content-Type", "application/json");
-                if (apiKey != null && !apiKey.isEmpty()) {
-                    connection.setRequestProperty("Authorization", "Bearer " + apiKey);
-                }
-                byte[] body = client.toJson(payload).getBytes(StandardCharsets.UTF_8);
-                connection.setFixedLengthStreamingMode(body.length);
-                java.io.OutputStream output = connection.getOutputStream();
+            if (runtimeClosed.get()) {
+                // audit #95: a close must not swallow the terminal
+                publisher.fail(closedDuringStream());
+                return;
+            }
+            // audit #103: the poll read timeout (below) also fires while
+            // waiting for the response headers - a busy remote endpoint can
+            // legitimately take longer than one poll slice to answer. A header
+            // timeout retries on a fresh connection until the deadline; the
+            // short poll timeout stays in force everywhere so close()/cancel()
+            // keep freeing workers within one poll window
+            long headerDeadline = System.currentTimeMillis() + SSE_HEADER_TIMEOUT_MILLIS;
+            while (true) {
+                URL url = new URL(baseUrl + "/v1/chat/completions");
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                liveStreams.add(connection);
+                activeConnection.set(connection);
                 try {
-                    output.write(body);
+                    connection.setRequestMethod("POST");
+                    connection.setConnectTimeout(30_000);
+                    // poll-style read timeout: a blocked socket read cannot be
+                    // interrupted by close()/cancel() (fd close does not wake a
+                    // blocked reader), so the loop wakes at short intervals and
+                    // re-checks the cancel/close flags - the 300s ceiling below
+                    // still bounds a silent-but-open stream
+                    connection.setReadTimeout(SSE_POLL_MILLIS);
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Accept", "text/event-stream");
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    if (apiKey != null && !apiKey.isEmpty()) {
+                        connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+                    }
+                    byte[] body = client.toJson(payload).getBytes(StandardCharsets.UTF_8);
+                    connection.setFixedLengthStreamingMode(body.length);
+                    java.io.OutputStream output = connection.getOutputStream();
+                    try {
+                        output.write(body);
+                    } finally {
+                        output.close();
+                    }
+                    int status;
+                    try {
+                        status = connection.getResponseCode();
+                    } catch (java.net.SocketTimeoutException headersNotAnswered) {
+                        connection.disconnect();
+                        liveStreams.remove(connection);
+                        activeConnection.compareAndSet(connection, null);
+                        if (cancelled.get()) {
+                            return;
+                        }
+                        if (runtimeClosed.get()) {
+                            publisher.fail(closedDuringStream());
+                            return;
+                        }
+                        if (System.currentTimeMillis() >= headerDeadline) {
+                            throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                    "the remote endpoint did not answer the stream request within "
+                                            + SSE_HEADER_TIMEOUT_MILLIS + " ms",
+                                    "Check the remote endpoint health and its request queue.")
+                                    .detail("endpoint", baseUrl);
+                        }
+                        continue;
+                    }
+                    if (status != 200) {
+                        throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                "remote stream request failed with HTTP " + status,
+                                "Check the remote endpoint health and model id.")
+                                .detail("status", String.valueOf(status));
+                    }
+                    readSseStream(connection.getInputStream(), publisher, cancelled);
+                    return;
                 } finally {
-                    output.close();
+                    liveStreams.remove(connection);
+                    activeConnection.compareAndSet(connection, null);
+                    connection.disconnect();
                 }
-                int status = connection.getResponseCode();
-                if (status != 200) {
-                    throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
-                            "remote stream request failed with HTTP " + status,
-                            "Check the remote endpoint health and model id.")
-                            .detail("status", String.valueOf(status));
-                }
-                readSseStream(connection.getInputStream(), publisher, cancelled);
-            } finally {
-                liveStreams.remove(connection);
-                activeConnection.set(null);
-                connection.disconnect();
             }
         }
 
@@ -337,8 +395,14 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                         outputTokens = usageNode.path("completion_tokens").asLong(-1);
                     }
                 }
-                if (cancelled.get() || runtimeClosed.get()) {
-                    // deliberately cancelled or closed: no terminal delivery
+                if (cancelled.get()) {
+                    // deliberately cancelled by the user: no terminal delivery
+                    return;
+                }
+                if (runtimeClosed.get()) {
+                    // audit #95: model/platform close mid-stream must terminate
+                    // the subscriber instead of leaving it waiting forever
+                    publisher.fail(closedDuringStream());
                     return;
                 }
                 publisher.complete(finish, inputTokens, outputTokens);
