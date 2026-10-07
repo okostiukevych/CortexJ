@@ -1,6 +1,7 @@
-# All CI jobs are SKIPPED for now (if: false) - they show as skipped on every
-# run, never execute, never red. Re-enable by removing the `if: false` line
-# from each job.
+# Full CI matrix (issue #91, issue #53). CodeQL stays gated in codeql.yml:
+# the repository is private without GitHub Advanced Security, so the SARIF
+# upload would fail - re-enable it after enabling code scanning in
+# Settings -> Code security.
 
 name: CI
 
@@ -11,7 +12,6 @@ on:
 
 jobs:
   build:
-    if: false
     name: JDK ${{ matrix.java }} on ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -46,7 +46,6 @@ jobs:
         run: mvn -B clean install
 
   windows:
-    if: false
     name: JDK ${{ matrix.java }} on windows-latest
     strategy:
       fail-fast: false
@@ -71,7 +70,6 @@ jobs:
         run: mvn -B clean install
 
   jpms:
-    if: false
     name: JPMS module descriptors (JDK ${{ matrix.java }})
     strategy:
       fail-fast: false
@@ -97,10 +95,9 @@ jobs:
 
   # Issue #53: quality lane - SpotBugs static analysis (triage in
   # spotbugs-exclude.xml, findings outside it fail the build) and JaCoCo
-  # coverage report published as a CI artifact. Runs on JDK 21: SpotBugs
-  # cannot read class files from newer JDK classpaths.
+  # coverage report published as a CI artifact. Runs on JDK 21 (SpotBugs
+  # 4.9.8.5 also reads JDK 25 class files, but 21 keeps the lane stable).
   quality:
-    if: false
     name: Static analysis + coverage (issue #53)
     runs-on: ubuntu-latest
     steps:
@@ -135,7 +132,6 @@ jobs:
   # accelerators; the lanes below are explicitly CPU-only and never silently
   # skip compatibility assertions - provider probes report honestly on any lane.
   cpu-verification:
-    if: false
     name: CPU-only runtime verification (spec 70)
     runs-on: macos-latest
     steps:
