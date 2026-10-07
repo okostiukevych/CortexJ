@@ -22,7 +22,19 @@ public final class HfTokenizer {
     }
 
     public static TokenEncoder load(Path tokenizerJson) throws IOException {
+        // audit 2026-10-07: hostile tokenizer.json must not OOM the parent -
+        // cap file size and JSON nesting before parsing.
+        long size = Files.size(tokenizerJson);
+        if (size > 100L * 1024L * 1024L) {
+            throw new IOException("tokenizer.json is unreasonably large (" + size + " bytes, cap 100MB)");
+        }
         ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamReadConstraints(
+                com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                        .maxNestingDepth(50)
+                        .maxNumberLength(10000)
+                        .maxStringLength(20 * 1024 * 1024)
+                        .build());
         JsonNode root;
         try (java.io.InputStream input = Files.newInputStream(tokenizerJson)) {
             root = mapper.readTree(input);

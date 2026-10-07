@@ -209,6 +209,19 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
         return 1L;
     }
 
+    private static ObjectMapper constrainedMapper() {
+        // audit 2026-10-07: hostile headers must not StackOverflow the
+        // converter - cap nesting depth and token/string budget
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamReadConstraints(
+                com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                        .maxNestingDepth(50)
+                        .maxNumberLength(10000)
+                        .maxStringLength(10 * 1024 * 1024)
+                        .build());
+        return mapper;
+    }
+
     private static Map<String, String> readAdjacentConfig(Path source) throws IOException {
         java.nio.file.Path parent = source.toAbsolutePath().getParent();
         Path config = parent == null ? null : parent.resolve("config.json");
@@ -216,7 +229,13 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
         if (config == null || !Files.isRegularFile(config)) {
             return flat;
         }
-        ObjectMapper mapper = new ObjectMapper();
+        // audit 2026-10-07: cap adjacent config.json - a hostile checkout
+        // must not OOM the converter via readAllBytes.
+        long size = Files.size(config);
+        if (size > 16L * 1024L * 1024L) {
+            throw new IOException("config.json is unreasonably large (" + size + " bytes, cap 16MB)");
+        }
+        ObjectMapper mapper = constrainedMapper();
         JsonNode root = mapper.readTree(Files.readAllBytes(config));
         flatten("", root, flat);
         return flat;
@@ -317,7 +336,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             }
             byte[] headerBytes = new byte[(int) headerSize];
             readFully(input, headerBytes);
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = constrainedMapper();
             JsonNode header = mapper.readTree(new String(headerBytes, StandardCharsets.UTF_8));
 
             // tensors sorted by their data offset: the safetensors layout guarantees
@@ -339,7 +358,17 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 }
                 JsonNode offsets = entry.path("data_offsets");
                 long[] pair = {offsets.get(0).asLong(), offsets.get(1).asLong()};
+                // audit 2026-10-07: overlapping or inverted data_offsets would
+                // silently duplicate/rewind bytes - reject the file instead.
+                if (pair[1] < pair[0]) {
+                    throw new IOException("safetensors tensor '" + field.getKey()
+                            + "' has inverted data_offsets");
+                }
                 TensorInfo tensor = new TensorInfo(field.getKey(), dtype, shape, pair);
+                if (byOffset.containsKey(Long.valueOf(pair[0]))) {
+                    throw new IOException("safetensors tensor '" + field.getKey()
+                            + "' overlaps another tensor at offset " + pair[0]);
+                }
                 byOffset.put(Long.valueOf(pair[0]), tensor);
             }
             if (byOffset.isEmpty()) {

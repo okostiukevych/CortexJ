@@ -33,7 +33,16 @@ public final class OtelEventListener implements PlatformEventListener {
     private final LongCounter modelLoadedCounter;
     private final LongCounter bytesDownloadedCounter;
     private final io.opentelemetry.api.metrics.DoubleHistogram inferenceHistogram;
-    private final Map<String, Span> spansByModel = new ConcurrentHashMap<String, Span>();
+    // audit 2026-10-07 (#148): first-token latency gets its own histogram -
+    // mixing it into the duration histogram made p95-first-token unbuildable
+    private final io.opentelemetry.api.metrics.DoubleHistogram firstTokenHistogram;
+    // audit 2026-10-07 (#148): a per-key span *stack* instead of a single
+    // slot - concurrent loads of the same model:artifact used to collapse
+    // onto one span (losers discarded unclosed pre-#101, then attributed to
+    // the winner). LIFO end matches the common nested case; every started
+    // span is ended exactly once either way.
+    private final Map<String, java.util.Deque<Span>> spansByModel =
+            new ConcurrentHashMap<String, java.util.Deque<Span>>();
 
     public OtelEventListener() {
         this(io.opentelemetry.api.GlobalOpenTelemetry.get());
@@ -64,6 +73,10 @@ public final class OtelEventListener implements PlatformEventListener {
                 .setDescription("Duration of timed platform operations (planning, downloads, inference)")
                 .setUnit("ms")
                 .build();
+        this.firstTokenHistogram = meter.histogramBuilder("cortexj.inference.first_token")
+                .setDescription("Time to first token for streaming inference")
+                .setUnit("ms")
+                .build();
     }
 
     @Override
@@ -77,7 +90,7 @@ public final class OtelEventListener implements PlatformEventListener {
                 inferenceHistogram.record(Double.parseDouble(durationMillis), attributes);
             }
             if (firstTokenMillis != null) {
-                inferenceHistogram.record(Double.parseDouble(firstTokenMillis), attributes);
+                firstTokenHistogram.record(Double.parseDouble(firstTokenMillis), attributes);
             }
         } catch (NumberFormatException ignored) {
             return;
@@ -119,16 +132,17 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void startSpan(PlatformEvent event, String name) {
-        // audit #101: computeIfAbsent means a losing concurrent load never
-        // starts a span it would then discard unclosed
-        spansByModel.computeIfAbsent(spanKey(event), new java.util.function.Function<String, Span>() {
-            @Override
-            public Span apply(String key) {
-                return tracer.spanBuilder(name)
-                        .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
-                        .startSpan();
-            }
-        });
+        // audit #101: the span is created inside computeIfAbsent so a losing
+        // concurrent load never starts a span it would then discard unclosed
+        java.util.Deque<Span> stack = spansByModel.get(spanKey(event));
+        if (stack == null) {
+            java.util.Deque<Span> fresh = new java.util.concurrent.ConcurrentLinkedDeque<Span>();
+            java.util.Deque<Span> raced = spansByModel.putIfAbsent(spanKey(event), fresh);
+            stack = raced == null ? fresh : raced;
+        }
+        stack.push(tracer.spanBuilder(name)
+                .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
+                .startSpan());
     }
 
     private void recordBytes(PlatformEvent event) {
@@ -143,7 +157,14 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void endSpan(PlatformEvent event) {
-        Span span = spansByModel.remove(spanKey(event));
+        java.util.Deque<Span> stack = spansByModel.get(spanKey(event));
+        if (stack == null) {
+            return;
+        }
+        Span span = stack.poll();
+        if (stack.isEmpty()) {
+            spansByModel.remove(spanKey(event), stack);
+        }
         if (span != null) {
             if (event.level() == PlatformEvent.Level.ERROR) {
                 span.setAttribute("cortexj.error", event.message());

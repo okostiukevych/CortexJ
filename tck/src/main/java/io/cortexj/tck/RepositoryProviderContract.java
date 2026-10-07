@@ -59,11 +59,16 @@ public abstract class RepositoryProviderContract {
 
     @Test
     public void offlineBehaviorIsExplicit() {
+        // audit 2026-10-07 (#148): the missing fail() let a provider that
+        // silently ignores offline mode pass the TCK
         try {
             provider().resolve(knownReference(), offlineContext());
         } catch (io.cortexj.error.ModelResolutionException expected) {
             assertEquals("CORTEXJ-MODEL-1003", expected.code(),
                     "offline failures must use the dedicated offline error code");
+            return;
         }
+        org.junit.jupiter.api.Assertions.fail(
+                "provider must fail offline resolution with CORTEXJ-MODEL-1003 instead of resolving");
     }
 }
