@@ -94,6 +94,9 @@ public final class OtelEventListener implements PlatformEventListener {
                 break;
             case MODEL_LOADED:
                 modelLoadedCounter.add(1, attributes);
+                // audit #101: a successful load always ends the resolution span;
+                // MODEL_RESOLUTION_COMPLETED only fires on the trust-warn path
+                endSpan(event);
                 break;
             case DOWNLOAD_COMPLETED:
                 downloadCounter.add(1, attributes);
@@ -116,9 +119,16 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void startSpan(PlatformEvent event, String name) {
-        spansByModel.putIfAbsent(spanKey(event), tracer.spanBuilder(name)
-                .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
-                .startSpan());
+        // audit #101: computeIfAbsent means a losing concurrent load never
+        // starts a span it would then discard unclosed
+        spansByModel.computeIfAbsent(spanKey(event), new java.util.function.Function<String, Span>() {
+            @Override
+            public Span apply(String key) {
+                return tracer.spanBuilder(name)
+                        .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
+                        .startSpan();
+            }
+        });
     }
 
     private void recordBytes(PlatformEvent event) {
