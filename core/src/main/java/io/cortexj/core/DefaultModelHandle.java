@@ -443,11 +443,14 @@ public final class DefaultModelHandle implements ModelHandle {
     }
 
     private void closeResources() {
+        // audit 2026-10-07 (#147): an Error (not just a RuntimeException)
+        // must not leave the handle stuck in CLOSING with its cache pin
+        // held - best-effort close, then let close() finish the transition
         try {
             if (model != null) {
                 model.close();
             }
-        } catch (RuntimeException failure) {
+        } catch (Throwable failure) {
             LOG.log(java.util.logging.Level.FINE,
                     "model close failed for " + descriptor.canonicalId() + "; continuing", failure);
         }
@@ -455,7 +458,7 @@ public final class DefaultModelHandle implements ModelHandle {
             if (runtime != null) {
                 runtime.close();
             }
-        } catch (RuntimeException failure) {
+        } catch (Throwable failure) {
             LOG.log(java.util.logging.Level.FINE,
                     "runtime close failed for " + descriptor.canonicalId() + "; continuing", failure);
         }

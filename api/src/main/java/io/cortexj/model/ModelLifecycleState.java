@@ -12,6 +12,13 @@ public enum ModelLifecycleState {
     PREPARING,
     LOADING,
     READY,
+    /**
+     * Reserved for degraded operation (audit 2026-10-07, #147): no current
+     * code path sets this state yet - runtime health is reported through
+     * probe results instead. Retained in the contract so monitoring built
+     * against {@code waitForReady()} keeps compiling; do not treat its
+     * absence as "never degraded", consult runtime health explicitly.
+     */
     DEGRADED,
     CLOSING,
     CLOSED,
