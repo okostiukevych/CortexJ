@@ -53,6 +53,30 @@ class CacheStorageTest {
     }
 
     @Test
+    void artifactsDifferingOnlyInCaseCoexist() throws IOException {
+        // audit #123: sanitize lowercases, so Model/model used to map to one
+        // file and evict each other through verify-delete; the path now carries
+        // a hash of the original id
+        CacheStorage storage = new CacheStorage(tempDir);
+        String upperChecksum = Checksums.sha256Hex("UPPER".getBytes(StandardCharsets.UTF_8));
+        String lowerChecksum = Checksums.sha256Hex("lower".getBytes(StandardCharsets.UTF_8));
+        storage.put("repo", "rev1", "Model.gguf", io.cortexj.model.Checksum.sha256(upperChecksum),
+                bytes("UPPER"));
+        storage.put("repo", "rev1", "model.gguf", io.cortexj.model.Checksum.sha256(lowerChecksum),
+                bytes("lower"));
+
+        Path upper = storage.get("repo", "rev1", "Model.gguf",
+                io.cortexj.model.Checksum.sha256(upperChecksum));
+        Path lower = storage.get("repo", "rev1", "model.gguf",
+                io.cortexj.model.Checksum.sha256(lowerChecksum));
+        assertNotNull(upper, "the Model.gguf entry must survive alongside model.gguf");
+        assertNotNull(lower, "the model.gguf entry must survive alongside Model.gguf");
+        assertFalse(upper.equals(lower), "case variants must live at distinct paths");
+        assertEquals("UPPER", new String(Files.readAllBytes(upper), StandardCharsets.UTF_8));
+        assertEquals("lower", new String(Files.readAllBytes(lower), StandardCharsets.UTF_8));
+    }
+
+    @Test
     void corruptedEntryIsRejectedAndRemoved() throws IOException {
         CacheStorage storage = new CacheStorage(tempDir);
         String correct = Checksums.sha256Hex("hello".getBytes(StandardCharsets.UTF_8));
