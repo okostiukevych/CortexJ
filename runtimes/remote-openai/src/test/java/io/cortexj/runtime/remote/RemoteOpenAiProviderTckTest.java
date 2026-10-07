@@ -50,6 +50,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -292,23 +293,111 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
 
     @Test
     void apiKeyUpstreamOnlyAndNeverInErrors() {
+        // audit #122: the old version of this test never set a key and only
+        // asserted getMessage() != null - it could not detect a leak. A real
+        // 401 path with a distinctive sentinel key must keep the key out of
+        // every error surface (message, details, whole cause chain).
+        final String sentinelKey = "sk-sentinel-DO-NOT-LEAK-3f9a2b7c";
         RuntimeOpenRequest openRequest = new RuntimeOpenRequest(
                 ModelDescriptor.builder("tck/model").revision("rev").build(),
                 remoteArtifact(), null, DeviceType.REMOTE,
                 Collections.<String, Object>emptyMap(),
-                java.util.Collections.singletonMap("remote.baseUrl", "http://localhost:1/unreachable"),
+                mapOf("remote.baseUrl", "http://127.0.0.1:1/unreachable",
+                        "remote.apiKey", sentinelKey),
                 testEnvironment(), testHardware(true), null, null);
-        RemoteOpenAiRuntime runtime = (RemoteOpenAiRuntime) provider.open(openRequest);
+        RemoteOpenAiRuntime unreachable = (RemoteOpenAiRuntime) provider.open(openRequest);
         try {
-            runtime.load(new RuntimeModelRequest(
+            RuntimeModel model = unreachable.load(new RuntimeModelRequest(
                     ModelDescriptor.builder("tck/model").revision("rev").build(),
                     remoteArtifact(), null, DeviceType.REMOTE,
-                    Collections.<String, Object>emptyMap())).close();
-            InferenceRequest request = InferenceRequest.builder().input("x").meta("task", "generation").build();
-        } catch (RuntimeException expected) {
-            assertTrue(expected.getMessage() != null);
+                    Collections.<String, Object>emptyMap()));
+            try {
+                ((io.cortexj.inference.TextGenerationCapability) model)
+                        .generate(io.cortexj.inference.GenerationRequest.prompt("x"));
+                throw new AssertionError("generate against an unreachable endpoint must fail");
+            } catch (RuntimeException expected) {
+                assertFalse(fullErrorSurface(expected).contains(sentinelKey),
+                        "audit #122: the API key must never appear in any error surface, got: "
+                                + fullErrorSurface(expected));
+            } finally {
+                model.close();
+            }
         } finally {
-            runtime.close();
+            unreachable.close();
         }
+
+        // a 401 from a hostile endpoint: the response body excerpt must be
+        // surfaced, the request credential must not
+        HttpServer hostile = null;
+        try {
+            hostile = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            final int[] portHolder = new int[1];
+            hostile.createContext("/v1/chat/completions", new HttpHandler() {
+                @Override
+                public void handle(HttpExchange exchange) throws IOException {
+                    readBody(exchange);
+                    respond(exchange, 401, "{\"error\":\"invalid_api_key\"}");
+                }
+            });
+            hostile.start();
+            portHolder[0] = hostile.getAddress().getPort();
+            RuntimeOpenRequest authRequest = new RuntimeOpenRequest(
+                    ModelDescriptor.builder("tck/model").revision("rev").build(),
+                    remoteArtifact(), null, DeviceType.REMOTE,
+                    Collections.<String, Object>emptyMap(),
+                    mapOf("remote.baseUrl", "http://127.0.0.1:" + portHolder[0],
+                            "remote.apiKey", sentinelKey),
+                    testEnvironment(), testHardware(true), null, null);
+            RemoteOpenAiRuntime runtime = (RemoteOpenAiRuntime) provider.open(authRequest);
+            try {
+                RuntimeModel model = runtime.load(new RuntimeModelRequest(
+                        ModelDescriptor.builder("tck/model").revision("rev").build(),
+                        remoteArtifact(), null, DeviceType.REMOTE,
+                        Collections.<String, Object>emptyMap()));
+                try {
+                    ((io.cortexj.inference.TextGenerationCapability) model)
+                            .generate(io.cortexj.inference.GenerationRequest.prompt("x"));
+                    throw new AssertionError("generate against a 401 endpoint must fail");
+                } catch (RuntimeException expected) {
+                    String surface = fullErrorSurface(expected);
+                    assertFalse(surface.contains(sentinelKey),
+                            "audit #122: the API key must never appear in any error surface, got: "
+                                    + surface);
+                } finally {
+                    model.close();
+                }
+            } finally {
+                runtime.close();
+            }
+        } catch (java.io.IOException noServer) {
+            throw new RuntimeException("could not start the hostile 401 stub", noServer);
+        } finally {
+            if (hostile != null) {
+                hostile.stop(0);
+            }
+        }
+    }
+
+    private static String fullErrorSurface(Throwable failure) {
+        StringBuilder surface = new StringBuilder();
+        Throwable current = failure;
+        int hops = 0;
+        while (current != null && hops < 10) {
+            surface.append(String.valueOf(current)).append('\n');
+            if (current instanceof io.cortexj.error.CortexJException) {
+                surface.append(((io.cortexj.error.CortexJException) current).details()).append('\n');
+            }
+            current = current.getCause();
+            hops++;
+        }
+        return surface.toString();
+    }
+
+    private static Map<String, String> mapOf(String first, String firstValue,
+                                              String second, String secondValue) {
+        Map<String, String> map = new java.util.HashMap<String, String>();
+        map.put(first, firstValue);
+        map.put(second, secondValue);
+        return map;
     }
 }

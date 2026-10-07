@@ -121,6 +121,10 @@ final class HttpJsonClient {
         }
     }
 
+    // audit #99: a hostile or misconfigured endpoint must not stream an
+    // unbounded body into the parent heap
+    private static final int MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
     private static String readAll(InputStream stream) throws IOException {
         if (stream == null) {
             return "";
@@ -131,7 +135,13 @@ final class HttpJsonClient {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             byte[] buffer = new byte[8 * 1024];
             int read;
+            long total = 0L;
             while ((read = input.read(buffer)) >= 0) {
+                total += read;
+                if (total > MAX_RESPONSE_BYTES) {
+                    throw new IOException("remote response body exceeds " + MAX_RESPONSE_BYTES
+                            + " bytes; refusing to buffer it");
+                }
                 bytes.write(buffer, 0, read);
             }
             return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
