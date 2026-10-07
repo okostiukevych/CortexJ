@@ -9,6 +9,7 @@ import io.cortexj.observability.PlatformEventListener;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -414,8 +415,11 @@ public final class CacheStorage {
             Files.createDirectories(parentDirectory);
         }
         Path marker = artifact.resolveSibling(fileNameOf(artifact) + ".pinned");
-        if (!Files.exists(marker)) {
+        try {
             Files.createFile(marker);
+        } catch (FileAlreadyExistsException alreadyPinned) {
+            // audit #94: two concurrent pins of one artifact - the marker
+            // already being present is the success case, not a failure
         }
     }
 
