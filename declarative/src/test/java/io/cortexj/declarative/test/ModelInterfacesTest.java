@@ -186,7 +186,16 @@ class ModelInterfacesTest {
     void malformedJsonFailsLoudly() {
         Amount amount = ModelInterfaces.of(handle("sorry, no json here"), Amount.class,
                 new JsonPromptDecoder<Total>());
-        assertThrows(IllegalArgumentException.class, () -> amount.extract("anything"));
+        assertThrows(io.cortexj.error.CortexJException.class, () -> amount.extract("anything"));
+    }
+
+    @Test
+    void bracePrefixedProseWithEmbeddedJsonStillDecodes() {
+        // audit #118: the first unbalanced '{' must not abort the candidate scan
+        Amount amount = ModelInterfaces.of(handle("Here {you go: {\"total\": 1}"), Amount.class,
+                new JsonPromptDecoder<Total>());
+        Total total = amount.extract("coffee");
+        assertEquals(1.0, total.total, 0.001);
     }
 
     @Test

@@ -2,6 +2,8 @@ package io.cortexj.declarative;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortexj.ErrorCode;
+import io.cortexj.error.CortexJException;
 
 /**
  * Jackson-backed decoder: extracts the first JSON object/array from the response
@@ -16,18 +18,18 @@ public final class JsonPromptDecoder<T> implements PromptDecoder<T> {
     @Override
     public T decode(String response, Class<T> targetType) {
         if (response == null) {
-            throw new IllegalArgumentException("model returned no text to decode");
+            throw new CortexJException(ErrorCode.INFERENCE_FAILED, "model returned no text to decode");
         }
         String json = extractJson(response.trim());
         if (json == null) {
-            throw new IllegalArgumentException(
+            throw new CortexJException(ErrorCode.INFERENCE_FAILED,
                     "model response contains no JSON object to decode into " + targetType.getName()
                             + " (response: " + preview(response) + ")");
         }
         try {
             return mapper.readValue(json, targetType);
         } catch (Exception malformed) {
-            throw new IllegalArgumentException(
+            throw new CortexJException(ErrorCode.INFERENCE_FAILED,
                     "model response is not valid JSON for " + targetType.getName() + ": "
                             + malformed.getMessage());
         }
@@ -70,7 +72,9 @@ public final class JsonPromptDecoder<T> implements PromptDecoder<T> {
                     }
                 }
             }
-            return null; // unbalanced - not valid JSON
+            // audit #118: an unbalanced candidate (prose containing a brace
+            // before the JSON - a classic LLM output shape) must not abort the
+            // whole scan; keep looking at the next candidate position
         }
         return null;
     }
