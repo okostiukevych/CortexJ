@@ -200,6 +200,72 @@ class OtelEventListenerTest {
         assertEquals(streamsAfterFirstBatch, reader.collectAllMetrics().size());
     }
 
+    @Test
+    void modelLoadedEndsTheResolutionSpan() {
+        InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        // audit #101: a successful load ends with MODEL_LOADED (not
+        // MODEL_RESOLUTION_COMPLETED, which only fires on the trust-warn path)
+        listener.onEvent(event(PlatformEvent.Type.MODEL_RESOLUTION_STARTED, PlatformEvent.Level.INFO,
+                "resolving", "qwen3", "qwen3.gguf", null));
+        listener.onEvent(event(PlatformEvent.Type.MODEL_LOADED, PlatformEvent.Level.INFO,
+                "loaded", "qwen3", "qwen3.gguf", null));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(1, spans.size(),
+                "the resolution span must be ended by MODEL_LOADED");
+        assertTrue(spans.get(0).hasEnded());
+    }
+
+    @Test
+    void concurrentLoadsOfDistinctModelsGetDistinctEndedSpans() throws Exception {
+        final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        final OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        // audit #101: span keys include model+artifact, and a losing
+        // computeIfAbsent must never start a span it would discard unclosed
+        final java.util.concurrent.CountDownLatch started =
+                new java.util.concurrent.CountDownLatch(2);
+        final java.util.concurrent.CountDownLatch finished =
+                new java.util.concurrent.CountDownLatch(2);
+        for (int i = 0; i < 2; i++) {
+            final int slot = i;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        String model = "model-" + slot;
+                        listener.onEvent(event(PlatformEvent.Type.MODEL_RESOLUTION_STARTED,
+                                PlatformEvent.Level.INFO, "resolving", model, model + ".gguf", null));
+                        listener.onEvent(event(PlatformEvent.Type.MODEL_LOADED,
+                                PlatformEvent.Level.INFO, "loaded", model, model + ".gguf", null));
+                    } finally {
+                        started.countDown();
+                        finished.countDown();
+                    }
+                }
+            }).start();
+        }
+        assertTrue(started.await(10, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(finished.await(10, java.util.concurrent.TimeUnit.SECONDS));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(2, spans.size(),
+                "both concurrent loads must produce their own ended spans");
+        for (SpanData span : spans) {
+            assertTrue(span.hasEnded(), "no span may leak unclosed");
+        }
+    }
+
     private static MetricData metric(InMemoryMetricReader reader, String name) {
         for (MetricData data : reader.collectAllMetrics()) {
             if (name.equals(data.getName())) {
