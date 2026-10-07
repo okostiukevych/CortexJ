@@ -26,9 +26,9 @@
         <cortexj.compat.skip>true</cortexj.compat.skip>
         <surefire.excludedGroups>perf</surefire.excludedGroups>
 
-        <jackson.version>2.17.2</jackson.version>
+        <jackson.version>2.21.7</jackson.version>
         <junit.version>5.10.2</junit.version>
-        <onnxruntime.version>1.19.0</onnxruntime.version>
+        <onnxruntime.version>1.24.2</onnxruntime.version>
         <opentelemetry.version>1.49.0</opentelemetry.version>
 
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
