@@ -27,11 +27,24 @@ public final class CortexJServerMain {
 
         CortexJ platform = CortexJ.builder().build();
         try {
+            // audit #105: the hook is registered BEFORE the model loads so a
+            // Ctrl+C during the load window still closes the platform (and with
+            // it any runtime the load already started)
+            final CortexJServer[] serverRef = new CortexJServer[1];
+            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    if (serverRef[0] != null) {
+                        serverRef[0].stop();
+                    }
+                    platform.close();
+                }
+            }, "cortexj-server-shutdown"));
             CortexJServer server = new CortexJServer(platform, modelReference);
+            serverRef[0] = server;
             int bound = server.start(port);
             System.out.println("cortexj-server listening on http://127.0.0.1:" + bound
                     + " (model: " + modelReference + ")");
-            Runtime.getRuntime().addShutdownHook(shutdownHook(server, platform));
             CountDownLatch keepAlive = new CountDownLatch(1);
             keepAlive.await();
         } finally {
