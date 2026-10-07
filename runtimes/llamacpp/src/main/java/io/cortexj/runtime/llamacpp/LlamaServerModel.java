@@ -48,6 +48,11 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 "Subscribe again after re-loading the model.");
     }
 
+    private static boolean isConnectionRefused(IOException e) {
+        String message = e.getMessage();
+        return message != null && message.contains("Connection refused");
+    }
+
     private final SharedEndpointRegistry.SharedEndpoint endpoint;
     private final ExecutorService ioExecutor;
     private final boolean ownsExecutor;
@@ -118,6 +123,20 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         } catch (InferenceException e) {
             throw e;
         } catch (IOException e) {
+            if (isConnectionRefused(e)) {
+                // audit #110: a dead llama-server used to leave the handle READY
+                // and every call failing connection-refused forever - fail the
+                // model fast (releasing the endpoint so the next load respawns
+                // it) with an actionable remediation instead
+                close();
+                InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "the llama-server process behind this model is unreachable (connection refused)",
+                        "The llama-server process appears to have died; re-load the model - "
+                                + "the next load respawns the endpoint. This handle now fails "
+                                + "fast instead of returning connection-refused forever.");
+                failure.detail("endpoint", endpoint.baseUrl());
+                throw failure;
+            }
             InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
                     "llama-server generation failed: " + e.getMessage(),
                     "Check that the managed llama-server process is alive.");
@@ -291,6 +310,20 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 }
                 consumer.onComplete(new StreamCompletion(finishReason, usage));
             } catch (Exception e) {
+                if (e instanceof java.io.IOException && isConnectionRefused((java.io.IOException) e)) {
+                    // audit #110: a dead llama-server fails the model fast and
+                    // releases the endpoint (the next load respawns it) instead
+                    // of leaving the handle READY and every call failing
+                    // connection-refused forever
+                    close();
+                    InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "the llama-server process behind this model is unreachable (connection refused)",
+                            "The llama-server process appears to have died; re-load the model - "
+                                    + "the next load respawns the endpoint.");
+                    failure.detail("endpoint", endpoint.baseUrl());
+                    consumer.onError(failure);
+                    return;
+                }
                 if (closed.get()) {
                     // audit #95: the disconnect came from model/handle close
                     consumer.onError(closedDuringStream());
