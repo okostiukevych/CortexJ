@@ -94,10 +94,22 @@ public final class CacheStorage {
     }
 
     public Path artifactPath(String repositoryId, String revision, String artifactId) {
-        String safeRepository = sanitize(repositoryId);
-        String safeRevision = sanitize(revision == null || revision.isEmpty() ? "unresolved" : revision);
-        String safeArtifact = sanitize(artifactId);
+        // audit #123: sanitize lowercases, so two ids differing only in case
+        // map to one path and evict each other through verify-delete; a short
+        // hash of the ORIGINAL id (as a path-segment prefix) keeps case
+        // variants distinct
+        String safeRepository = shortHash(repositoryId) + "-" + sanitize(repositoryId);
+        String safeRevision = shortHash(revision == null || revision.isEmpty() ? "unresolved" : revision)
+                + "-" + sanitize(revision == null || revision.isEmpty() ? "unresolved" : revision);
+        String safeArtifact = shortHash(artifactId) + "-" + sanitize(artifactId);
         return root.resolve(safeRepository).resolve(safeRevision).resolve(safeArtifact);
+    }
+
+    private static String shortHash(String value) {
+        if (value == null || value.isEmpty()) {
+            return "0";
+        }
+        return Integer.toHexString(value.hashCode() & 0x7fffffff);
     }
 
     public boolean contains(String repositoryId, String revision, String artifactId) {
@@ -428,6 +440,22 @@ public final class CacheStorage {
         Files.deleteIfExists(artifact.resolveSibling(fileNameOf(artifact) + ".pinned"));
     }
 
+    /**
+     * audit #115: eviction deletes take the same per-key stripe lock that
+     * get() holds during the full-hash verify, so a file can never vanish
+     * mid-hash (lock order evictionLock -> keyLock is consistent with get(),
+     * which takes only the keyLock - no deadlock).
+     */
+    private boolean deleteUnderKeyLock(CacheEntry entry) throws IOException {
+        synchronized (keyLock(entry.path())) {
+            if (!Files.deleteIfExists(entry.path())) {
+                return false;
+            }
+            deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+            return true;
+        }
+    }
+
     public long evictOlderThan(long cutoffEpochMillis) throws IOException {
         synchronized (evictionLock) {
             List<CacheEntry> entries = list();
@@ -442,8 +470,7 @@ public final class CacheStorage {
                 if (Files.isRegularFile(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"))) {
                     continue;
                 }
-                if (Files.deleteIfExists(entry.path())) {
-                    deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+                if (deleteUnderKeyLock(entry)) {
                     freed += entry.sizeBytes();
                 }
             }
@@ -505,8 +532,7 @@ public final class CacheStorage {
                 if (Files.isRegularFile(entry.path().resolveSibling(fileNameOf(entry.path()) + ".pinned"))) {
                     continue;
                 }
-                if (Files.deleteIfExists(entry.path())) {
-                    deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+                if (deleteUnderKeyLock(entry)) {
                     freed += entry.sizeBytes();
                 }
             }
@@ -551,8 +577,7 @@ public final class CacheStorage {
                 tracked += entry.sizeBytes();
                 continue;
             }
-            if (Files.deleteIfExists(entry.path())) {
-                deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+            if (deleteUnderKeyLock(entry)) {
                 freed += entry.sizeBytes();
                 continue;
             }
