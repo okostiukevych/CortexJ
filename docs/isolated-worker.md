@@ -165,6 +165,15 @@ pattern as the remote runtimes); a subscription `cancel()` sends
   ladder. Idempotent. Even without it, no orphans survive: workers exit on
   the `shutdown` op, on stdin EOF (parent JVM gone) or on their own
   `System.exit`.
+* **Ownership contract (audit 2026-10-05, issue #127)**: the provider is
+  always constructed and registered by the caller
+  (`CortexJ.builder().runtimeProvider(...)`) — it is never discovered via
+  `META-INF/services`, and the SPI `RuntimeProvider` interface has no
+  `close()`. `platform.close()` therefore does NOT close user-registered
+  providers: the child JVM keeps running (with its loaded native runtime)
+  until the caller calls `provider.close()` or the parent JVM exits
+  (stdin EOF). Wire `provider.close()` into your own shutdown hook when the
+  application outlives the platform.
 
 ## v1 limitations (deliberate cuts)
 
