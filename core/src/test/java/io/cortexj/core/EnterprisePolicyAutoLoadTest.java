@@ -68,4 +68,30 @@ class EnterprisePolicyAutoLoadTest {
             platform.close();
         }
     }
+
+    @Test
+    void unreadablePolicyFileFailsThePlatformBootstrap() throws Exception {
+        Path work = tempDir.resolve("sabotaged-work");
+        Files.createDirectories(work);
+        Path policy = work.resolve("enterprise-policy.properties");
+        Files.write(policy, java.util.Arrays.asList("forbiddenRuntimes=e2e-runtime"));
+        // audit #100: a present-but-unreadable policy file fails closed
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                policy.toFile().setReadable(false, false),
+                "the test needs chmod semantics - skipped explicitly on filesystems without them");
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    io.cortexj.error.ConfigurationException.class,
+                    () -> CortexJ.builder()
+                            .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                            .runtimeProvider(new EndToEndLoadTest.FakeRuntimeProvider())
+                            .workingDirectory(work)
+                            .build(),
+                    "audit #100: a sabotaged (unreadable) policy file must fail the "
+                            + "platform bootstrap instead of silently disabling the "
+                            + "restrictions it declares");
+        } finally {
+            policy.toFile().setReadable(true, false);
+        }
+    }
 }

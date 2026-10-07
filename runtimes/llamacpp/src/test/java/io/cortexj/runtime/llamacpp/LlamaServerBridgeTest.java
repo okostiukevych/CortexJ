@@ -175,6 +175,44 @@ class LlamaServerBridgeTest {
     }
 
     @Test
+    void deadEndpointFailsTheModelFastWithRemediation() throws Exception {
+        // audit #110: a dead llama-server used to leave the handle READY and
+        // every call failing connection-refused forever
+        LlamaCppProvider provider = providerWithStubEndpoint();
+        RuntimeModel model = loadModel(provider);
+        TextGenerationCapability generator = (TextGenerationCapability) model;
+        GenerationResponse first = generator.generate(GenerationRequest.prompt("hi"));
+        assertEquals("managed hello", first.text(), "the stub endpoint must answer first");
+
+        // kill the endpoint process (the stub server stands in for the child)
+        server.stop(0);
+
+        try {
+            generator.generate(GenerationRequest.prompt("hi again"));
+            org.junit.jupiter.api.Assertions.fail(
+                    "a dead endpoint must fail, not hang or return connection-refused raw");
+        } catch (io.cortexj.error.CortexJException expected) {
+            assertTrue(expected.getMessage().contains("unreachable (connection refused)"),
+                    "the failure must name the unreachable endpoint, got: "
+                            + expected.getMessage());
+            assertTrue(expected.toString().contains("re-load the model"),
+                    "the failure must carry the reload remediation, got: "
+                            + expected);
+        }
+
+        try {
+            generator.generate(GenerationRequest.prompt("and again"));
+            org.junit.jupiter.api.Assertions.fail(
+                    "the handle must fail fast after the dead-endpoint failure");
+        } catch (io.cortexj.error.CortexJException closed) {
+            assertTrue(closed.getMessage().contains("closed"),
+                    "after the dead-endpoint failure every subsequent call must fail fast "
+                            + "with the closed-model error instead of connection-refused "
+                            + "forever, got: " + closed.getMessage());
+        }
+    }
+
+    @Test
     void bridgeModelGeneratesThroughManagedProcess() throws Exception {
         LlamaCppProvider provider = providerWithStubEndpoint();
         RuntimeModel model = loadModel(provider);
