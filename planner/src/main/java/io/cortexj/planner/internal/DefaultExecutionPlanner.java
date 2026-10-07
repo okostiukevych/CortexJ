@@ -526,7 +526,15 @@ public final class DefaultExecutionPlanner implements Planner {
     }
 
     public void invalidateProbeCache() {
-        probeFutures.clear();
+        // audit #116: clear only COMPLETED entries - sweeping in-flight probe
+        // claims orphaned the running probe and made the next call re-run the
+        // physical probe of the same runtime concurrently
+        for (java.util.Map.Entry<String, java.util.concurrent.CompletableFuture<CachedProbe>> entry
+                : probeFutures.entrySet()) {
+            if (entry.getValue().isDone()) {
+                probeFutures.remove(entry.getKey(), entry.getValue());
+            }
+        }
     }
 
     void setProbeTtlsForTesting(long positiveMillis, long negativeMillis) {
