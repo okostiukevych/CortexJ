@@ -142,6 +142,55 @@ class WorkerHostProtocolTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Tag("concurrency")
+    void controlOpsAreAnsweredWhileABlockingOpRuns() throws Exception {
+        // audit #96: cancelStream/shutdown must never queue behind a long op
+        assertTrue(request(openPayload(31)).path("runtimeOpened").asBoolean());
+        String token = request(loadPayload(32)).path("modelToken").asText();
+
+        ObjectNode slowExecute = op(33, "execute");
+        slowExecute.put("modelToken", token);
+        slowExecute.set("request", WorkerCodec.inferenceRequest(
+                io.cortexj.inference.InferenceRequest.builder()
+                        .input("hello").parameter("slow", Boolean.TRUE).build()));
+        requests.println(slowExecute.toString());
+        requests.flush();
+
+        // the slow execute blocks a worker op-pool thread for 60s; the control
+        // op sent right after must be answered within seconds on the reader
+        // thread, not after the blocking op completes
+        ObjectNode cancel = op(34, "cancelStream");
+        cancel.put("streamId", 999L);
+        requests.println(cancel.toString());
+        requests.flush();
+
+        long deadline = System.currentTimeMillis() + 3_000;
+        boolean answered = false;
+        while (System.currentTimeMillis() < deadline) {
+            String line = responses.poll(200, TimeUnit.MILLISECONDS);
+            if (line == null) {
+                continue;
+            }
+            JsonNode node = parse(line);
+            if (node.has("event")) {
+                continue;
+            }
+            assertEquals(34L, node.path("id").asLong(),
+                    "the cancelStream reply must not be preceded by the still-blocked execute");
+            assertTrue(node.path("ok").asBoolean(),
+                    "cancelStream for an unknown stream must be answered ok (idempotent)");
+            answered = true;
+            break;
+        }
+        assertTrue(answered,
+                "audit #96: the control op must be answered while the blocking "
+                        + "execute is still running (it would previously queue "
+                        + "behind it for the full 60s)");
+        assertEquals(null, responses.poll(300, TimeUnit.MILLISECONDS),
+                "the slow execute must still be blocked at this point");
+    }
+
+    @Test
     void providerLookupFindsRegisteredRuntimeId() {
         assertEquals("worker-stub", WorkerHost.findProvider("Worker-Stub").id().value());
         assertThrows(CortexJException.class, new org.junit.jupiter.api.function.Executable() {
