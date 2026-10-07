@@ -50,6 +50,10 @@ public final class DefaultModels implements io.cortexj.Models {
             new java.util.concurrent.ConcurrentHashMap<DefaultModelHandle, ArtifactPin>();
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> pinCounts =
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Object> pinLocks =
+            new java.util.concurrent.ConcurrentHashMap<String, Object>();
+    private final java.util.concurrent.CopyOnWriteArrayList<java.util.concurrent.CompletableFuture<ModelHandle>> asyncLoads =
+            new java.util.concurrent.CopyOnWriteArrayList<java.util.concurrent.CompletableFuture<ModelHandle>>();
     private volatile boolean closed;
 
     DefaultModels(DefaultCortexJ platform) {
@@ -93,15 +97,28 @@ public final class DefaultModels implements io.cortexj.Models {
             return;
         }
         ArtifactPin pin = new ArtifactPin(repositoryId, revision, artifactId);
-        pinsByHandle.put(handle, pin);
-        java.util.concurrent.atomic.AtomicInteger count = pinCounts.computeIfAbsent(
-                pin.identity(), new java.util.function.Function<String, java.util.concurrent.atomic.AtomicInteger>() {
-                    @Override
-                    public java.util.concurrent.atomic.AtomicInteger apply(String key) {
-                        return new java.util.concurrent.atomic.AtomicInteger();
-                    }
-                });
-        count.incrementAndGet();
+        // audit #94: the whole acquire (marker + registry + count) is serialized
+        // per identity so release can never remove a counter a live handle re-created
+        synchronized (pinLockFor(pin.identity())) {
+            pinsByHandle.put(handle, pin);
+            java.util.concurrent.atomic.AtomicInteger count = pinCounts.computeIfAbsent(
+                    pin.identity(), new java.util.function.Function<String, java.util.concurrent.atomic.AtomicInteger>() {
+                        @Override
+                        public java.util.concurrent.atomic.AtomicInteger apply(String key) {
+                            return new java.util.concurrent.atomic.AtomicInteger();
+                        }
+                    });
+            count.incrementAndGet();
+        }
+    }
+
+    private Object pinLockFor(String identity) {
+        return pinLocks.computeIfAbsent(identity, new java.util.function.Function<String, Object>() {
+            @Override
+            public Object apply(String key) {
+                return new Object();
+            }
+        });
     }
 
     private void releasePin(DefaultModelHandle handle) {
@@ -109,17 +126,22 @@ public final class DefaultModels implements io.cortexj.Models {
         if (pin == null) {
             return;
         }
-        java.util.concurrent.atomic.AtomicInteger count = pinCounts.get(pin.identity());
-        if (count == null) {
-            return;
-        }
-        if (count.decrementAndGet() <= 0) {
-            pinCounts.remove(pin.identity(), count);
-            try {
-                platform.cache().unpin(pin.repositoryId, pin.revision, pin.artifactId);
-            } catch (java.io.IOException unpinFailure) {
-                LOG.log(java.util.logging.Level.FINE,
-                        "artifact unpinning failed for " + pin.artifactId, unpinFailure);
+        // audit #94: decrement + removal + unpin under the same per-identity lock
+        // as acquire, so a concurrent acquire either joins this pin's count
+        // (2 -> 1, no removal) or re-creates a fresh counter after the removal
+        synchronized (pinLockFor(pin.identity())) {
+            java.util.concurrent.atomic.AtomicInteger count = pinCounts.get(pin.identity());
+            if (count == null) {
+                return;
+            }
+            if (count.decrementAndGet() <= 0) {
+                pinCounts.remove(pin.identity(), count);
+                try {
+                    platform.cache().unpin(pin.repositoryId, pin.revision, pin.artifactId);
+                } catch (java.io.IOException unpinFailure) {
+                    LOG.log(java.util.logging.Level.FINE,
+                            "artifact unpinning failed for " + pin.artifactId, unpinFailure);
+                }
             }
         }
     }
@@ -166,10 +188,24 @@ public final class DefaultModels implements io.cortexj.Models {
             final java.util.concurrent.CompletableFuture<ModelHandle> underlying =
                     new java.util.concurrent.CompletableFuture<ModelHandle>();
             try {
+                asyncLoads.add(underlying);
                 platform.downloadExecutor().execute(new Runnable() {
                     @Override
                     public void run() {
+                        // audit #89: the task body runs inside the close barrier
+                        // (same contract as the synchronous load) - either it
+                        // finishes before closeAll() takes the write lock, or it
+                        // observes closed and fails the future instead of leaking
+                        // a handle nobody will ever close
+                        loadLock.readLock().lock();
                         try {
+                            if (closed) {
+                                underlying.completeExceptionally(new ModelLoadException(
+                                        ErrorCode.LOAD_FAILED,
+                                        "Model load rejected: the CortexJ platform is closed.",
+                                        "Create a new CortexJ instance to load models after shutdown."));
+                                return;
+                            }
                             if (cancelFlag.get()) {
                                 underlying.completeExceptionally(
                                         new java.util.concurrent.CancellationException(
@@ -189,10 +225,15 @@ public final class DefaultModels implements io.cortexj.Models {
                             }
                         } catch (Throwable failure) {
                             underlying.completeExceptionally(failure);
+                        } finally {
+                            asyncLoads.remove(underlying);
+                            loadLock.readLock().unlock();
                         }
                     }
                 });
+                asyncLoads.add(underlying);
             } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                asyncLoads.remove(underlying);
                 underlying.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "Model load rejected: too many concurrent downloads are already queued "
                                 + "(" + saturated.getMessage() + ").",
@@ -271,10 +312,14 @@ public final class DefaultModels implements io.cortexj.Models {
                         || e instanceof ArtifactIntegrityException) {
                     last = asLoadFailure(e, candidate);
                     if (index < chain.size() - 1) {
+                        java.util.Map<String, String> fallbackAttributes =
+                                new java.util.LinkedHashMap<String, String>();
+                        fallbackAttributes.put("model", plan.modelId());
+                        fallbackAttributes.put("runtime", candidate.runtimeId());
                         platform.events().publish(PlatformEvent.Type.FALLBACK_APPLIED,
                                 PlatformEvent.Level.WARNING,
                                 "load failed on " + candidate.runtimeId() + ": " + e.getMessage()
-                                        + "; trying fallback", null);
+                                        + "; trying fallback", fallbackAttributes);
                     }
                     continue;
                 }
@@ -326,8 +371,10 @@ public final class DefaultModels implements io.cortexj.Models {
 
     private DefaultModelHandle loadCandidate(ExecutionPlan plan, ExecutionCandidate candidate, ExecutionRequest request,
                                              java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
-        platform.events().info(PlatformEvent.Type.MODEL_RESOLUTION_STARTED,
-                "loading " + plan.modelId() + " via " + candidate.runtimeId());
+        platform.events().publish(PlatformEvent.Type.MODEL_RESOLUTION_STARTED,
+                PlatformEvent.Level.INFO,
+                "loading " + plan.modelId() + " via " + candidate.runtimeId(),
+                candidateAttributes(plan, candidate));
 
         RuntimeProvider provider = providerById(candidate.runtimeId());
         ResolvedModel resolved = plan.resolvedModel();
@@ -378,15 +425,25 @@ public final class DefaultModels implements io.cortexj.Models {
                         artifactPath,
                         candidate.device(),
                         planOptions(request, candidate)));
-        } catch (RuntimeException e) {
-            try {
-                runtime.close();
-            } catch (RuntimeException closeError) {
-                LOG.log(java.util.logging.Level.FINE,
-                        "runtime close failed during load failure; continuing", closeError);
-            }
+            } catch (RuntimeException e) {
+                try {
+                    runtime.close();
+                } catch (RuntimeException closeError) {
+                    LOG.log(java.util.logging.Level.FINE,
+                            "runtime close failed during load failure; continuing", closeError);
+                }
                 throw e instanceof ModelLoadException ? e : new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "runtime " + candidate.runtimeId() + " failed to load the model: " + e.getMessage(), e);
+            } catch (Error e) {
+                // audit #102: an Error (e.g. OOM while loading a multi-GB model)
+                // must not leak the runtime - for llamacpp that is a live
+                // llama-server holding a refcount; best-effort close, then rethrow
+                try {
+                    runtime.close();
+                } catch (Throwable closeError) {
+                    // never mask the original Error with a cleanup failure
+                }
+                throw e;
             }
             if (cancelFlag != null && cancelFlag.get()) {
                 closeAfterCancellation(model, runtime);
@@ -397,8 +454,10 @@ public final class DefaultModels implements io.cortexj.Models {
 
             acquirePin(handle, resolved, candidate);
 
-            platform.events().info(PlatformEvent.Type.MODEL_LOADED,
-                    "model loaded via " + candidate.runtimeId() + " on " + candidate.device());
+            platform.events().publish(PlatformEvent.Type.MODEL_LOADED,
+                    PlatformEvent.Level.INFO,
+                    "model loaded via " + candidate.runtimeId() + " on " + candidate.device(),
+                    candidateAttributes(plan, candidate));
 
             openHandles.add(handle);
             return handle;
@@ -406,7 +465,25 @@ public final class DefaultModels implements io.cortexj.Models {
             releasePin(handle);
             handle.lifecycleTo(ModelLifecycleState.FAILED);
             throw e;
+        } catch (Error e) {
+            // audit #102: release the (never-attached) pin and rethrow; the
+            // runtime itself was already closed by the inner handler
+            releasePin(handle);
+            throw e;
         }
+    }
+
+    private static java.util.Map<String, String> candidateAttributes(ExecutionPlan plan,
+                                                                     ExecutionCandidate candidate) {
+        // audit #101: lifecycle events carry model/artifact attributes so OTel
+        // spans key per load instead of collapsing every load onto ":"
+        java.util.Map<String, String> attributes = new java.util.LinkedHashMap<String, String>();
+        attributes.put("model", plan.modelId());
+        attributes.put("runtime", candidate.runtimeId());
+        if (candidate.artifact() != null) {
+            attributes.put("artifact", candidate.artifact().id());
+        }
+        return attributes;
     }
 
     private java.util.Map<String, Object> planOptions(ExecutionRequest request, ExecutionCandidate candidate) {
@@ -472,11 +549,33 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     Path oncePerKey(String key, java.util.function.Supplier<Path> work) {
+        return oncePerKey(key, work, null, 1);
+    }
+
+    Path oncePerKey(String key, java.util.function.Supplier<Path> work,
+                    java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+        return oncePerKey(key, work, cancelFlag, 1);
+    }
+
+    private Path oncePerKey(String key, java.util.function.Supplier<Path> work,
+                            java.util.concurrent.atomic.AtomicBoolean cancelFlag, int retries) {
         java.util.concurrent.CompletableFuture<Path> claim =
                 new java.util.concurrent.CompletableFuture<Path>();
         java.util.concurrent.CompletableFuture<Path> inFlight = inFlightWork.putIfAbsent(key, claim);
         if (inFlight != null) {
-            return awaitInFlight(inFlight);
+            try {
+                return awaitInFlight(inFlight, cancelFlag);
+            } catch (ConcurrentClaimCancelled ownerCancelled) {
+                // audit #97: the claim owner cancelled its own load - the claim is
+                // already gone from the map, so re-claim with this caller's own
+                // supplier instead of failing with somebody else's cancellation
+                if (retries <= 0) {
+                    throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                            "A concurrent load of the same artifact was cancelled repeatedly",
+                            "Retry the model load.");
+                }
+                return oncePerKey(key, work, cancelFlag, retries - 1);
+            }
         }
         try {
             Path result = work.get();
@@ -490,6 +589,13 @@ public final class DefaultModels implements io.cortexj.Models {
             throw failure;
         } finally {
             inFlightWork.remove(key, claim);
+        }
+    }
+
+    private static final class ConcurrentClaimCancelled extends RuntimeException {
+
+        ConcurrentClaimCancelled() {
+            super("concurrent claim cancelled by its owner");
         }
     }
 
@@ -514,30 +620,50 @@ public final class DefaultModels implements io.cortexj.Models {
                 return platform.downloads().download(resolvedArtifact, repositoryId,
                         revision, cache, platform.config().maxArtifactBytes, cancelFlag);
             }
-        });
+        }, cancelFlag);
     }
 
-    private Path awaitInFlight(java.util.concurrent.CompletableFuture<Path> inFlight) {
+    private Path awaitInFlight(java.util.concurrent.CompletableFuture<Path> inFlight,
+                                java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         long timeoutMillis = awaitTimeoutMillis();
-        try {
-            return inFlight.get(timeoutMillis, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
-                    "Interrupted while waiting for a concurrent download of the same artifact",
-                    "Retry the model load.");
-        } catch (java.util.concurrent.ExecutionException e) {
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            if (cause instanceof RuntimeException) {
-                throw (RuntimeException) cause;
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (true) {
+            long remainingMillis = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+            if (remainingMillis <= 0) {
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Timed out after " + timeoutMillis
+                                + "ms waiting for a concurrent download of the same artifact",
+                        "Retry the model load, or raise the cortexj.load.awaitTimeoutMillis system property.");
             }
-            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
-                    "Concurrent download of the same artifact failed: " + cause.getMessage(), cause);
-        } catch (java.util.concurrent.TimeoutException e) {
-            throw new ModelLoadException(ErrorCode.LOAD_FAILED,
-                    "Timed out after " + timeoutMillis
-                            + "ms waiting for a concurrent download of the same artifact",
-                    "Retry the model load, or raise the cortexj.load.awaitTimeoutMillis system property.", e);
+            try {
+                return inFlight.get(Math.min(remainingMillis, 250L), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Interrupted while waiting for a concurrent download of the same artifact",
+                        "Retry the model load.");
+            } catch (java.util.concurrent.ExecutionException e) {
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                if (cause instanceof java.util.concurrent.CancellationException) {
+                    throw new ConcurrentClaimCancelled();
+                }
+                if (cause instanceof RuntimeException) {
+                    throw (RuntimeException) cause;
+                }
+                throw new ModelLoadException(ErrorCode.LOAD_FAILED,
+                        "Concurrent download of the same artifact failed: " + cause.getMessage(), cause);
+            } catch (java.util.concurrent.CancellationException cancelledClaim) {
+                // a CompletableFuture completed with a CancellationException throws
+                // it directly from get() (no ExecutionException wrapper)
+                throw new ConcurrentClaimCancelled();
+            } catch (java.util.concurrent.TimeoutException sliceElapsed) {
+                // audit #97: waiters stay responsive to their own cancellation
+                // instead of blocking for the full await timeout
+                if (cancelFlag != null && cancelFlag.get()) {
+                    throw new java.util.concurrent.CancellationException(
+                            "load cancelled while waiting for a concurrent download");
+                }
+            }
         }
     }
 
@@ -611,7 +737,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 return runConversion(plan, resolved, candidate, step, conversionSource,
                         repositoryId, revision, convertedId, cache, handle, cancelFlag);
             }
-        });
+        }, cancelFlag);
     }
 
     private Path runConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
@@ -620,6 +746,11 @@ public final class DefaultModels implements io.cortexj.Models {
                                io.cortexj.cache.CacheStorage cache, DefaultModelHandle handle,
                                java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         Path sourcePath = ensureSourceArtifact(resolved, source, handle, cancelFlag);
+        if (cancelFlag != null && cancelFlag.get()) {
+            // audit #120: cancellation must stop before the multi-GB conversion
+            throw new java.util.concurrent.CancellationException(
+                    "load cancelled before conversion of " + source.artifact().id());
+        }
         handle.lifecycleTo(ModelLifecycleState.PREPARING);
         Path outputDirectory;
         try {
@@ -646,6 +777,11 @@ public final class DefaultModels implements io.cortexj.Models {
                 throw new ModelLoadException(ErrorCode.LOAD_FAILED,
                         "Converter " + step.converterId() + " failed on "
                                 + step.sourceArtifactId() + ": " + e.getMessage(), e);
+            }
+            if (cancelFlag != null && cancelFlag.get()) {
+                // audit #120: stop before committing a cancelled conversion to the cache
+                throw new java.util.concurrent.CancellationException(
+                        "load cancelled after conversion of " + source.artifact().id());
             }
             Path outputPath = result.outputPath();
             if (outputPath == null || !java.nio.file.Files.isRegularFile(outputPath)) {
@@ -806,6 +942,17 @@ public final class DefaultModels implements io.cortexj.Models {
         loadLock.writeLock().lock();
         try {
             closed = true;
+            // audit #89: the write lock guarantees no async task is mid-body here,
+            // so every not-yet-complete async load is a queued task: fail its
+            // future deterministically instead of leaving the client hanging
+            for (java.util.concurrent.CompletableFuture<ModelHandle> pending : asyncLoads) {
+                if (!pending.isDone()) {
+                    pending.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
+                            "Model load rejected: the CortexJ platform is closed.",
+                            "Create a new CortexJ instance to load models after shutdown."));
+                }
+            }
+            asyncLoads.clear();
             for (DefaultModelHandle handle : openHandles) {
                 try {
                     handle.close();

@@ -12,6 +12,7 @@ import io.cortexj.spi.repository.ResolvedModel;
 import io.cortexj.spi.repository.ResolutionContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -187,6 +188,59 @@ class ArtifactPinLifecycleTest {
         platform.close();
         assertEquals(0L, pinnedMarkerCount(tempDir.resolve("close-all")),
                 "platform.close() must unpin through closeAll -> handle.close()");
+    }
+
+    @Test
+    @Tag("concurrency")
+    void concurrentCloseAndLoadNeverUnpinsALiveHandle() throws Exception {
+        servePayload(new byte[PAYLOAD_SIZE]);
+        final AtomicReference<String> location = new AtomicReference<String>(
+                "http://127.0.0.1:" + port + "/models/model.bin");
+        DefaultCortexJ platform = (DefaultCortexJ) CortexJ.builder()
+                .repositoryProvider(httpRepository(location))
+                .runtimeProvider(new EndToEndLoadTest.FakeRuntimeProvider())
+                .workingDirectory(tempDir.resolve("refcount-race"))
+                .build();
+        try {
+            java.util.List<ModelHandle> previous =
+                    new java.util.ArrayList<ModelHandle>();
+            for (int i = 0; i < 5; i++) {
+                previous.add(platform.models().load(ModelReference.of("pin/test-model")));
+            }
+            assertEquals(1L, pinnedMarkerCount(tempDir.resolve("refcount-race")));
+
+            final int ROUNDS = 30;
+            for (int round = 0; round < ROUNDS; round++) {
+                final java.util.List<ModelHandle> closingPrevious = previous;
+                Thread closer = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        for (ModelHandle handle : closingPrevious) {
+                            handle.close();
+                        }
+                    }
+                });
+                closer.start();
+                java.util.List<ModelHandle> fresh = new java.util.ArrayList<ModelHandle>();
+                for (int i = 0; i < 5; i++) {
+                    // audit #94: the refcount must never lose a live handle's pin
+                    // while close of the previous batch races these loads
+                    fresh.add(platform.models().load(ModelReference.of("pin/test-model")));
+                }
+                closer.join(30_000);
+                assertEquals(1L, pinnedMarkerCount(tempDir.resolve("refcount-race")),
+                        "the pin must survive close/load churn while live handles hold it"
+                                + " (round " + round + ")");
+                previous = fresh;
+            }
+            for (ModelHandle handle : previous) {
+                handle.close();
+            }
+            assertEquals(0L, pinnedMarkerCount(tempDir.resolve("refcount-race")),
+                    "closing the last live handles must unpin");
+        } finally {
+            platform.close();
+        }
     }
 
     @Test

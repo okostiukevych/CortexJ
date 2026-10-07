@@ -262,6 +262,148 @@ class ConcurrentLoadDedupTest {
         }
     }
 
+    @Test
+    void cancelledClaimDoesNotPoisonConcurrentWaiter() throws Exception {
+        DefaultModels models = new DefaultModels(null);
+        final CountDownLatch workEntered = new CountDownLatch(1);
+        final CountDownLatch releaseWork = new CountDownLatch(1);
+        final java.util.function.Supplier<Path> cancellableWork =
+                new java.util.function.Supplier<Path>() {
+                    @Override
+                    public Path get() {
+                        workEntered.countDown();
+                        try {
+                            releaseWork.await(30, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        throw new java.util.concurrent.CancellationException(
+                                "owner cancelled its own download");
+                    }
+                };
+        final CountDownLatch ownerDone = new CountDownLatch(1);
+        Thread owner = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    models.oncePerKey("cancel-poison-key", cancellableWork);
+                } catch (Throwable ignored) {
+                } finally {
+                    ownerDone.countDown();
+                }
+            }
+        });
+        owner.start();
+        assertTrue(workEntered.await(10, TimeUnit.SECONDS), "owner must enter the claim work");
+
+        final Path[] waiterResult = new Path[1];
+        final Throwable[] waiterFailure = new Throwable[1];
+        final CountDownLatch waiterDone = new CountDownLatch(1);
+        Thread waiter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    waiterResult[0] = models.oncePerKey("cancel-poison-key",
+                            new java.util.function.Supplier<Path>() {
+                                @Override
+                                public Path get() {
+                                    return Paths.get("waiter-own-download");
+                                }
+                            });
+                } catch (Throwable failure) {
+                    waiterFailure[0] = failure;
+                } finally {
+                    waiterDone.countDown();
+                }
+            }
+        });
+        waiter.start();
+        Thread.sleep(150);
+        releaseWork.countDown();
+
+        assertTrue(waiterDone.await(30, TimeUnit.SECONDS), "waiter must not hang");
+        assertTrue(ownerDone.await(10, TimeUnit.SECONDS));
+        owner.join(10_000);
+        waiter.join(10_000);
+
+        assertTrue(waiterFailure[0] == null,
+                "audit #97: the owner's cancellation must not poison the waiter, got: "
+                        + waiterFailure[0]);
+        assertEquals(Paths.get("waiter-own-download"), waiterResult[0],
+                "the waiter must re-claim and run its own work after the owner cancelled");
+    }
+
+    @Test
+    void waiterCancellationIsHonoredWhileAwaitingTheClaim() throws Exception {
+        DefaultModels models = new DefaultModels(null);
+        final CountDownLatch workEntered = new CountDownLatch(1);
+        final CountDownLatch releaseWork = new CountDownLatch(1);
+        final java.util.function.Supplier<Path> blockingWork =
+                new java.util.function.Supplier<Path>() {
+                    @Override
+                    public Path get() {
+                        workEntered.countDown();
+                        try {
+                            releaseWork.await(30, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return Paths.get("owner-download");
+                    }
+                };
+        final CountDownLatch ownerDone = new CountDownLatch(1);
+        Thread owner = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    models.oncePerKey("waiter-cancel-key", blockingWork);
+                } catch (Throwable ignored) {
+                } finally {
+                    ownerDone.countDown();
+                }
+            }
+        });
+        owner.start();
+        assertTrue(workEntered.await(10, TimeUnit.SECONDS), "owner must enter the claim work");
+
+        final java.util.concurrent.atomic.AtomicBoolean waiterCancelFlag =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        final Throwable[] waiterFailure = new Throwable[1];
+        final CountDownLatch waiterDone = new CountDownLatch(1);
+        Thread waiter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    models.oncePerKey("waiter-cancel-key",
+                            new java.util.function.Supplier<Path>() {
+                                @Override
+                                public Path get() {
+                                    return Paths.get("waiter-download");
+                                }
+                            }, waiterCancelFlag);
+                } catch (Throwable failure) {
+                    waiterFailure[0] = failure;
+                } finally {
+                    waiterDone.countDown();
+                }
+            }
+        });
+        waiter.start();
+        Thread.sleep(150);
+        waiterCancelFlag.set(true);
+
+        assertTrue(waiterDone.await(5, TimeUnit.SECONDS),
+                "audit #97: a waiter's own cancellation must interrupt the await promptly, "
+                        + "not wait out the full 10-minute timeout");
+        assertTrue(waiterFailure[0] instanceof java.util.concurrent.CancellationException,
+                "the cancelled waiter must fail with CancellationException, got: "
+                        + waiterFailure[0]);
+        releaseWork.countDown();
+        assertTrue(ownerDone.await(10, TimeUnit.SECONDS));
+        owner.join(10_000);
+        waiter.join(10_000);
+    }
+
     private static ResolvedModel testResolvedModel(final ModelArtifact artifact, final URI location) {
         ModelDescriptor descriptor = ModelDescriptor.builder("dedup/model")
                 .revision("rev1")
