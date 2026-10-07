@@ -10,6 +10,10 @@
   </parent>
   <artifactId>cortexj-planner</artifactId>
   <name>CortexJ Planner</name>
+  <properties>
+    <!-- audit 2026-10-07 (#148): compat compares like with like -->
+    <cortexj.compat.artifact>cortexj-planner</cortexj.compat.artifact>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>
@@ -35,6 +39,12 @@
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-cache</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-tck</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

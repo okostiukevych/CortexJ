@@ -24,6 +24,10 @@
                         -Dcortexj.api.baseline=<released-version> -->
         <cortexj.api.baseline>none</cortexj.api.baseline>
         <cortexj.compat.skip>true</cortexj.compat.skip>
+        <!-- audit 2026-10-07 (#148): compat scope covers api+spi+model+
+             planner - each module overrides this with its own artifact id
+             so -Pcompat compares like with like -->
+        <cortexj.compat.artifact>cortexj-api</cortexj.compat.artifact>
         <surefire.excludedGroups>perf</surefire.excludedGroups>
 
         <jackson.version>2.21.7</jackson.version>
@@ -212,7 +216,7 @@
             <oldVersion>
               <dependency>
                 <groupId>io.cortexj</groupId>
-                <artifactId>cortexj-api</artifactId>
+                <artifactId>${cortexj.compat.artifact}</artifactId>
                 <version>${cortexj.api.baseline}</version>
               </dependency>
             </oldVersion>

@@ -10,6 +10,10 @@
   </parent>
   <artifactId>cortexj-model</artifactId>
   <name>CortexJ Model</name>
+  <properties>
+    <!-- audit 2026-10-07 (#148): compat compares like with like -->
+    <cortexj.compat.artifact>cortexj-model</cortexj.compat.artifact>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>

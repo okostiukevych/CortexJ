@@ -33,15 +33,22 @@
       <artifactId>cortexj-repository-huggingface</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- audit 2026-10-07 (#148): engines are verification fixtures, not a
+         layering dependency - DeploymentVerifier only iterates discovered
+         providers (health + plannability, never load) and degrades to
+         plan-only checks when an engine is absent from the plugin realm.
+         Optional so consumers can swap the engine set without forking. -->
     <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-runtime-onnx</artifactId>
       <version>${project.version}</version>
+      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-runtime-llamacpp</artifactId>
       <version>${project.version}</version>
+      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>

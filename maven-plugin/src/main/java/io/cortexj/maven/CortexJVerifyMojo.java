@@ -15,6 +15,11 @@ import java.util.List;
  * cortexj:verify — build-time deployment verification (spec 93/94):
  * correct starter, native runtime availability, pinned model bundle,
  * checksum manifest/lockfile.
+ *
+ * <p>Engines on the plugin classpath are verification fixtures (optional
+ * dependencies, audit 2026-10-07 #148): the checks probe health and
+ * plannability over whichever providers ServiceLoader discovers and never
+ * load a model, so the engine set can be swapped without forking.</p>
  */
 @Mojo(name = "verify", defaultPhase = LifecyclePhase.VALIDATE)
 public class CortexJVerifyMojo extends AbstractMojo {
