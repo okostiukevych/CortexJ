@@ -49,9 +49,15 @@ public final class GgufDocument {
         }
 
         public long elementCount() {
+            // audit 2026-10-07: multiplyExact turns a hostile dimension
+            // product into a typed failure instead of a silent wrap-around
+            // that would understate byteSize() and mislead memory planning.
             long count = 1L;
             for (long dimension : dimensions) {
-                count *= dimension;
+                if (dimension < 0) {
+                    throw new ArithmeticException("negative GGUF tensor dimension: " + dimension);
+                }
+                count = Math.multiplyExact(count, dimension);
             }
             return count;
         }
@@ -59,10 +65,10 @@ public final class GgufDocument {
         public long byteSize() {
             switch (type) {
                 case TENSOR_F32:
-                    return elementCount() * 4L;
+                    return Math.multiplyExact(elementCount(), 4L);
                 case TENSOR_F16:
                 case TENSOR_BF16:
-                    return elementCount() * 2L;
+                    return Math.multiplyExact(elementCount(), 2L);
                 default:
                     return elementCount();
             }

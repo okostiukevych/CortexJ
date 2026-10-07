@@ -19,7 +19,20 @@ public final class SafetensorsInspector implements ArtifactInspector {
 
     private static final int HEADER_LIMIT_BYTES = 64 * 1024 * 1024;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = constrainedMapper();
+
+    static ObjectMapper constrainedMapper() {
+        // audit 2026-10-07: hostile headers must not StackOverflow the
+        // inspector - cap nesting depth and total token/string budget
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamReadConstraints(
+                com.fasterxml.jackson.core.StreamReadConstraints.builder()
+                        .maxNestingDepth(50)
+                        .maxNumberLength(10000)
+                        .maxStringLength(10 * 1024 * 1024)
+                        .build());
+        return mapper;
+    }
 
     @Override
     public boolean supports(ArtifactFormat format) {
@@ -91,11 +104,19 @@ public final class SafetensorsInspector implements ArtifactInspector {
             JsonNode tensor = header.get(name);
             JsonNode dtype = tensor.get("dtype");
             long[] shape = parseShape(tensor.get("shape"));
+            // audit 2026-10-07: multiplyExact turns hostile dims into a typed
+            // failure instead of a wrapped parameterCount that would
+            // understate memory and risk OOM at load time.
             long elements = 1L;
-            for (long dimension : shape) {
-                elements *= Math.max(1L, dimension);
+            try {
+                for (long dimension : shape) {
+                    elements = Math.multiplyExact(elements, Math.max(1L, dimension));
+                }
+                parameterCount = Math.addExact(parameterCount, elements);
+            } catch (ArithmeticException overflow) {
+                throw new MalformedArtifactException(
+                        "Safetensors tensor '" + name + "' has unreasonable dimensions (overflow)");
             }
-            parameterCount += elements;
             tensorCount++;
             if (dtype != null && quantization == null && name.toLowerCase().contains("weight")) {
                 quantization = dtype.asText();

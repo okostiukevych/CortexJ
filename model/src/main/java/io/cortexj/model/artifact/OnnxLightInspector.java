@@ -92,7 +92,13 @@ public final class OnnxLightInspector implements ArtifactInspector {
         } catch (TruncatedProbeException end) {
             builder.metadata("probe", "partial");
         } catch (IOException e) {
-            builder.metadata("probe", "partial: " + e.getMessage());
+            // audit 2026-10-07 (#141): a structurally broken ONNX file must
+            // fail inspection instead of masquerading as partial - otherwise
+            // the planner can select an artifact that can never load.
+            // Truncation (running past the 1 MB probe window) stays partial
+            // by design.
+            throw new MalformedArtifactException(
+                    "ONNX artifact failed structural inspection: " + e.getMessage(), e);
         }
         if (totalSizeBytes > 0) {
             builder.parameterCount(totalSizeBytes / 2);

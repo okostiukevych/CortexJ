@@ -40,6 +40,14 @@ The profile skips cleanly by default (`cortexj.compat.skip=true`): there is no
 released baseline to compare against yet. After 1.0.0 ships, CI will fail on any
 binary-breaking change to the Public API tier in minor/patch releases.
 
+> **Known gap (audit 2026-10-07, #148):** the profile compares `cortexj-api`
+> only - breaking `cortexj-spi`/`cortexj-model`/`cortexj-planner` is not caught
+> automatically. Until the scope is extended (tracked for the 1.0 enforcement
+> date), SPI changes require manual review against the TCK. Related
+> asymmetry: `Models.loadAsync` returns `Future`, not the `CompletionStage`
+> baseline of §13.1 - kept for Java 8 ergonomics, documented here instead of
+> changed.
+
 ## What may change
 
 - Internal packages and implementation details (module-info exports keep them
