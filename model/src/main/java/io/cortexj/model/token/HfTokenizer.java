@@ -263,6 +263,11 @@ public final class HfTokenizer {
             this.pieces = new ArrayList<String>(sortable.size());
             this.piecesByFirstChar = new java.util.HashMap<Character, List<String>>();
             for (String[] entry : sortable) {
+                // audit #128: an empty piece (malformed tokenizer.json) must be
+                // skipped, not crash the constructor with StringIndexOutOfBounds
+                if (entry[0].isEmpty()) {
+                    continue;
+                }
                 pieces.add(entry[0]);
                 Character first = Character.valueOf(entry[0].charAt(0));
                 List<String> bucket = piecesByFirstChar.get(first);
@@ -330,6 +335,12 @@ public final class HfTokenizer {
         } else {
             int index = 0;
             for (JsonNode token : model.path("vocab")) {
+                // audit #128: a scalar entry inside an array vocab (malformed
+                // tokenizer.json) must produce a skipped entry, not an NPE
+                if (!token.isArray() || token.size() == 0 || !token.get(0).isTextual()) {
+                    index++;
+                    continue;
+                }
                 // array vocab entries are [piece, score] pairs: asText() on the
                 // array node returns "" and collapsed every id to zero
                 vocab.put(token.get(0).asText(), Integer.valueOf(index++));

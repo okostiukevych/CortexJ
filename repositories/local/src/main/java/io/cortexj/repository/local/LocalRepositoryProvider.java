@@ -142,9 +142,20 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
                     continue;
                 }
                 Path artifactPath = resolveContained(directory, file);
-                ArtifactFormat format = artifactNode.has("format")
-                        ? ArtifactFormat.valueOf(artifactNode.path("format").asText("UNKNOWN").toUpperCase(Locale.ROOT))
-                        : ArtifactFormat.fromFileName(file);
+                // audit #128: an unknown format string in the manifest (user
+                // input) must fail typed, not with a bare IllegalArgumentException
+                ArtifactFormat format;
+                try {
+                    format = artifactNode.has("format")
+                            ? ArtifactFormat.valueOf(artifactNode.path("format").asText("UNKNOWN").toUpperCase(Locale.ROOT))
+                            : ArtifactFormat.fromFileName(file);
+                } catch (IllegalArgumentException unknownFormat) {
+                    throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                            "artifact " + file + " declares an unknown format '"
+                                    + artifactNode.path("format").asText("") + "'",
+                            "Use a known ArtifactFormat name in cortexj-model.json "
+                                    + "(GGUF, SAFETENSORS, ONNX, ...) or omit the field.");
+                }
                 long size = Files.isRegularFile(artifactPath) ? sizeOf(artifactPath) : artifactNode.path("size").asLong(0L);
                 String sha256 = artifactNode.path("sha256").asText(null);
                 if (sha256 == null && Files.isRegularFile(artifactPath) && size < CHECKSUM_INLINE_LIMIT_BYTES) {

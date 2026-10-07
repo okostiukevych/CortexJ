@@ -24,6 +24,7 @@
                         -Dcortexj.api.baseline=<released-version> -->
         <cortexj.api.baseline>none</cortexj.api.baseline>
         <cortexj.compat.skip>true</cortexj.compat.skip>
+        <surefire.excludedGroups>perf</surefire.excludedGroups>
 
         <jackson.version>2.17.2</jackson.version>
         <junit.version>5.10.2</junit.version>
@@ -134,6 +135,15 @@
       </modules>
     </profile>
   
+  <profile>
+    <id>perf</id>
+    <properties>
+      <!-- audit #128: run the perf-tagged tests explicitly:
+           mvn test -Pperf -->
+      <surefire.excludedGroups></surefire.excludedGroups>
+    </properties>
+  </profile>
+
   <profile>
     <id>jpms</id>
     <build>
@@ -345,6 +355,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>${maven-surefire-plugin.version}</version>
+          <configuration>
+            <!-- audit #128: perf-tagged tests are separated from the default
+                 run; execute them explicitly with -Pperf -->
+            <excludedGroups>${surefire.excludedGroups}</excludedGroups>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
