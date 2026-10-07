@@ -42,6 +42,12 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     private static final int SSE_POLL_MILLIS = 2_000;
     private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
 
+    private static InferenceException closedDuringStream() {
+        return new InferenceException(ErrorCode.INFERENCE_CANCELLED,
+                "the model was closed while the stream was active",
+                "Subscribe again after re-loading the model.");
+    }
+
     private final SharedEndpointRegistry.SharedEndpoint endpoint;
     private final ExecutorService ioExecutor;
     private final boolean ownsExecutor;
@@ -192,7 +198,16 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         private void runSse(TokenConsumer consumer) {
             HttpURLConnection connection = null;
             try {
-                if (cancelled.get() || closed.get()) {
+                // model close sets `closed` first and then aborts each stream
+                // (which also sets `cancelled`), so `closed` must win the check
+                // ordering - a user cancel sets only `cancelled`
+                if (closed.get()) {
+                    // audit #95: a close must not swallow the terminal - the
+                    // subscriber would hang waiting for a signal forever
+                    consumer.onError(closedDuringStream());
+                    return;
+                }
+                if (cancelled.get()) {
                     return;
                 }
                 URL url = new URL(endpoint.baseUrl() + "/v1/chat/completions");
@@ -264,13 +279,25 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                         }
                     }
                 }
-                if (cancelled.get() || closed.get()) {
+                if (closed.get()) {
+                    // audit #95: model closed mid-stream - deliver a terminal
+                    // instead of leaving the subscriber waiting forever (close
+                    // sets both flags; `closed` must be checked first)
+                    consumer.onError(closedDuringStream());
+                    return;
+                }
+                if (cancelled.get()) {
                     return;
                 }
                 consumer.onComplete(new StreamCompletion(finishReason, usage));
             } catch (Exception e) {
-                if (cancelled.get() || closed.get()) {
-                    // deliberately cancelled or closed: no error delivery, thread released
+                if (closed.get()) {
+                    // audit #95: the disconnect came from model/handle close
+                    consumer.onError(closedDuringStream());
+                    return;
+                }
+                if (cancelled.get()) {
+                    // deliberately cancelled by the user: no error delivery, thread released
                     return;
                 }
                 CortexJException failure = e instanceof CortexJException
@@ -359,6 +386,10 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
         }
     }
 
+    // audit #99: a hostile or misconfigured local endpoint must not stream an
+    // unbounded body into the parent heap
+    private static final int MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
     private static String readAll(java.io.InputStream input) throws IOException {
         // audit L-6: explicit close - a mid-read exception must not leak the
         // response stream to the outer disconnect
@@ -366,7 +397,13 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
             java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
             int read;
+            long total = 0L;
             while ((read = in.read(chunk)) >= 0) {
+                total += read;
+                if (total > MAX_RESPONSE_BYTES) {
+                    throw new IOException("llama-server response body exceeds " + MAX_RESPONSE_BYTES
+                            + " bytes; refusing to buffer it");
+                }
                 buffer.write(chunk, 0, read);
             }
             return new String(buffer.toByteArray(), StandardCharsets.UTF_8);

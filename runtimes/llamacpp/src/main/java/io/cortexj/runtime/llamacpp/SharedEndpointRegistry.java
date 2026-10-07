@@ -104,10 +104,13 @@ final class SharedEndpointRegistry {
         }
 
         /**
-         * Detach a handle. The registry entry (and the per-key lock) is
-         * removed only when the refcount reaches zero, so a concurrent
-         * tryRetain either retains a still-registered endpoint or observes
-         * the removal after this release stopped the process exactly once.
+         * Detach a handle. The registry entry is removed only when the
+         * refcount reaches zero, so a concurrent tryRetain either retains a
+         * still-registered endpoint or observes the removal after this
+         * release stopped the process exactly once. The per-key lock is
+         * deliberately NOT removed (audit #112): removing it let an acquirer
+         * hold the old lock while a second acquirer created a fresh one, and
+         * both would see no endpoint and launch a duplicate llama-server.
          */
         void release() {
             boolean last;
@@ -115,7 +118,6 @@ final class SharedEndpointRegistry {
                 last = refcount.decrementAndGet() == 0;
                 if (last) {
                     registry.remove(key, this);
-                    keyLocks.remove(key, keyLock);
                 }
             }
             if (last) {
