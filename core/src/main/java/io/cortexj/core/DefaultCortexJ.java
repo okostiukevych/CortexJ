@@ -49,16 +49,6 @@ public final class DefaultCortexJ implements CortexJ {
     private final ExecutorService downloadExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
-        java.lang.Thread shutdownHook = null;
-        if (configuration.isShutdownHook()) {
-            shutdownHook = new java.lang.Thread(new Runnable() {
-                @Override
-                public void run() {
-                    close();
-                }
-            }, "cortexj-shutdown");
-            Runtime.getRuntime().addShutdownHook(shutdownHook);
-        }
         ExecutorService ioExecutorCandidate = null;
         ExecutorService asyncExecutorCandidate = null;
         java.util.concurrent.ThreadPoolExecutor downloadExecutorCandidate = null;
@@ -105,9 +95,17 @@ public final class DefaultCortexJ implements CortexJ {
                 ioExecutorCandidate = platformModule.createIoExecutor();
                 this.ownsExecutor = true;
             }
-            asyncExecutorCandidate = java.util.concurrent.Executors.newFixedThreadPool(
-                    Math.max(2, Runtime.getRuntime().availableProcessors()),
-                    io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"));
+            int asyncWidth = positiveIntProperty("cortexj.async.width",
+                    Math.max(2, Runtime.getRuntime().availableProcessors()));
+            int asyncQueue = positiveIntProperty("cortexj.async.queue", 256);
+            java.util.concurrent.ThreadPoolExecutor asyncCandidate =
+                    new java.util.concurrent.ThreadPoolExecutor(
+                            asyncWidth, asyncWidth, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                            new java.util.concurrent.LinkedBlockingQueue<Runnable>(asyncQueue),
+                            io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-async"),
+                            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+            asyncCandidate.allowCoreThreadTimeOut(true);
+            asyncExecutorCandidate = asyncCandidate;
             int downloadWidth = positiveIntProperty("cortexj.download.width",
                     Math.max(4, Runtime.getRuntime().availableProcessors()));
             int downloadQueue = positiveIntProperty("cortexj.download.queue", 64);
@@ -178,13 +176,18 @@ public final class DefaultCortexJ implements CortexJ {
             events.info(PlatformEvent.Type.PLATFORM_STARTED,
                     "CortexJ started on Java " + snapshot.environment.jvmFeatureVersion()
                             + " with " + runtimeProviders.size() + " runtime provider(s)");
-        } catch (RuntimeException failure) {
-            if (shutdownHook != null) {
-                try {
-                    Runtime.getRuntime().removeShutdownHook(shutdownHook);
-                } catch (IllegalStateException alreadyShuttingDown) {
-                }
+            // audit #114: the shutdown hook is registered only after every field is
+            // assigned, so a JVM exit mid-construction can never call close() on a
+            // half-built platform
+            if (configuration.isShutdownHook()) {
+                Runtime.getRuntime().addShutdownHook(new java.lang.Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        close();
+                    }
+                }, "cortexj-shutdown"));
             }
+        } catch (RuntimeException failure) {
             shutdownExecutor(ioExecutorCandidate);
             shutdownExecutor(asyncExecutorCandidate);
             shutdownExecutor(downloadExecutorCandidate);
@@ -314,12 +317,15 @@ public final class DefaultCortexJ implements CortexJ {
         if (!platformClosed.compareAndSet(false, true)) {
             return;
         }
-        models.closeAll();
-        events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
-        events.close();
-        shutdownExecutor(ownsExecutor ? ioExecutor : null);
-        shutdownExecutor(asyncExecutor);
-        shutdownExecutor(downloadExecutor);
+        try {
+            models.closeAll();
+            events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
+        } finally {
+            events.close();
+            shutdownExecutor(ownsExecutor ? ioExecutor : null);
+            shutdownExecutor(asyncExecutor);
+            shutdownExecutor(downloadExecutor);
+        }
     }
 
     private static io.cortexj.planner.benchmark.BenchmarkHints loadBenchmarkHints(
@@ -370,9 +376,14 @@ public final class DefaultCortexJ implements CortexJ {
             }
             return policy;
         } catch (java.io.IOException unreadable) {
-            LOG.warning("cortexj: enterprise runtime policy file " + file
-                    + " could not be read and was NOT applied: " + unreadable);
-            return null;
+            // audit #100: a present-but-unreadable policy file fails closed - a
+            // sabotaged or corrupted policy must never silently disable the
+            // restrictions it declares
+            throw new io.cortexj.error.ConfigurationException(io.cortexj.ErrorCode.CONF_INVALID,
+                    "Enterprise runtime policy file " + file
+                            + " exists but could not be read and was NOT applied: " + unreadable,
+                    "Fix the file permissions or syntax, or remove the file to start without a policy.",
+                    unreadable);
         }
     }
 
