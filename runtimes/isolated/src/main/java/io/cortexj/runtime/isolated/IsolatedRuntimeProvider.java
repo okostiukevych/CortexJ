@@ -169,7 +169,12 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
         }
         payload.put("device", request.device() == null ? "CPU" : request.device().name());
         payload.set("options", WorkerCodec.mapper().valueToTree(request.runtimeOptions()));
-        payload.set("headers", WorkerCodec.mapper().valueToTree(request.platformConfiguration()));
+        // audit #98: the child env allowlist deliberately withholds credential
+        // variables, and the open payload must not smuggle them in through the
+        // back door either - a child-hosted runtime that prints its config (a
+        // common native-runtime habit) would leak the key into parent logs
+        payload.set("headers", WorkerCodec.mapper().valueToTree(
+                sanitizeForChild(request.platformConfiguration())));
         active.call(active.nextId(), "open", payload);
         IsolatedModelRuntime runtime = new IsolatedModelRuntime(this, active, request.executor());
         openSessions.add(runtime);
@@ -198,6 +203,30 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
     // ------------------------------------------------------------------
     // channel management
     // ------------------------------------------------------------------
+
+    static java.util.Map<String, Object> sanitizeForChild(java.util.Map<String, ?> configuration) {
+        java.util.Map<String, Object> safe = new java.util.LinkedHashMap<String, Object>();
+        for (java.util.Map.Entry<String, ?> entry : configuration.entrySet()) {
+            if (isCredentialKey(entry.getKey())) {
+                continue;
+            }
+            safe.put(entry.getKey(), entry.getValue());
+        }
+        return safe;
+    }
+
+    private static boolean isCredentialKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        String normalized = key.toLowerCase(java.util.Locale.ROOT)
+                .replace('.', '_').replace('-', '_');
+        return normalized.endsWith("apikey")
+                || normalized.endsWith("api_key")
+                || normalized.endsWith("secret")
+                || normalized.endsWith("password")
+                || normalized.endsWith("token");
+    }
 
     private WorkerChannel ensureChannel() {
         WorkerChannel active = channel;

@@ -50,11 +50,17 @@ final class WorkerChannel {
     static final long DEFAULT_REQUEST_TIMEOUT_MILLIS = 300_000L;
     static final long HANDSHAKE_TIMEOUT_MILLIS = 60_000L;
     static final long CANCEL_TIMEOUT_MILLIS = 5_000L;
+    // audit #99: a broken or hostile child writing bytes without a newline
+    // must not buffer an unbounded line in the parent - that is the exact
+    // failure mode crash isolation exists to contain
+    static final int MAX_PROTOCOL_LINE_CHARS = 4 * 1024 * 1024;
+    static final int MAX_STDERR_LINE_CHARS = 256 * 1024;
 
     private static final Logger LOG = Logger.getLogger(WorkerChannel.class.getName());
 
     private final String targetRuntimeId;
     private final Process process;
+    private final java.nio.file.Path workDirectory;
     private final PrintStream writer;
     private final Map<Long, CompletableFuture<JsonNode>> pending =
             new ConcurrentHashMap<Long, CompletableFuture<JsonNode>>();
@@ -73,9 +79,10 @@ final class WorkerChannel {
         void onError(CortexJException failure);
     }
 
-    private WorkerChannel(String targetRuntimeId, Process process) throws IOException {
+    private WorkerChannel(String targetRuntimeId, Process process, java.nio.file.Path workDirectory) throws IOException {
         this.targetRuntimeId = targetRuntimeId;
         this.process = process;
+        this.workDirectory = workDirectory;
         this.writer = new PrintStream(process.getOutputStream(), false, StandardCharsets.UTF_8.name());
         this.readerThread = new Thread(new Runnable() {
             @Override
@@ -101,7 +108,7 @@ final class WorkerChannel {
                             + CLASSPATH_PROPERTY + " to the worker classpath explicitly.");
         }
         final Process process;
-        final Path workDir;
+        Path workDir = null;
         try {
             workDir = Files.createTempDirectory("cortexj-worker-" + targetRuntimeId + "-");
             ProcessBuilder builder = new ProcessBuilder(
@@ -116,6 +123,7 @@ final class WorkerChannel {
             builder.redirectErrorStream(false);
             process = builder.start();
         } catch (IOException e) {
+            deleteRecursively(workDir);
             throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
                     "cannot spawn an isolated worker JVM for runtime '" + targetRuntimeId + "': " + e.getMessage(),
                     "Verify that a JDK is available at java.home and the worker classpath is valid.",
@@ -123,9 +131,10 @@ final class WorkerChannel {
         }
         final WorkerChannel channel;
         try {
-            channel = new WorkerChannel(targetRuntimeId, process);
+            channel = new WorkerChannel(targetRuntimeId, process, workDir);
         } catch (IOException e) {
             killProcess(process);
+            deleteRecursively(workDir);
             throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
                     "cannot attach to the worker JVM stdio for runtime '" + targetRuntimeId + "': " + e.getMessage(),
                     null, e);
@@ -185,7 +194,14 @@ final class WorkerChannel {
         BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
         try {
-            String first = reader.readLine();
+            String first = readCappedLine(reader, MAX_PROTOCOL_LINE_CHARS);
+            if (first == CAPPED_LINE_MARKER) {
+                handshake.completeExceptionally(workerUnavailable(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "worker child emitted an oversized handshake line (over "
+                                + MAX_PROTOCOL_LINE_CHARS + " chars)",
+                        "A hosted runtime is writing to stdout - stdout is reserved for the protocol."));
+                return;
+            }
             if (first == null) {
                 handshake.completeExceptionally(workerUnavailable(ErrorCode.RUNTIME_UNAVAILABLE,
                         "worker child for runtime '" + targetRuntimeId
@@ -218,7 +234,12 @@ final class WorkerChannel {
             }
             handshake.complete(hello);
             while (true) {
-                String line = reader.readLine();
+                String line = readCappedLine(reader, MAX_PROTOCOL_LINE_CHARS);
+                if (line == CAPPED_LINE_MARKER) {
+                    markDead("worker emitted a protocol line over " + MAX_PROTOCOL_LINE_CHARS
+                            + " chars - the child is misbehaving or a hosted runtime is writing to stdout");
+                    return;
+                }
                 if (line == null) {
                     markDead("worker stdout closed (worker exited with code " + exitCode(process) + ")");
                     return;
@@ -415,6 +436,35 @@ final class WorkerChannel {
     private void teardownAfterDeath() {
         writer.close();
         killProcess(process);
+        // audit #104: the child working directory is created per worker start
+        // (including crash respawns) and must not leak in $TMPDIR forever
+        deleteRecursively(workDirectory);
+    }
+
+    private static void deleteRecursively(Path directory) {
+        if (directory == null) {
+            return;
+        }
+        try {
+            java.nio.file.Files.walkFileTree(directory, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                                                                java.nio.file.attribute.BasicFileAttributes attrs)
+                        throws IOException {
+                    java.nio.file.Files.deleteIfExists(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path dir, IOException failure)
+                        throws IOException {
+                    java.nio.file.Files.deleteIfExists(dir);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException bestEffortIgnored) {
+            // best-effort cleanup; a leaked empty temp dir beats a failed teardown
+        }
     }
 
     private void requireAlive() {
@@ -489,12 +539,54 @@ final class WorkerChannel {
         return child;
     }
 
+    private static final String CAPPED_LINE_MARKER = new String("capped");
+
+    /**
+     * audit #99: readLine() buffers a line of unbounded length - a broken or
+     * hostile child writing bytes without a newline would OOM the parent,
+     * which is the exact failure mode crash isolation must contain. Reads at
+     * most {@code capChars} characters; returns {@link #CAPPED_LINE_MARKER}
+     * (identity, not equals) when the cap was exceeded, or null on EOF.
+     */
+    private static String readCappedLine(BufferedReader reader, int capChars) throws IOException {
+        StringBuilder line = new StringBuilder(128);
+        int c;
+        while ((c = reader.read()) != -1) {
+            if (c == '\n') {
+                return line.toString();
+            }
+            if (c == '\r') {
+                continue;
+            }
+            if (line.length() >= capChars) {
+                // drain until the newline (bounded discard) so the stream can
+                // still be used afterwards on the stderr path
+                while ((c = reader.read()) != -1 && c != '\n') {
+                    // discard
+                }
+                return CAPPED_LINE_MARKER;
+            }
+            line.append((char) c);
+        }
+        return line.length() == 0 ? null : line.toString();
+    }
+
     private static void drainStderr(Process process) {
         try {
             BufferedReader stderr = new BufferedReader(
                     new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8));
-            String line;
-            while ((line = stderr.readLine()) != null) {
+            // audit #99: stderr lines are capped too - a runaway native runtime
+            // must not OOM the parent through the diagnostic drain
+            while (true) {
+                String line = readCappedLine(stderr, MAX_STDERR_LINE_CHARS);
+                if (line == null) {
+                    break;
+                }
+                if (line == CAPPED_LINE_MARKER) {
+                    LOG.warning("[worker-stderr] oversized line (over " + MAX_STDERR_LINE_CHARS
+                            + " chars) truncated");
+                    continue;
+                }
                 // worker logs are drained into the parent logger, never the
                 // parent environment/secrets
                 LOG.fine("[worker-stderr] " + line);

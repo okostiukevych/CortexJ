@@ -26,6 +26,7 @@ class IsolatedLeakTest {
     void closeLeavesNoChildProcessOrOrphanedThreads() throws Exception {
         Path artifact = Files.createTempFile("isolated-leak-model", ".onnx");
         Files.write(artifact, "stub".getBytes(StandardCharsets.UTF_8));
+        int workerDirsBefore = countWorkerTempDirs();
 
         IsolatedRuntimeProvider provider = new IsolatedRuntimeProvider("stub");
         try {
@@ -78,9 +79,30 @@ class IsolatedLeakTest {
                     assertGone(secondChild);
                 }
             }
+            assertEquals(workerDirsBefore, countWorkerTempDirs(),
+                    "audit #104: every worker start (including the crash-respawn cycle) must "
+                            + "delete its temporary working directory on teardown");
         } finally {
             provider.close();
         }
+    }
+
+    /**
+     * audit #104: worker working directories are created under the system temp
+     * dir and must not accumulate across worker lifecycles.
+     */
+    private static int countWorkerTempDirs() {
+        Path tmp = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"));
+        int count = 0;
+        try (java.nio.file.DirectoryStream<Path> stream =
+                     Files.newDirectoryStream(tmp, "cortexj-worker-*")) {
+            for (Path ignored : stream) {
+                count++;
+            }
+        } catch (java.io.IOException unreadable) {
+            return Integer.MAX_VALUE;
+        }
+        return count;
     }
 
     private static boolean isAlive(Process process) {

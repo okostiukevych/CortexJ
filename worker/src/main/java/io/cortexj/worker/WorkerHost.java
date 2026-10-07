@@ -78,12 +78,32 @@ public final class WorkerHost {
     private final Map<String, RuntimeModel> models =
             Collections.synchronizedMap(new LinkedHashMap<String, RuntimeModel>());
     private final Map<Long, ActiveStream> activeStreams = new ConcurrentHashMap<Long, ActiveStream>();
+    // audit #96: blocking ops run on a bounded worker pool so the reader thread
+    // stays free - cancelStream/shutdown arrive while a long generate is
+    // running and are processed immediately instead of queueing behind it
+    private final java.util.concurrent.ThreadPoolExecutor opExecutor;
     private volatile ModelRuntime hosted;
     private volatile boolean stopped;
 
     WorkerHost(RuntimeProvider provider, PrintSink out) {
         this.provider = provider;
         this.out = out;
+        int width = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        this.opExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                width, width, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(64),
+                new java.util.concurrent.ThreadFactory() {
+                    private final java.util.concurrent.atomic.AtomicInteger integerSeq =
+                            new java.util.concurrent.atomic.AtomicInteger();
+
+                    @Override
+                    public Thread newThread(Runnable runnable) {
+                        Thread thread = new Thread(runnable, "cortexj-worker-op-"
+                                + integerSeq.incrementAndGet());
+                        thread.setDaemon(true);
+                        return thread;
+                    }
+                });
     }
 
     public static void main(String[] args) {
@@ -185,30 +205,124 @@ public final class WorkerHost {
     }
 
     private void dispatch(long id, String op, JsonNode root) {
-        if ("probe".equals(op)) {
-            handleProbe(id, root);
-        } else if ("open".equals(op)) {
-            handleOpen(id, root);
-        } else if ("load".equals(op)) {
-            handleLoad(id, root);
-        } else if ("execute".equals(op)) {
-            handleExecute(id, root);
-        } else if ("generate".equals(op)) {
-            handleGenerate(id, root);
-        } else if ("embed".equals(op)) {
-            handleEmbed(id, root);
-        } else if ("stream".equals(op)) {
-            handleStream(id, root);
-        } else if ("cancelStream".equals(op)) {
-            handleCancelStream(id, root);
+        // control ops stay on the reader thread: they must never queue behind
+        // a long-running generate (audit #96)
+        if ("cancelStream".equals(op)) {
+            runInline(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleCancelStream(id, root);
+                }
+            });
         } else if ("closeModel".equals(op)) {
-            handleCloseModel(id, root);
+            runInline(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleCloseModel(id, root);
+                }
+            });
         } else if ("close".equals(op)) {
-            handleClose(id);
+            runInline(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleClose(id);
+                }
+            });
         } else if ("shutdown".equals(op)) {
-            handleShutdown(id);
+            runInline(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleShutdown(id);
+                }
+            });
+        } else if ("probe".equals(op)) {
+            runInline(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleProbe(id, root);
+                }
+            });
+        } else if ("open".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleOpen(id, root);
+                }
+            });
+        } else if ("load".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleLoad(id, root);
+                }
+            });
+        } else if ("execute".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleExecute(id, root);
+                }
+            });
+        } else if ("generate".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleGenerate(id, root);
+                }
+            });
+        } else if ("embed".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleEmbed(id, root);
+                }
+            });
+        } else if ("stream".equals(op)) {
+            runOnOpPool(id, op, new Runnable() {
+                @Override
+                public void run() {
+                    handleStream(id, root);
+                }
+            });
         } else {
             throw workerError(ErrorCode.CONF_INVALID, "unknown op '" + op + "'");
+        }
+    }
+
+    private void runInline(long id, String op, Runnable opBody) {
+        try {
+            opBody.run();
+        } catch (CortexJException typed) {
+            respondError(id, typed);
+        } catch (Throwable unexpected) {
+            LOG.log(Level.WARNING, "op '" + op + "' failed: " + unexpected, unexpected);
+            respondError(id, workerError(ErrorCode.INFERENCE_FAILED,
+                    "worker op '" + op + "' failed: " + unexpected));
+        }
+    }
+
+    private void runOnOpPool(final long id, final String op, final Runnable opBody) {
+        if (stopped) {
+            respondError(id, workerError(ErrorCode.LOAD_LIFECYCLE, "worker is shutting down"));
+            return;
+        }
+        Runnable guarded = new Runnable() {
+            @Override
+            public void run() {
+                // pool ops get the same typed error handling as inline ops: a
+                // failure inside the pool must produce an error response, not
+                // a dead pool thread and a parent-side timeout
+                runInline(id, op, opBody);
+            }
+        };
+        try {
+            opExecutor.execute(guarded);
+        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+            // a saturated op queue is a typed, immediate answer - not a silent
+            // queueing delay that surfaces as a false request timeout
+            respondError(id, workerError(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "worker op queue is saturated (" + saturated.getMessage()
+                            + "); too many concurrent blocking ops are queued"));
         }
     }
 
@@ -399,6 +513,7 @@ public final class WorkerHost {
     // ------------------------------------------------------------------
 
     private void cleanup() {
+        opExecutor.shutdownNow();
         closeSessionQuietly();
     }
 
