@@ -508,10 +508,18 @@ public final class DefaultExecutionPlanner implements Planner {
         return new CachedProbe(result, System.currentTimeMillis() + ttl);
     }
 
+    private static final long PROBE_WAIT_MILLIS = 60_000L;
+
     private RuntimeProbeResult awaitProbeResult(RuntimeProvider provider, String key,
                                                 java.util.concurrent.CompletableFuture<CachedProbe> inFlight) {
         try {
-            return inFlight.get().result;
+            // audit 2026-10-07 (#147): a hung native probe used to hang the
+            // planner forever on untimed get() - bound the wait, then fall
+            // back to a direct probe
+            return inFlight.get(PROBE_WAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS).result;
+        } catch (java.util.concurrent.TimeoutException timedOut) {
+            probeFutures.remove(key, inFlight);
+            return probeOnce(provider).result;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return probeOnce(provider).result;

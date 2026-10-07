@@ -191,8 +191,18 @@ public final class HardConstraints {
             if (hardLimit == null || hardLimit <= 0) {
                 return null;
             }
-            if (candidate.memoryEstimate().isKnown()
-                    && candidate.memoryEstimate().totalBytes() > hardLimit) {
+            if (!candidate.memoryEstimate().isKnown()) {
+                // audit 2026-10-07 (#147): an unknown estimate used to sail
+                // through every memory check - block it only under explicit
+                // opt-in (default warn-and-allow preserves HTTP/no-size flows)
+                if (blockUnknownMemory()) {
+                    return PlanReason.negative(ReasonCode.MEMORY_LIMIT_EXCEEDED,
+                            "memory estimate is unknown and unknown-memory candidates are blocked "
+                                    + "(cortexj.planner.blockUnknownMemory=true)");
+                }
+                return null;
+            }
+            if (candidate.memoryEstimate().totalBytes() > hardLimit) {
                 return PlanReason.negative(ReasonCode.MEMORY_LIMIT_EXCEEDED,
                         "estimated memory " + candidate.memoryEstimate()
                                 + " exceeds the configured limit of " + mebiBytes(hardLimit) + " MiB");
@@ -206,6 +216,13 @@ public final class HardConstraints {
         @Override
         public PlanReason check(ExecutionCandidate candidate, HardConstraint.ConstraintContext context) {
             if (!candidate.memoryEstimate().isKnown()) {
+                // audit 2026-10-07 (#147): see MemoryLimitConstraint - same
+                // opt-in fail-closed for the physical-memory check
+                if (blockUnknownMemory()) {
+                    return PlanReason.negative(ReasonCode.MEMORY_INSUFFICIENT,
+                            "memory estimate is unknown and unknown-memory candidates are blocked "
+                                    + "(cortexj.planner.blockUnknownMemory=true)");
+                }
                 return null;
             }
             long available = context.environment.availableMemoryEstimateBytes();
@@ -226,8 +243,23 @@ public final class HardConstraints {
         }
     }
 
-    public static final class LicenseConstraint implements HardConstraint {
+    /**
+     * audit 2026-10-07 (#147): opt-in fail-closed for unknown memory
+     * estimates. Default stays warn-and-allow so size-less sources (plain
+     * HTTP without Content-Length) keep working; strict deployments set
+     * {@code cortexj.planner.blockUnknownMemory=true} (or
+     * {@code CORTEXJ_PLANNER_BLOCK_UNKNOWN_MEMORY=1}).
+     */
+    static boolean blockUnknownMemory() {
+        String property = System.getProperty("cortexj.planner.blockUnknownMemory");
+        if (property != null) {
+            return Boolean.parseBoolean(property.trim());
+        }
+        String env = System.getenv("CORTEXJ_PLANNER_BLOCK_UNKNOWN_MEMORY");
+        return env != null && (env.trim().equals("1") || Boolean.parseBoolean(env.trim()));
+    }
 
+    public static final class LicenseConstraint implements HardConstraint {
         @Override
         public PlanReason check(ExecutionCandidate candidate, HardConstraint.ConstraintContext context) {
             if (context.request.allowedLicenses().isEmpty()) {
