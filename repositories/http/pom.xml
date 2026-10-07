@@ -39,4 +39,20 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- audit 2026-10-07 (#111): loopback fixtures use the sanctioned
+               intranet-mirror opt-out; the SSRF guard stays default-on in
+               production (see loopbackIsBlockedWithoutTheIntranetOptOut) -->
+          <systemPropertyVariables>
+            <cortexj.http.allowPrivateHosts>true</cortexj.http.allowPrivateHosts>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

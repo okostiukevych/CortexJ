@@ -101,4 +101,19 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
                     expected.code());
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void loopbackIsBlockedWithoutTheIntranetOptOut() {
+        // audit 2026-10-07 (#111): the SSRF guard is default-on
+        System.clearProperty("cortexj.http.allowPrivateHosts");
+        try {
+            provider().resolve(knownReference(), onlineContext());
+            org.junit.jupiter.api.Assertions.fail("loopback resolution must be blocked by default");
+        } catch (io.cortexj.error.ModelResolutionException expected) {
+            org.junit.jupiter.api.Assertions.assertEquals("CORTEXJ-MODEL-1001",
+                    expected.code());
+        } finally {
+            System.setProperty("cortexj.http.allowPrivateHosts", "true");
+        }
+    }
 }

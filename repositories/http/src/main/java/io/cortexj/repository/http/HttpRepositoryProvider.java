@@ -143,18 +143,51 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
 
     private static HeadInfo head(String url) {
         try {
+            // audit 2026-10-07 (#111): validate the SSRF posture before the
+            // connection - openConnection() would otherwise follow redirects
+            // to link-local/metadata endpoints automatically
+            try {
+                io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(url);
+            } catch (IllegalArgumentException blocked) {
+                ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                        "HTTP model URL is blocked by the SSRF guard: " + blocked.getMessage(),
+                        "Point the reference at a public artifact URL, or set "
+                                + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY
+                                + "=true for intranet mirrors.");
+                failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+                throw failure;
+            }
             HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
             try {
                 connection.setRequestMethod("HEAD");
+                // audit 2026-10-07 (#111): do not follow redirects blindly -
+                // resolve() re-validates explicit redirect targets instead
+                connection.setInstanceFollowRedirects(false);
                 connection.setConnectTimeout(CONNECT_TIMEOUT);
                 connection.setReadTimeout(READ_TIMEOUT);
                 int status = connection.getResponseCode();
+                if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                    String target = connection.getHeaderField("Location");
+                    ModelResolutionException redirect = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                            "HTTP endpoint redirected for "
+                                    + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url)
+                                    + " - redirects are not followed automatically by the resolver",
+                            "Use the final artifact URL directly, or download the model through the "
+                                    + "download manager which validates redirect targets.");
+                    redirect.detail("status", String.valueOf(status));
+                    redirect.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+                    if (target != null) {
+                        redirect.detail("location", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(target));
+                    }
+                    throw redirect;
+                }
                 if (status != 200) {
                     ModelResolutionException notFound = new ModelResolutionException(ErrorCode.MODEL_NOT_FOUND,
-                            "HTTP endpoint answered with status " + status + " for " + url,
+                            "HTTP endpoint answered with status " + status + " for "
+                                    + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url),
                             "Check the model URL.");
                     notFound.detail("status", String.valueOf(status));
-                    notFound.detail("reference", url);
+                    notFound.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
                     throw notFound;
                 }
                 HeadInfo info = new HeadInfo();
@@ -181,9 +214,10 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
             }
         } catch (IOException e) {
             ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
-                    "HTTP model resolution failed for " + url + ": " + e.getMessage(),
+                    "HTTP model resolution failed for "
+                            + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url) + ": " + e.getMessage(),
                     "Check the URL, network connectivity and TLS configuration.");
-            failure.detail("reference", url);
+            failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
             throw failure;
         }
     }

@@ -47,4 +47,20 @@
       <version>${project.version}</version>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- audit 2026-10-07 (#111): core download fixtures speak plain
+               loopback HTTP - the sanctioned intranet-mirror opt-out for
+               tests; the SSRF guard stays default-on in production -->
+          <systemPropertyVariables>
+            <cortexj.http.allowPrivateHosts>true</cortexj.http.allowPrivateHosts>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

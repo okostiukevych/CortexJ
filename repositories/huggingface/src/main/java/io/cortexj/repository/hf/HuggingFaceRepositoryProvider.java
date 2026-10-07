@@ -421,6 +421,15 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             return generic;
         }
         String property = System.getProperty("cortexj.hf.token");
+        // audit 2026-10-07 (#98, parity with #125): same loud warning as the
+        // remote key - sysprops surface in jcmd and hs_err dumps
+        if ((env == null || env.isEmpty()) && (generic == null || generic.isEmpty())
+                && property != null && !property.isEmpty()) {
+            java.util.logging.Logger.getLogger(HuggingFaceRepositoryProvider.class.getName()).warning(
+                    "cortexj.hf.token is set via a system property; system properties "
+                            + "are readable by 'jcmd VM.system_properties' and hs_err dumps - "
+                            + "prefer the CORTEXJ_HF_TOKEN environment variable");
+        }
         return property == null || property.isEmpty() ? null : property;
     }
 
