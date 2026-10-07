@@ -197,8 +197,9 @@ resolved: concurrency refcount races, carrier pinning, executor bounds, download
 caps/retry/resume validation, parser hardening, server hardening, pinned in-use
 artifacts) is regression-tested. GitHub Actions CI matrix runs
 JDK 8/11/17/21/25 on ubuntu/macos/windows, JPMS lanes (`mvn -Pjpms`),
-SpotBugs + CodeQL + JaCoCo coverage lanes (issue #53), and gated self-hosted
-GPU lanes (CUDA/Metal per spec 70).
+SpotBugs + JaCoCo coverage lanes (issue #53), and gated self-hosted
+GPU lanes (CUDA/Metal per spec 70). CodeQL is prepared but gated until
+GitHub Advanced Security is enabled for this private repository.
 
 llama.cpp execution is real: the provider manages a `llama-server` process (health
 polling, blocking + SSE streaming, graceful shutdown incl. destroyForcibly escalation
