@@ -114,8 +114,12 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         // audit M-8: disconnect every in-flight SSE connection first - socket
         // reads never respond to interrupts, so shutdownNow alone would leave
         // workers blocked for the full read timeout while the remote endpoint
-        // keeps generating (and billing) server-side
-        runtimeClosed.set(true);
+        // keeps generating (and billing) server-side.
+        // audit 2026-10-07 (#145): idempotent by flag - a repeated close must
+        // not re-iterate liveStreams or re-shut the executor
+        if (!runtimeClosed.compareAndSet(false, true)) {
+            return;
+        }
         for (HttpURLConnection connection : liveStreams) {
             try {
                 connection.disconnect();

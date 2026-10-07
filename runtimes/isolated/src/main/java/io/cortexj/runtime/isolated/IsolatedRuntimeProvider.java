@@ -61,6 +61,10 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
             Collections.newSetFromMap(new ConcurrentHashMap<IsolatedModelRuntime, Boolean>());
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile WorkerChannel channel;
+    // audit 2026-10-07 (#145): single-flight spawn claim - concurrent
+    // open/probe/descriptor share one spawn and wait interruptibly instead of
+    // serializing on the monitor for the whole 60 s handshake
+    private volatile java.util.concurrent.CompletableFuture<WorkerChannel> channelFuture;
     private volatile RuntimeDescriptor cachedDescriptor;
 
     public IsolatedRuntimeProvider(String targetRuntimeId) {
@@ -233,14 +237,64 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
         if (active != null && !active.isDead()) {
             return active;
         }
+        boolean owner = false;
+        java.util.concurrent.CompletableFuture<WorkerChannel> claimed;
         synchronized (channelLock) {
             active = channel;
             if (active != null && !active.isDead()) {
                 return active;
             }
+            if (channelFuture != null) {
+                claimed = channelFuture;
+            } else {
+                claimed = new java.util.concurrent.CompletableFuture<WorkerChannel>();
+                channelFuture = claimed;
+                owner = true;
+            }
+        }
+        if (!owner) {
+            // interruptible shared wait - no monitor is held while the owner
+            // spawns and handshakes (up to 60 s)
+            try {
+                return claimed.get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "interrupted while waiting for the isolated worker channel",
+                        "Retry the operation.");
+            } catch (java.util.concurrent.ExecutionException failed) {
+                Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+                if (cause instanceof RuntimeException) {
+                    throw (RuntimeException) cause;
+                }
+                throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "isolated worker channel failed: " + cause,
+                        "The next probe/open respawns the worker automatically.", cause);
+            }
+        }
+        try {
             WorkerChannel fresh = WorkerChannel.start(targetRuntimeId);
-            channel = fresh;
+            synchronized (channelLock) {
+                channel = fresh;
+                if (channelFuture == claimed) {
+                    channelFuture = null;
+                }
+            }
+            claimed.complete(fresh);
             return fresh;
+        } catch (Throwable spawnFailure) {
+            synchronized (channelLock) {
+                if (channelFuture == claimed) {
+                    channelFuture = null;
+                }
+            }
+            claimed.completeExceptionally(spawnFailure);
+            if (spawnFailure instanceof RuntimeException) {
+                throw (RuntimeException) spawnFailure;
+            }
+            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "isolated worker spawn failed: " + spawnFailure,
+                    "Verify that a JDK is available at java.home.", spawnFailure);
         }
     }
 
