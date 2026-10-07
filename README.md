@@ -154,7 +154,8 @@ Layering rules (enforced by module boundaries):
 - **M5** — platform modules for Java 8/11/17/21/25 + starters for all five LTS lines with
   wrong-JVM detection
 - **M6** — legacy support: verified by building and testing the full shared core on real
-  JDK 8 and JDK 11 (M6 acceptance: starter-java8/java11 present, 87 tests green on both)
+  JDK 8 and JDK 11 (M6 acceptance: starter-java8/java11 present, the full shared
+  core suite green on both)
 - **M7** — production integration: `ModelLockfile` (PINNED_MODEL/PINNED_PLAN enforcement,
   `--lockfile-out`/`--lockfile` CLI flags), air-gap bundles (`cortexj bundle create/verify`,
   sha256 manifests, verified offline re-resolution), OpenTelemetry adapter
@@ -237,7 +238,8 @@ mvn clean install
 
 Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 
-- `mvn test` green on each LTS JDK — 87 tests, 0 failures on every lane
+- `mvn test` green on each LTS JDK — the shared core suite (~415 tests on the
+  JDK 8 lane, ~457 on JDK 25), 0 failures on every lane
   (JDK 8 build uses `-source/-target 8`; JDK 9+ uses `--release 8`).
 - The single shaded CLI jar runs unchanged on Java 8 through 25, reporting the correct
   JVM each time; newer platform classes are skipped gracefully on older JVMs, and the

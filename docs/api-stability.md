@@ -33,12 +33,12 @@ The `compat` Maven profile runs `japicmp` binary-compatibility checks against a
 published baseline once a non-snapshot release exists:
 
 ```bash
-mvn -Pcompat verify -Dcortexj.api.baseline=1.0.0
+mvn -Pcompat verify -Dcortexj.compat.skip=false -Dcortexj.api.baseline=1.0.0
 ```
 
-The profile is skipped when no baseline version is configured (there is no released
-version yet). After 1.0.0 ships, CI will fail on any binary-breaking change to the
-Public API tier in minor/patch releases.
+The profile skips cleanly by default (`cortexj.compat.skip=true`): there is no
+released baseline to compare against yet. After 1.0.0 ships, CI will fail on any
+binary-breaking change to the Public API tier in minor/patch releases.
 
 ## What may change
 

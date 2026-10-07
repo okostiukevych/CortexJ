@@ -41,6 +41,14 @@ threat model of spec §64-§65 and the acceptance criteria of §113.
 
 - Plain HTTP model references (`cortexj-repository-http`) serve content without TLS —
   documented in the provider guide and flagged with `trustNote` on every descriptor.
+- **Model references are trusted configuration input (audit 2026-10-05, issue #111):**
+  `ModelReference` accepts arbitrary `http(s)` URLs (including cloud metadata
+  endpoints and intranet hosts) and local filesystem paths (`~`, `file:`). If an
+  application feeds user-controlled input into `models().load()/plan()` (a
+  chat-facing model picker, an MCP tool), the attacker gains SSRF (the resolver
+  HEAD/GETs the URL) and arbitrary local file reads (paths surface in resolution
+  errors and parsers). Applications MUST treat model references as trusted
+  configuration; never pass raw user input as a `ModelReference`.
 - llama.cpp JNI bridge is not shipped; native llama.cpp execution goes through the
   managed llama-server process bridge (process isolation is the safer default).
 - GPU execution paths (CUDA/Metal) are declared by runtimes but not exercised in CI
