@@ -196,9 +196,9 @@ class LlamaServerCloseInterruptsStreamsTest {
         assertTrue(closeMillis < 5_000,
                 "model close() must free the blocked SSE worker via disconnect, not wait "
                         + "for the 300s read timeout (took " + closeMillis + "ms)");
-        assertEquals(1, firstError.getCount(),
-                "a stream interrupted by close() must not deliver an error "
-                        + "(deliberate close has cancel semantics)");
+        assertTrue(firstError.await(10, TimeUnit.SECONDS),
+                "audit #95: a stream interrupted by model close() must deliver a terminal "
+                        + "error instead of leaving the subscriber waiting forever");
         Thread.sleep(200);
         assertTrue(noNewThreadAliveNamed("cortexj-llama-sse", preExisting),
                 "no SSE worker thread of THIS model may survive model close()");

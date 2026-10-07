@@ -242,8 +242,10 @@ class SharedEndpointRegistryTest {
                             + "orphans the multi-GB llama-server process");
             assertEquals(0, registry.liveEndpointCount(),
                     "round " + round + ": no endpoint may be left in the registry");
-            assertEquals(0, registry.liveKeyLockCount(),
-                    "round " + round + ": stale per-key locks must be dropped at full stop");
+            assertEquals(1, registry.liveKeyLockCount(),
+                    "round " + round + ": the per-key lock is deliberately retained after a full "
+                            + "stop (audit #112) - removing it let an acquirer hold the old lock "
+                            + "while a fresh one was created, launching a duplicate llama-server");
             assertEquals(round + 1, launcher.launchCount.get(),
                     "round " + round + ": each round must start from a fully stopped endpoint");
         }
@@ -281,8 +283,9 @@ class SharedEndpointRegistryTest {
                 "the entry must be removed only when the refcount reaches zero");
         assertEquals(1, secondBasStops(launcher),
                 "the last holder's release must stop the process exactly once");
-        assertEquals(0, registry.liveKeyLockCount(),
-                "stale per-key locks must be dropped when the endpoint is fully stopped");
+        assertEquals(1, registry.liveKeyLockCount(),
+                "the per-key lock is deliberately retained after a full stop (audit #112): "
+                        + "one small lock per distinct artifact beats a duplicate-process window");
     }
 
     private static void awaitQuietly(CyclicBarrier barrier) {
