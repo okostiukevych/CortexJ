@@ -253,7 +253,7 @@ public final class CortexJServer {
         return false;
     }
 
-    private static boolean isLoopbackHost(String hostHeader) {
+    static boolean isLoopbackHost(String hostHeader) {
         if (hostHeader == null) {
             return false;
         }
@@ -268,22 +268,54 @@ public final class CortexJServer {
             }
             host = host.substring(1, end);
         } else {
-            int portSeparator = host.lastIndexOf(':');
-            if (portSeparator >= 0) {
+            // a single ':' means host:port; several colons mean a bare IPv6
+            // literal like "::1" or "0:0:0:0:0:0:0:1" (no port stripping)
+            int colons = 0;
+            for (int i = 0; i < host.length(); i++) {
+                if (host.charAt(i) == ':') {
+                    colons++;
+                }
+            }
+            if (colons == 1) {
+                int portSeparator = host.lastIndexOf(':');
                 host = host.substring(0, portSeparator);
             }
         }
         if (host.isEmpty()) {
             return false;
         }
+        // audit #90: no DNS resolution of the attacker-controlled Host header.
+        // Resolving it let a rebinding domain with an A record pointing at
+        // 127.0.0.1 pass the guard; only literal loopback names are accepted.
         if ("localhost".equalsIgnoreCase(host)) {
             return true;
         }
-        try {
-            return InetAddress.getByName(host).isLoopbackAddress();
-        } catch (UnknownHostException unresolvable) {
+        if (isLiteralIpv4(host)) {
+            return host.startsWith("127.");
+        }
+        return "::1".equals(host) || "0:0:0:0:0:0:0:1".equalsIgnoreCase(host);
+    }
+
+    private static boolean isLiteralIpv4(String host) {
+        String[] octets = host.split("\\.", -1);
+        if (octets.length != 4) {
             return false;
         }
+        for (String octet : octets) {
+            if (octet.isEmpty() || octet.length() > 3) {
+                return false;
+            }
+            for (int i = 0; i < octet.length(); i++) {
+                char c = octet.charAt(i);
+                if (c < '0' || c > '9') {
+                    return false;
+                }
+            }
+            if (Integer.parseInt(octet) > 255) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean constantTimeEquals(String left, String right) {
@@ -403,8 +435,10 @@ public final class CortexJServer {
                     @Override
                     public void onComplete(io.cortexj.stream.StreamCompletion completion) {
                         try {
-                            output.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
-                            output.flush();
+                            synchronized (output) {
+                                output.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
+                                output.flush();
+                            }
                         } catch (IOException ignored) {
                             // client disconnected
                         } finally {
@@ -466,9 +500,14 @@ public final class CortexJServer {
     }
 
     private void writeSse(OutputStream output, ObjectNode chunk) throws IOException {
-        output.write(("data: " + mapper.writeValueAsString(chunk) + "\n\n")
-                .getBytes(StandardCharsets.UTF_8));
-        output.flush();
+        // audit #117: the runtime worker and the timeout path can write frames
+        // concurrently - synchronize on the output itself so frame bytes never
+        // interleave
+        synchronized (output) {
+            output.write(("data: " + mapper.writeValueAsString(chunk) + "\n\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            output.flush();
+        }
     }
 
     private void writeSseError(OutputStream output, String code, String message) throws IOException {
