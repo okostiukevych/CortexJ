@@ -483,15 +483,21 @@ final class WorkerChannel {
     }
 
     private void write(ObjectNode payload) {
+        // audit 2026-10-07 (#145): only the pipe write itself is guarded -
+        // markDead() runs user callbacks and killProcess (waitFor up to 10 s)
+        // and must never execute under this monitor, or every concurrent
+        // call() piles up behind one dead worker (plus carrier pinning on
+        // Java 21 from blocking IO under synchronized)
+        boolean broken;
         synchronized (this) {
             writer.println(payload.toString());
             writer.flush();
-            if (writer.checkError()) {
-                RuntimeException failure = new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
-                        "cannot write to the isolated worker stdin (worker process gone?)");
-                markDead("worker stdin write failed");
-                throw failure;
-            }
+            broken = writer.checkError();
+        }
+        if (broken) {
+            markDead("worker stdin write failed");
+            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "cannot write to the isolated worker stdin (worker process gone?)");
         }
     }
 

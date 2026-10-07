@@ -36,6 +36,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class PushTokenStream implements TokenStream {
 
     public static final int EARLY_TOKEN_BUFFER_LIMIT = 1024;
+    // audit 2026-10-07 (#146): the live queue used to be unbounded after
+    // subscribe - a fast producer with a slow consumer (an SSE socket
+    // stalled on a reader) grew it until OOM. Same typed-overflow contract
+    // as the pre-subscribe buffer.
+    public static final int LIVE_TOKEN_BUFFER_LIMIT = 4096;
 
     private final Object lock = new Object();
     private final AtomicReference<TokenConsumer> consumer = new AtomicReference<TokenConsumer>();
@@ -60,8 +65,11 @@ public final class PushTokenStream implements TokenStream {
     private CortexJException bufferedError;
 
     public void emit(String text, java.util.Map<String, String> metadata) {
-        Token token = new Token(text, emitted.getAndIncrement(), metadata);
+        // audit 2026-10-07 (#146): the sequence number is assigned only for
+        // accepted tokens - dropped post-terminal emits no longer punch
+        // holes into the observable token indexes
         boolean deliverNow = false;
+        boolean overflowed = false;
         synchronized (lock) {
             if (closed.get() || completed.get() || failed.get()) {
                 return;
@@ -74,11 +82,23 @@ public final class PushTokenStream implements TokenStream {
                     failLocked(overflowError(EARLY_TOKEN_BUFFER_LIMIT));
                     return;
                 }
-                earlyTokens.add(token);
+                earlyTokens.add(new Token(text, emitted.getAndIncrement(), metadata));
                 return;
             }
-            pending.add(token);
-            deliverNow = true;
+            if (pending.size() >= LIVE_TOKEN_BUFFER_LIMIT) {
+                failLocked(liveOverflowError(LIVE_TOKEN_BUFFER_LIMIT));
+                overflowed = true;
+            } else {
+                pending.add(new Token(text, emitted.getAndIncrement(), metadata));
+                deliverNow = true;
+            }
+        }
+        if (overflowed) {
+            // stop the producer: without backpressure the alternative is an
+            // unbounded heap. Same path as an explicit cancel.
+            close();
+            drain();
+            return;
         }
         if (deliverNow) {
             drain();
@@ -132,6 +152,17 @@ public final class PushTokenStream implements TokenStream {
                 "Subscribe to the token stream before the producer starts, or "
                         + "raise PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT; the "
                         + "stream never buffers without bound.");
+    }
+
+    private static CortexJException liveOverflowError(int limit) {
+        return new InferenceException(
+                ErrorCode.INFERENCE_STREAM_FAILED,
+                "token stream live buffer overflow: more than " + limit
+                        + " tokens are queued behind a slow consumer; "
+                        + "the generation was failed instead of growing the heap",
+                "Consume tokens faster (or offload the consumer), subscribe "
+                        + "earlier, or raise PushTokenStream.LIVE_TOKEN_BUFFER_LIMIT; "
+                        + "the stream never buffers without bound.");
     }
 
     public void onCancel(Runnable action) {
