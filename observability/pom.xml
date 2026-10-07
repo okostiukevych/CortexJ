@@ -20,7 +20,7 @@
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-api</artifactId>
-      <version>1.49.0</version>
+      <version>1.66.0</version>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -30,13 +30,13 @@
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk</artifactId>
-      <version>1.49.0</version>
+      <version>1.66.0</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-testing</artifactId>
-      <version>1.49.0</version>
+      <version>1.66.0</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
