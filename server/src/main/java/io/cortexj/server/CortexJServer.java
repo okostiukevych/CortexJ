@@ -448,8 +448,15 @@ public final class CortexJServer {
 
                     @Override
                     public void onError(io.cortexj.error.CortexJException error) {
+                        // audit #124: the upstream error message may carry an
+                        // excerpt of the remote endpoint's response body - keep
+                        // it in the log, never in the client-facing SSE frame
+                        // (the non-stream dispatch path already returns generic
+                        // bodies for CortexJException)
+                        LOG.log(java.util.logging.Level.WARNING,
+                                "stream failed: " + error.code() + " - " + error.getMessage());
                         try {
-                            writeSseError(output, error.code(), error.getMessage());
+                            writeSseError(output, error.code(), GENERIC_ERROR_MESSAGE);
                         } catch (IOException ignored) {
                             // client disconnected
                         } finally {
