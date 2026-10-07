@@ -39,9 +39,14 @@ final class IsolatedModelRuntime implements ModelRuntime {
         this.provider = provider;
         this.channel = channel;
         this.ownsExecutor = executor == null;
+        // audit 2026-10-07 (#146): bounded fallback pool, same contract as
+        // the platform pools (see RemoteOpenAiRuntime)
         this.executor = executor == null
-                ? Executors.newFixedThreadPool(4,
-                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-isolated-io"))
+                ? new java.util.concurrent.ThreadPoolExecutor(4, 4,
+                        60L, java.util.concurrent.TimeUnit.SECONDS,
+                        new java.util.concurrent.LinkedBlockingQueue<Runnable>(64),
+                        io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-isolated-io"),
+                        new java.util.concurrent.ThreadPoolExecutor.AbortPolicy())
                 : executor;
     }
 

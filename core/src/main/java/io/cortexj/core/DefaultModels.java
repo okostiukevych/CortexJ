@@ -192,8 +192,11 @@ public final class DefaultModels implements io.cortexj.Models {
                 // audit 2026-10-07 (#145): single registration - the list
                 // previously received the same future twice, leaving a stale
                 // entry (and a double completeExceptionally) until closeAll()
+                // audit 2026-10-07 (#146): async loads run on the dedicated
+                // load pool - a stuck native load must not consume download
+                // slots (or the reverse), starving queued work
                 asyncLoads.add(underlying);
-                platform.downloadExecutor().execute(new Runnable() {
+                platform.loadExecutor().execute(new Runnable() {
                     @Override
                     public void run() {
                         // audit #89: the task body runs inside the close barrier
@@ -238,10 +241,10 @@ public final class DefaultModels implements io.cortexj.Models {
             } catch (java.util.concurrent.RejectedExecutionException saturated) {
                 asyncLoads.remove(underlying);
                 underlying.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
-                        "Model load rejected: too many concurrent downloads are already queued "
+                        "Model load rejected: too many concurrent loads are already queued "
                                 + "(" + saturated.getMessage() + ").",
                         "Await or cancel an in-flight loadAsync before submitting more, or raise "
-                                + "the download pool width."));
+                                + "the load pool width (cortexj.load.width/cortexj.load.queue)."));
             }
             return new CancellableLoad(underlying, cancelFlag);
         } finally {

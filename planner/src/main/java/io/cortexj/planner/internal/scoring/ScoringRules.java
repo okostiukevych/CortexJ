@@ -16,7 +16,15 @@ public final class ScoringRules {
     public interface ScoringRule {
         String name();
 
-        void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs);
+        /**
+         * audit 2026-10-07 (#146): {@code snapshot} is built once per
+         * candidate by the planner - rules must read from it instead of
+         * calling {@code candidate.build()} (which copies the notes map on
+         * every call, ~10 redundant builds per candidate per pass).
+         * Mutations still go through {@code candidate}.
+         */
+        void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot,
+                   RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs);
     }
 
     private ScoringRules() {
@@ -44,9 +52,9 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            if (candidate.build().format() != io.cortexj.model.ArtifactFormat.UNKNOWN
-                    && runtime.formats().contains(candidate.build().format())) {
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            if (snapshot.format() != io.cortexj.model.ArtifactFormat.UNKNOWN
+                    && runtime.formats().contains(snapshot.format())) {
                 candidate.addScore(1.5d);
                 candidate.note("nativeFormat", "true");
             }
@@ -61,8 +69,8 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            ExecutionCandidate built = candidate.build();
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            ExecutionCandidate built = snapshot;
             if (built.artifact() == null) {
                 return;
             }
@@ -84,8 +92,8 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            ExecutionCandidate built = candidate.build();
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            ExecutionCandidate built = snapshot;
             if (!built.memoryEstimate().isKnown()) {
                 return;
             }
@@ -115,12 +123,12 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
             if (request.preferredRuntime() != null && request.preferredRuntime().equals(runtime.id().value())) {
                 candidate.addScore(3.0d);
                 candidate.note("preferredRuntime", "true");
             }
-            if (request.preferredQuantization() != null && request.preferredQuantization().equals(candidate.build().quantization())) {
+            if (request.preferredQuantization() != null && request.preferredQuantization().equals(snapshot.quantization())) {
                 candidate.addScore(1.5d);
                 candidate.note("preferredQuantization", "true");
             }
@@ -135,13 +143,13 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
             io.cortexj.planner.DevicePreference preference = request.preferredDevice();
             if (preference == null || preference == io.cortexj.planner.DevicePreference.AUTO) {
                 return;
             }
             DeviceType wanted = toDeviceType(preference);
-            if (wanted != null && wanted == candidate.build().device()) {
+            if (wanted != null && wanted == snapshot.device()) {
                 candidate.addScore(1.25d);
                 candidate.note("preferredDevice", "true");
             }
@@ -166,7 +174,7 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
             switch (runtime.maturity()) {
                 case STABLE:
                     candidate.addScore(1.0d);
@@ -188,8 +196,8 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            String quantization = candidate.build().quantization();
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            String quantization = snapshot.quantization();
             if (quantization == null) {
                 return;
             }
@@ -221,8 +229,8 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            String level = candidate.build().notes().get("supportLevel");
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            String level = snapshot.notes().get("supportLevel");
             if ("PARTIAL".equals(level)) {
                 candidate.addScore(-1.0d);
                 candidate.note("partialSupport", "true");
@@ -238,8 +246,8 @@ public final class ScoringRules {
         }
 
         @Override
-        public void apply(ExecutionCandidate.Builder candidate, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
-            if (candidate.build().device() != DeviceType.REMOTE) {
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            if (snapshot.device() != DeviceType.REMOTE) {
                 candidate.addScore(0.5d);
             }
         }

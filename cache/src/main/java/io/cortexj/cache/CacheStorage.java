@@ -590,8 +590,19 @@ public final class CacheStorage {
         return freed;
     }
 
+    private static final long TOUCH_THROTTLE_MILLIS = 60_000L;
+
     private static void touch(Path path) {
+        // audit 2026-10-07 (#146): the read path used to rewrite mtime on
+        // every get() - metadata write traffic on hot models. Throttle to at
+        // most one mtime write per minute; LRU granularity below a minute was
+        // never meaningful for multi-GB artifacts anyway.
         try {
+            long age = System.currentTimeMillis()
+                    - Files.getLastModifiedTime(path).toMillis();
+            if (age < TOUCH_THROTTLE_MILLIS) {
+                return;
+            }
             Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
         } catch (Exception ignored) {
         }

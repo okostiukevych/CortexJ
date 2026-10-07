@@ -47,11 +47,16 @@ public final class DefaultCortexJ implements CortexJ {
     private final boolean ownsExecutor;
     private final ExecutorService asyncExecutor;
     private final ExecutorService downloadExecutor;
+    // audit 2026-10-07 (#146): long native loads run here, short downloads
+    // stay on downloadExecutor - a stuck multi-minute load must not starve
+    // queued downloads (or vice versa) into RejectedExecutionException
+    private final ExecutorService loadExecutor;
 
     DefaultCortexJ(CortexJBuilder configuration) {
         ExecutorService ioExecutorCandidate = null;
         ExecutorService asyncExecutorCandidate = null;
         java.util.concurrent.ThreadPoolExecutor downloadExecutorCandidate = null;
+        java.util.concurrent.ThreadPoolExecutor loadExecutorCandidate = null;
         try {
             this.snapshot = EnvironmentSnapshot.probe();
             PlatformModuleSelector.validateStarters(snapshot);
@@ -115,9 +120,22 @@ public final class DefaultCortexJ implements CortexJ {
                     io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-download"),
                     new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
             downloadExecutorCandidate.allowCoreThreadTimeOut(true);
+            // audit 2026-10-07 (#146): loads are few and heavy (minutes of
+            // native init) - a narrower pool than downloads, same fail-fast
+            // bounded-queue contract
+            int loadWidth = positiveIntProperty("cortexj.load.width",
+                    Math.max(2, Runtime.getRuntime().availableProcessors()));
+            int loadQueue = positiveIntProperty("cortexj.load.queue", 64);
+            loadExecutorCandidate = new java.util.concurrent.ThreadPoolExecutor(
+                    loadWidth, loadWidth, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.LinkedBlockingQueue<Runnable>(loadQueue),
+                    io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-load"),
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+            loadExecutorCandidate.allowCoreThreadTimeOut(true);
             this.ioExecutor = ioExecutorCandidate;
             this.asyncExecutor = asyncExecutorCandidate;
             this.downloadExecutor = downloadExecutorCandidate;
+            this.loadExecutor = loadExecutorCandidate;
 
             this.downloadManager = new io.cortexj.core.download.DownloadManager(events,
                     resolved.proxyHost, resolved.proxyPort);
@@ -191,6 +209,7 @@ public final class DefaultCortexJ implements CortexJ {
             shutdownExecutor(ioExecutorCandidate);
             shutdownExecutor(asyncExecutorCandidate);
             shutdownExecutor(downloadExecutorCandidate);
+            shutdownExecutor(loadExecutorCandidate);
             throw failure;
         }
     }
@@ -229,6 +248,10 @@ public final class DefaultCortexJ implements CortexJ {
 
     ExecutorService downloadExecutor() {
         return downloadExecutor;
+    }
+
+    ExecutorService loadExecutor() {
+        return loadExecutor;
     }
 
     List<RuntimeProvider> runtimeProviders() {
@@ -325,6 +348,7 @@ public final class DefaultCortexJ implements CortexJ {
             shutdownExecutor(ownsExecutor ? ioExecutor : null);
             shutdownExecutor(asyncExecutor);
             shutdownExecutor(downloadExecutor);
+            shutdownExecutor(loadExecutor);
         }
     }
 

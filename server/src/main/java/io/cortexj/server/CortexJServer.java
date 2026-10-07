@@ -91,7 +91,12 @@ public final class CortexJServer {
 
     private volatile com.sun.net.httpserver.HttpServer httpServer;
     private ThreadPoolExecutor requestExecutor;
+    // audit 2026-10-07 (#146): long SSE streams wait here, not on request
+    // threads - 16 concurrent streams must not exhaust unary capacity and
+    // 503 the whole server while the GPU idles
+    private ThreadPoolExecutor streamExecutor;
     private Semaphore admission;
+    private Semaphore streamAdmission;
 
     public CortexJServer(CortexJ platform, String modelReference) {
         this(platform, modelReference, 0L);
@@ -183,6 +188,15 @@ public final class CortexJServer {
                 new ThreadPoolExecutor.AbortPolicy());
         httpServer.setExecutor(requestExecutor);
         admission = new Semaphore(workers);
+        int streamWorkers = Math.max(4, (int) positiveLongProperty("cortexj.server.streamWorkers",
+                Runtime.getRuntime().availableProcessors()));
+        streamExecutor = new ThreadPoolExecutor(
+                streamWorkers, streamWorkers,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(Math.max(MIN_QUEUED_REQUESTS, streamWorkers)),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server-stream"),
+                new ThreadPoolExecutor.AbortPolicy());
+        streamAdmission = new Semaphore(streamWorkers);
         httpServer.createContext("/v1/models", exchange ->
                 dispatch(exchange, (ctx, headersSent) -> {
                     if (!authorized(ctx, headersSent)) {
@@ -219,6 +233,10 @@ public final class CortexJServer {
         if (requestExecutor != null) {
             requestExecutor.shutdownNow();
             requestExecutor = null;
+        }
+        if (streamExecutor != null) {
+            streamExecutor.shutdownNow();
+            streamExecutor = null;
         }
     }
 
@@ -501,7 +519,39 @@ public final class CortexJServer {
         }
 
         if (stream) {
-            respondStream(exchange, headersSent, generator, request.build());
+            // audit 2026-10-07 (#146): hand the long-lived exchange to the
+            // stream pool and free the request thread - dispatch() releases
+            // the unary permit on return while the stream permit below guards
+            // SSE capacity separately (503 instead of silent pile-up)
+            if (streamAdmission == null || !streamAdmission.tryAcquire()) {
+                respondServiceUnavailable(exchange);
+                return;
+            }
+            final GenerationRequest streamRequest = request.build();
+            final AtomicBoolean streamHeadersSent = headersSent;
+            try {
+                streamExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            respondStream(exchange, streamHeadersSent, generator, streamRequest);
+                        } catch (IOException clientGone) {
+                            // disconnect/timeout paths already tore down upstream
+                        } catch (RuntimeException failure) {
+                            // dispatch() cannot see async failures - log and
+                            // close the exchange here instead of leaking it
+                            LOG.log(java.util.logging.Level.SEVERE, "stream failed", failure);
+                            respondError(exchange, streamHeadersSent, 500,
+                                    "CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE);
+                        } finally {
+                            streamAdmission.release();
+                        }
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                streamAdmission.release();
+                respondServiceUnavailable(exchange);
+            }
             return;
         }
         GenerationResponse response = generator.generate(request.build());

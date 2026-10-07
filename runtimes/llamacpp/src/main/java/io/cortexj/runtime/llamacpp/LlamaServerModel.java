@@ -70,9 +70,15 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     }
 
     static ExecutorService fallbackIoExecutor() {
-        return Executors.newFixedThreadPool(
+        // audit 2026-10-07 (#146): bounded fallback pool - an unbounded SSE
+        // backlog used to grow the heap instead of failing fast
+        return new java.util.concurrent.ThreadPoolExecutor(
                 Math.max(8, 2 * Runtime.getRuntime().availableProcessors()),
-                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-llama-sse"));
+                Math.max(8, 2 * Runtime.getRuntime().availableProcessors()),
+                60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(256),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-llama-sse"),
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override

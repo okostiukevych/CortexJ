@@ -121,10 +121,13 @@ public final class DefaultExecutionPlanner implements Planner {
         ExecutionCandidate winner = outcome.viable.get(0);
         List<ExecutionCandidate> fallbacks = fallbackChain(request, outcome);
 
+        // audit 2026-10-07 (#146): one artifact index per plan instead of a
+        // linear scan per candidate (O(FxA) on wide repositories)
+        java.util.Map<String, ResolvedArtifact> artifactIndex = artifactIndex(outcome.resolved);
         List<PlanDownload> downloads = new ArrayList<PlanDownload>();
-        downloads.addAll(downloadsFor(winner, outcome.resolved));
+        downloads.addAll(downloadsFor(winner, outcome.resolved, artifactIndex));
         for (ExecutionCandidate fallback : fallbacks) {
-            downloads.addAll(downloadsFor(fallback, outcome.resolved));
+            downloads.addAll(downloadsFor(fallback, outcome.resolved, artifactIndex));
         }
 
         List<PlanReason> reasons = new ArrayList<PlanReason>();
@@ -241,9 +244,10 @@ public final class DefaultExecutionPlanner implements Planner {
     public SupportReport inspect(ExecutionRequest request) {
         try {
             Outcome outcome = runPipeline(request);
+            java.util.Map<String, ResolvedArtifact> artifactIndex = artifactIndex(outcome.resolved);
             List<PlanDownload> downloads = new ArrayList<PlanDownload>();
             for (ExecutionCandidate candidate : outcome.viable) {
-                downloads.addAll(downloadsFor(candidate, outcome.resolved));
+                downloads.addAll(downloadsFor(candidate, outcome.resolved, artifactIndex));
             }
             String explanation = ExplanationBuilder.buildSupportExplanation(
                     ExplanationBuilder.adapt(outcome.resolved.descriptor().canonicalId(),
@@ -696,8 +700,11 @@ public final class DefaultExecutionPlanner implements Planner {
 
     private void scoreAndSort(Outcome outcome, ExecutionRequest request) {
         for (CandidateHolder holder : outcome.candidates) {
+            // audit 2026-10-07 (#146): one snapshot build per candidate -
+            // rules used to rebuild (notes-map copy included) on every read
+            ExecutionCandidate snapshot = holder.builder.build();
             for (ScoringRules.ScoringRule rule : scoringRules) {
-                rule.apply(holder.builder, holder.descriptor, request, inputs);
+                rule.apply(holder.builder, snapshot, holder.descriptor, request, inputs);
             }
         }
         // audit L-8: each candidate is built once; the comparator compares
@@ -832,19 +839,33 @@ public final class DefaultExecutionPlanner implements Planner {
         return artifacts;
     }
 
-    private List<PlanDownload> downloadsFor(ExecutionCandidate candidate, ResolvedModel resolved) {
+    private static java.util.Map<String, ResolvedArtifact> artifactIndex(ResolvedModel resolved) {
+        java.util.Map<String, ResolvedArtifact> index =
+                new java.util.LinkedHashMap<String, ResolvedArtifact>();
+        if (resolved.artifacts() != null) {
+            for (ResolvedArtifact artifact : resolved.artifacts()) {
+                if (artifact != null && artifact.artifact() != null
+                        && !index.containsKey(artifact.artifact().id())) {
+                    index.put(artifact.artifact().id(), artifact);
+                }
+            }
+        }
+        return index;
+    }
+
+    private List<PlanDownload> downloadsFor(ExecutionCandidate candidate, ResolvedModel resolved,
+                                            java.util.Map<String, ResolvedArtifact> artifactIndex) {
         if (!candidate.requiresDownload() || candidate.artifact() == null) {
             return Collections.emptyList();
         }
-        for (ResolvedArtifact artifact : resolved.artifacts()) {
-            if (artifact.artifact().id().equals(candidate.artifact().id())) {
-                return PlanDownload.singleton(new PlanDownload(
-                        artifact.artifact().id(),
-                        artifact.location() == null ? resolved.repository().value() : artifact.location().toString(),
-                        artifact.artifact().sizeBytes()));
-            }
+        ResolvedArtifact artifact = artifactIndex.get(candidate.artifact().id());
+        if (artifact == null) {
+            return Collections.emptyList();
         }
-        return Collections.emptyList();
+        return PlanDownload.singleton(new PlanDownload(
+                artifact.artifact().id(),
+                artifact.location() == null ? resolved.repository().value() : artifact.location().toString(),
+                artifact.artifact().sizeBytes()));
     }
 
     private ArtifactInspectionHolder inspectFor(ResolvedModel resolved, ModelArtifact artifact) {
