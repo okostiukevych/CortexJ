@@ -98,7 +98,8 @@ public final class RemoteOpenAiProvider implements RuntimeProvider {
             failure.detail("runtime", id.value());
             throw failure;
         }
-        String apiKey = firstNonEmpty(request.platformConfiguration().get(CONFIG_API_KEY),
+        String apiKey = firstNonEmpty(request.remoteApiKey(),
+                request.platformConfiguration().get(CONFIG_API_KEY),
                 optionAsString(request, "apiKey"),
                 System.getenv("CORTEXJ_REMOTE_API_KEY"),
                 System.getenv("OPENAI_API_KEY"));

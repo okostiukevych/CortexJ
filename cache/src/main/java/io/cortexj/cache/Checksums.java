@@ -77,11 +77,15 @@ public final class Checksums {
         if (normalized.equals("sha256") || normalized.equals("sha-256")) {
             return "SHA-256";
         }
-        if (normalized.equals("sha1") || normalized.equals("sha-1")) {
-            return "SHA-1";
-        }
-        if (normalized.equals("md5")) {
-            return "MD5";
+        // audit 2026-10-07: MD5/SHA-1 are rejected as trust inputs - a
+        // repository that declares them gets a fast typed failure instead of
+        // a silently weak integrity check (collision-prone digests must never
+        // satisfy TRUSTED_ONLY or cache verification).
+        if (normalized.equals("sha1") || normalized.equals("sha-1")
+                || normalized.equals("md5")) {
+            throw new IllegalArgumentException(
+                    "Weak checksum algorithm '" + algorithm + "' is not accepted; "
+                            + "use SHA-256 or stronger.");
         }
         return algorithm.trim();
     }

@@ -3,6 +3,7 @@ package io.cortexj.core;
 import io.cortexj.ErrorCode;
 import io.cortexj.error.ArtifactIntegrityException;
 import io.cortexj.error.ArtifactResolutionException;
+import io.cortexj.error.CortexJException;
 import io.cortexj.error.ModelLoadException;
 import io.cortexj.error.NativeRuntimeException;
 import io.cortexj.error.RuntimeUnavailableException;
@@ -188,6 +189,9 @@ public final class DefaultModels implements io.cortexj.Models {
             final java.util.concurrent.CompletableFuture<ModelHandle> underlying =
                     new java.util.concurrent.CompletableFuture<ModelHandle>();
             try {
+                // audit 2026-10-07 (#145): single registration - the list
+                // previously received the same future twice, leaving a stale
+                // entry (and a double completeExceptionally) until closeAll()
                 asyncLoads.add(underlying);
                 platform.downloadExecutor().execute(new Runnable() {
                     @Override
@@ -231,7 +235,6 @@ public final class DefaultModels implements io.cortexj.Models {
                         }
                     }
                 });
-                asyncLoads.add(underlying);
             } catch (java.util.concurrent.RejectedExecutionException saturated) {
                 asyncLoads.remove(underlying);
                 underlying.completeExceptionally(new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -307,9 +310,20 @@ public final class DefaultModels implements io.cortexj.Models {
                 }
                 return handle;
             } catch (RuntimeException e) {
+                // audit 2026-10-07 (#147): a trust/license refusal is
+                // provider-independent - retrying the next runtime is
+                // pointless, fail fast with the policy error instead
+                if (isPolicyRefusal(e)) {
+                    throw e instanceof ModelLoadException ? e : asLoadFailure(e, candidate);
+                }
                 if (e instanceof ModelLoadException || e instanceof RuntimeUnavailableException
                         || e instanceof ArtifactResolutionException || e instanceof NativeRuntimeException
-                        || e instanceof ArtifactIntegrityException) {
+                        || e instanceof ArtifactIntegrityException
+                        // audit 2026-10-07 (#147): a worker-child crash
+                        // surfaces from provider.open() as InferenceException -
+                        // without this the fallback chain never tries the next
+                        // runtime after an open-phase crash
+                        || e instanceof io.cortexj.error.InferenceException) {
                     last = asLoadFailure(e, candidate);
                     if (index < chain.size() - 1) {
                         java.util.Map<String, String> fallbackAttributes =
@@ -329,6 +343,37 @@ public final class DefaultModels implements io.cortexj.Models {
         throw last != null ? last : new ModelLoadException(ErrorCode.LOAD_FAILED,
                 "No runtime could load model " + request.model().value(),
                 "Inspect the diagnostics with support().inspect() and verify runtimes.");
+    }
+
+    /**
+     * audit 2026-10-07 (#98): the raw remote API key leaves core only through
+     * the sealed RuntimeOpenRequest accessor, and only for the built-in
+     * openai-remote runtime. Third-party providers receive a null credential
+     * and must source their own secrets from runtime options or environment.
+     */
+    private String credentialFor(RuntimeProvider provider) {
+        try {
+            if (provider != null && provider.id() != null
+                    && "openai-remote".equals(provider.id().value())) {
+                return platform.config().remoteApiKey;
+            }
+        } catch (RuntimeException ignored) {
+            // a provider id that cannot even be read gets no credential
+        }
+        return null;
+    }
+
+    /**
+     * audit 2026-10-07 (#147): trust/license refusals carry a policy code
+     * that no other runtime in the chain can satisfy.
+     */
+    private static boolean isPolicyRefusal(RuntimeException e) {
+        if (e instanceof CortexJException) {
+            String code = ((CortexJException) e).code();
+            return ErrorCode.SEC_POLICY_BLOCKED.equals(code)
+                    || ErrorCode.SEC_LICENSE_BLOCKED.equals(code);
+        }
+        return false;
     }
 
     private static ModelLoadException asLoadFailure(RuntimeException e, ExecutionCandidate candidate) {
@@ -414,7 +459,8 @@ public final class DefaultModels implements io.cortexj.Models {
                     platform.environment(),
                     platform.hardware(),
                     platform.executor(),
-                    platform.events().asListener()));
+                    platform.events().asListener(),
+                    credentialFor(provider)));
 
             handle.lifecycleTo(ModelLifecycleState.LOADING);
             RuntimeModel model;
@@ -684,6 +730,20 @@ public final class DefaultModels implements io.cortexj.Models {
         io.cortexj.model.TrustPolicy policy = platform.config().trustPolicy;
         String trustNote = resolved.descriptor().trustNote();
         if (trustNote == null || trustNote.isEmpty()) {
+            // audit 2026-10-07 (#143): an absent note used to mean "trusted"
+            // for every provider - but the local provider never sets one, so
+            // an unchecked local file bypassed TRUSTED_ONLY entirely. A note
+            // stays sufficient for blocking; without one, TRUSTED_ONLY
+            // additionally requires at least one artifact checksum.
+            if (policy == io.cortexj.model.TrustPolicy.TRUSTED_ONLY && !hasAnyChecksum(resolved)) {
+                throw new ModelLoadException(io.cortexj.ErrorCode.SEC_POLICY_BLOCKED,
+                        "Model " + resolved.descriptor().canonicalId()
+                                + " carries no trust note and no artifact checksum, and the platform "
+                                + "runs with TRUSTED_ONLY.",
+                        "Record checksums in the local manifest (cortexj-model.json) so the "
+                                + "artifact is verifiable, pin a trusted revision, or relax the "
+                                + "trust policy to ALLOW_UNSIGNED_WITH_WARNING.");
+            }
             return;
         }
         if (policy == io.cortexj.model.TrustPolicy.TRUSTED_ONLY) {
@@ -698,6 +758,21 @@ public final class DefaultModels implements io.cortexj.Models {
             platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
                     "untrusted model loaded (trust policy allows it): " + trustNote);
         }
+    }
+
+    private static boolean hasAnyChecksum(ResolvedModel resolved) {
+        if (resolved.artifacts() == null) {
+            return false;
+        }
+        for (ResolvedArtifact artifact : resolved.artifacts()) {
+            if (artifact != null && artifact.artifact() != null
+                    && artifact.artifact().checksum() != null
+                    && artifact.artifact().checksum().value() != null
+                    && !artifact.artifact().checksum().value().trim().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,

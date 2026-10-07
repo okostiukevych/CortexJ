@@ -64,8 +64,12 @@ public final class Configuration {
 
         Long memoryLimit = builder.memoryLimitBytes();
         if (memoryLimit == null) {
-            String raw = System.getProperty(SYSPROP_PREFIX + "memory.limit.bytes");
-            if (raw != null && !raw.isEmpty()) {
+            // audit 2026-10-07 (#148): env parity with maxArtifactBytes
+            // (CORTEXJ_MAX_ARTIFACT_BYTES) - operators get the same knob in
+            // containers without sysprops
+            String raw = firstNonEmpty(System.getProperty(SYSPROP_PREFIX + "memory.limit.bytes"),
+                    env("CORTEXJ_MEMORY_LIMIT_BYTES"));
+            if (raw != null) {
                 try {
                     memoryLimit = Long.valueOf(raw.trim());
                 } catch (NumberFormatException ignored) {
@@ -125,9 +129,11 @@ public final class Configuration {
         if (remoteBaseUrl != null) {
             config.put("remote.baseUrl", remoteBaseUrl);
         }
-        if (remoteApiKey != null) {
-            config.put("remote.apiKey", remoteApiKey);
-        }
+        // audit 2026-10-07 (#98): the raw API key is NEVER broadcast in this
+        // map - it used to reach every RuntimeProvider.open(), including
+        // third-party SPI implementations. The built-in openai-remote runtime
+        // receives it through RuntimeOpenRequest.remoteApiKey(); everyone else
+        // must source credentials from their own options/environment.
         if (memoryLimitBytes != null) {
             config.put("memoryLimitBytes", String.valueOf(memoryLimitBytes));
         }

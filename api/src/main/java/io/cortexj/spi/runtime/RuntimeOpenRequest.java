@@ -25,6 +25,10 @@ public final class RuntimeOpenRequest {
     private final HardwareProfile hardware;
     private final ExecutorService executor;
     private final PlatformEventListener eventListener;
+    // audit 2026-10-07 (#98): credential sealed off from the shared
+    // platformConfiguration map - populated by core only for the built-in
+    // remote runtime; third-party providers must use their own options/env
+    private final String remoteApiKey;
 
     public RuntimeOpenRequest(ModelDescriptor model,
                              ModelArtifact artifact,
@@ -36,6 +40,21 @@ public final class RuntimeOpenRequest {
                              HardwareProfile hardware,
                              ExecutorService executor,
                              PlatformEventListener eventListener) {
+        this(model, artifact, artifactPath, device, runtimeOptions, platformConfiguration,
+                environment, hardware, executor, eventListener, null);
+    }
+
+    public RuntimeOpenRequest(ModelDescriptor model,
+                             ModelArtifact artifact,
+                             Path artifactPath,
+                             DeviceType device,
+                             Map<String, Object> runtimeOptions,
+                             Map<String, String> platformConfiguration,
+                             EnvironmentProfile environment,
+                             HardwareProfile hardware,
+                             ExecutorService executor,
+                             PlatformEventListener eventListener,
+                             String remoteApiKey) {
         this.model = model;
         this.artifact = artifact;
         this.artifactPath = artifactPath;
@@ -50,6 +69,7 @@ public final class RuntimeOpenRequest {
         this.hardware = hardware;
         this.executor = executor;
         this.eventListener = eventListener == null ? PlatformEventListener.NOOP : eventListener;
+        this.remoteApiKey = remoteApiKey;
     }
 
     public ModelDescriptor model() {
@@ -74,6 +94,15 @@ public final class RuntimeOpenRequest {
 
     public Map<String, String> platformConfiguration() {
         return platformConfiguration;
+    }
+
+    /**
+     * The remote API key, delivered only to the built-in remote runtime (audit
+     * 2026-10-07, #98). Never logged, never forwarded to child processes -
+     * see {@code IsolatedRuntimeProvider.sanitizeForChild}.
+     */
+    public String remoteApiKey() {
+        return remoteApiKey;
     }
 
     public EnvironmentProfile environment() {
