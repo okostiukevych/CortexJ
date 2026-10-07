@@ -25,18 +25,21 @@ public final class CortexJBuilder {
     private String proxyPort;
     private final List<PlatformEventListener> eventListeners = new ArrayList<PlatformEventListener>();
 
-    private boolean offline = offlineFromEnvironment();
-    private Path workingDirectory;
-    private Long memoryLimitBytes;
-    private Long maxArtifactBytes;
-    private TokenSupplier tokenSupplier;
-    private String remoteBaseUrl;
-    private String remoteApiKey;
-    private String remoteModelPrefix;
-    private ExecutorService executor;
-    private boolean allowRemoteRuntime = true;
-    private boolean asyncEventDelivery;
-    private boolean shutdownHook;
+    // volatile: the builder may be configured on one thread and consumed by
+    // build()/Configuration.from() on another; the frozen flag orders the
+    // freeze, and volatile fields give the consumer safe visibility
+    private volatile boolean offline = offlineFromEnvironment();
+    private volatile Path workingDirectory;
+    private volatile Long memoryLimitBytes;
+    private volatile Long maxArtifactBytes;
+    private volatile TokenSupplier tokenSupplier;
+    private volatile String remoteBaseUrl;
+    private volatile String remoteApiKey;
+    private volatile String remoteModelPrefix;
+    private volatile ExecutorService executor;
+    private volatile boolean allowRemoteRuntime = true;
+    private volatile boolean asyncEventDelivery;
+    private volatile boolean shutdownHook;
     private volatile boolean frozen;
 
     public CortexJBuilder runtimeProvider(RuntimeProvider provider) {

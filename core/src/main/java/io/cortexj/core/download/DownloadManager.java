@@ -67,6 +67,32 @@ public final class DownloadManager {
         return download(artifact, repositoryId, revision, cache, maxArtifactBytes, null);
     }
 
+    private static void requireUsableDiskSpace(java.nio.file.Path root, long requiredBytes,
+                                               String artifactId) {
+        // audit #121: without a pre-check the download fills $TMPDIR until the
+        // 100GB artifact cap fires inside CacheStorage.put - by then the disk
+        // may already be exhausted
+        try {
+            java.nio.file.Path partials = root.resolve("downloads-partial");
+            java.nio.file.Path probe = java.nio.file.Files.isDirectory(partials) ? partials : root;
+            long usable = java.nio.file.Files.getFileStore(probe).getUsableSpace();
+            if (usable > 0 && usable < requiredBytes) {
+                ArtifactResolutionException insufficient =
+                        new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                                "Artifact " + artifactId + " needs about " + requiredBytes
+                                        + " bytes but only " + usable
+                                        + " bytes are usable on the cache volume.",
+                                "Free up disk space on the cache volume or point "
+                                        + "the working directory at a larger disk.");
+                insufficient.detail("artifact", artifactId);
+                insufficient.detail("usableBytes", String.valueOf(usable));
+                throw insufficient;
+            }
+        } catch (java.io.IOException probeFailure) {
+            // a failed space probe must not block the download
+        }
+    }
+
     public java.nio.file.Path download(ResolvedArtifact artifact,
                                        String repositoryId,
                                        String revision,
@@ -98,6 +124,8 @@ public final class DownloadManager {
             tooLarge.detail("declaredBytes", String.valueOf(declaredSize));
             throw tooLarge;
         }
+        requireUsableDiskSpace(cache.root(), declaredSize > 0 ? declaredSize : limit,
+                artifact.artifact().id());
 
         Map<String, String> attributes = new LinkedHashMap<String, String>();
         attributes.put("artifact", artifact.artifact().id());

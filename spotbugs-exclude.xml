@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  SpotBugs triage (reliability audit 2026-09-27, issue #53).
+  SpotBugs triage (reliability audit 2026-09-27, issue #53; scoped by audit 2026-10-05, issue #109).
   Every suppression carries a justification; findings outside this list fail the build.
 -->
 <FindBugsFilter>
@@ -11,12 +11,33 @@
        construction sites and never mutated post-construction (verified by
        BuilderImmutabilityTest, the #22 frozen-builder fix and the audit).
        SpotBugs cannot trace the conditional unmodifiable wrap through the
-       constructors, so these are false positives. -->
+       constructors, so these are false positives.
+       audit #109: scoped to the exact value types instead of suppressing the
+       pattern globally - the encapsulation checks stay active for every
+       implementation package (core, cache, converters, worker, runtimes,
+       server). A new API value type that trips the check gets an explicit,
+       justified line here. -->
   <Match>
-    <Bug pattern="EI_EXPOSE_REP"/>
-  </Match>
-  <Match>
-    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    <Or>
+      <Class name="io.cortexj.CortexJBuilder"/>
+      <Class name="io.cortexj.hardware.EnvironmentProfile"/>
+      <Class name="io.cortexj.inference.GenerationResponse"/>
+      <Class name="io.cortexj.inference.InferenceResponse"/>
+      <Class name="io.cortexj.inference.RerankingRequest"/>
+      <Class name="io.cortexj.model.ModelArtifact$Abstract"/>
+      <Class name="io.cortexj.observability.PlatformEvent"/>
+      <Class name="io.cortexj.planner.ExecutionRequest"/>
+      <Class name="io.cortexj.planner.ExecutionRequest$Builder"/>
+      <Class name="io.cortexj.runtime.DeviceDescriptor"/>
+      <Class name="io.cortexj.spi.conversion.ConversionRequest"/>
+      <Class name="io.cortexj.spi.repository.ResolvedArtifact$Abstract"/>
+      <Class name="io.cortexj.spi.runtime.RuntimeModelRequest"/>
+      <Class name="io.cortexj.spi.runtime.RuntimeOpenRequest"/>
+      <Class name="io.cortexj.spi.runtime.RuntimeProbeContext"/>
+      <Class name="io.cortexj.spi.runtime.RuntimeProbeResult"/>
+      <Class name="io.cortexj.stream.Token"/>
+    </Or>
   </Match>
 
   <!-- Quantization implements Comparable for deterministic ordering of
@@ -81,6 +102,79 @@
   <Match>
     <Bug pattern="SWL_SLEEP_WITH_LOCK_HELD"/>
     <Class name="io.cortexj.cache.CacheStorage"/>
+  </Match>
+
+  <!-- DefaultCortexJ.models() returns the io.cortexj.Models implementation by
+       interface contract - DefaultModels IS the implementation object handed
+       to callers, not an internal array or map escaping the encapsulation. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP"/>
+    <Class name="io.cortexj.core.DefaultCortexJ"/>
+  </Match>
+
+  <!-- transitionTo wakes waitForReady waiters with notifyAll() while the state
+       change itself is an AtomicReference CAS outside the monitor (audit M-7):
+       the CAS precedes the notify in program order and every waiter re-checks
+       the volatile state after each wake, so the visibility is guaranteed by
+       the monitor handoff - SpotBugs wants the mutation inside the same block. -->
+  <Match>
+    <Bug pattern="NN_NAKED_NOTIFY"/>
+    <Class name="io.cortexj.core.DefaultModelHandle"/>
+  </Match>
+
+  <!-- The loadAsync task body (audit #89) acquires the loadLock read lock and
+       releases it in an unconditional finally; SpotBugs is conservative about
+       the anonymous Runnable's lock/unlock paths. The barrier contract is
+       proven by LoadAsyncCloseBarrierTest and PlatformCloseBarrierTest. -->
+  <Match>
+    <Bug pattern="UL_UNRELEASED_LOCK_EXCEPTION_PATH"/>
+    <Class name="io.cortexj.core.DefaultModels$3"/>
+  </Match>
+
+  <!-- ModelBundler's constructor stores the shared CacheStorage reference:
+       CacheStorage is a live collaborator (not a value type) and the bundler
+       is constructed once by the CLI with the platform's cache instance - a
+       defensive copy of a cache directory handle is meaningless. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Class name="io.cortexj.repository.local.bundle.ModelBundler"/>
+  </Match>
+
+  <!-- WorkerCodec.mapper shares one Jackson ObjectMapper across the protocol:
+       an ObjectMapper is thread-safe after configuration and is configured
+       once at class initialization - exposing it is the codec's contract. -->
+  <Match>
+    <Bug pattern="MS_EXPOSE_REP"/>
+    <Class name="io.cortexj.worker.WorkerCodec"/>
+  </Match>
+
+  <!-- WorkerHost.emit calls System.exit(0) when the parent process died
+       (stdout write failed): exiting instead of spinning is the worker's
+       orphan-free teardown contract - the reason is logged to stderr first.
+       This is the worker HOST main process, not a library embed path. -->
+  <Match>
+    <Bug pattern="DM_EXIT"/>
+    <Class name="io.cortexj.worker.WorkerHost"/>
+  </Match>
+
+  <!-- WorkerChannel's CAPPED_LINE_MARKER (audit #99) is a deliberately
+       distinct String instance used for IDENTITY comparison only: an
+       equal-content line must never be confused with the oversized-line
+       sentinel, which is exactly what new String(...) guarantees. -->
+  <Match>
+    <Bug pattern="DM_STRING_CTOR"/>
+    <Class name="io.cortexj.runtime.isolated.WorkerChannel"/>
+  </Match>
+
+  <!-- GgufBinaryReader/Writer wrap a caller-provided stream: wrapping the
+       stream is the standard reader/writer contract (the stream is a live
+       collaborator, not a value type to defensively copy). -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Or>
+      <Class name="io.cortexj.convert.gguf.internal.GgufBinaryReader"/>
+      <Class name="io.cortexj.convert.gguf.internal.GgufBinaryWriter"/>
+    </Or>
   </Match>
 
 </FindBugsFilter>
