@@ -40,6 +40,8 @@ public final class ModelBundler {
     // mirrors core DownloadManager's DEFAULT_MAX_ARTIFACT_BYTES (core is not
     // a dependency of this module)
     private static final long DEFAULT_MAX_ARTIFACT_BYTES = 100L * 1024L * 1024L * 1024L;
+    private static final java.util.concurrent.atomic.AtomicLong TEMP_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
 
     private final List<ModelRepositoryProvider> repositories;
     private final CacheStorage cache;
@@ -249,7 +251,12 @@ public final class ModelBundler {
             throw tooLarge;
         }
         long cap = declaredSize > 0 ? declaredSize : DEFAULT_MAX_ARTIFACT_BYTES;
-        Path temp = target.resolveSibling(target.getFileName() + ".part-" + Long.toHexString(System.nanoTime()));
+        // audit #119: nanoTime alone can collide across threads (~1us
+        // granularity) - the sequence suffix makes concurrent bundle temp
+        // names unique, the same fix CacheStorage applied in 36fced8
+        Path temp = target.resolveSibling(target.getFileName() + ".part-"
+                + Long.toHexString(System.nanoTime())
+                + "-" + TEMP_SEQUENCE.incrementAndGet());
         URL url = new URL(artifact.location().toString());
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         boolean moved = false;
