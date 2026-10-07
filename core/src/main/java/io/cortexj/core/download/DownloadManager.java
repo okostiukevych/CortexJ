@@ -20,6 +20,9 @@ public final class DownloadManager {
 
     private static final int MAX_REDIRECTS = 5;
     private static final int MAX_ATTEMPTS = 3;
+    // audit #106: partials older than this are swept at download start - the
+    // JVM that owned them is long gone
+    private static final long STALE_PARTIAL_TTL_MILLIS = 7L * 24L * 60L * 60L * 1000L;
     private static final long PROGRESS_REPORT_BYTES = 64L * 1024L * 1024L;
     private static final long DEFAULT_MAX_ARTIFACT_BYTES = 100L * 1024L * 1024L * 1024L;
     private static final long BASE_BACKOFF_MILLIS = 500L;
@@ -135,12 +138,45 @@ public final class DownloadManager {
 
         IOException lastError = null;
         long downloadStartedMillis = System.currentTimeMillis();
-        java.nio.file.Path resumeFile = cache.root().resolve("downloads-partial")
+        java.nio.file.Path partialsDirectory = cache.root().resolve("downloads-partial");
+        java.nio.file.Path resumeFile = partialsDirectory
                 .resolve(partialFileName(repositoryId, revision, artifact.artifact().id()));
-        boolean resumedOnce = java.nio.file.Files.exists(resumeFile);
+        sweepStalePartials(partialsDirectory);
+
+        // audit #106: cross-process FileLock - two JVMs sharing CORTEXJ_HOME
+        // used to append to the same .part concurrently, splicing bytes that
+        // pass undetected on checksum-less HTTP sources. When another process
+        // holds the lock, this download uses a process-unique partial without
+        // resuming the foreign progress.
+        java.nio.channels.FileChannel partialLockChannel = null;
+        java.nio.channels.FileLock partialLock = null;
+        try {
+            if (!java.nio.file.Files.isDirectory(partialsDirectory)) {
+                java.nio.file.Files.createDirectories(partialsDirectory);
+            }
+        } catch (java.io.IOException ignored) {
+            // the lock open below fails too; the download falls back to a
+            // process-unique partial
+        }
+        try {
+            partialLockChannel = java.nio.channels.FileChannel.open(
+                    resumeFile.resolveSibling(resumeFile.getFileName() + ".lock"),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.WRITE);
+            partialLock = partialLockChannel.tryLock();
+        } catch (java.io.IOException lockUnavailable) {
+            // fall through to the process-unique partial below
+        }
+        java.nio.file.Path effectivePartial = resumeFile;
+        if (partialLock == null) {
+            effectivePartial = resumeFile.resolveSibling(
+                    resumeFile.getFileName().toString().replaceAll("\\.part$", "")
+                            + "-" + java.util.UUID.randomUUID() + ".part");
+        }
+        boolean resumedOnce = java.nio.file.Files.exists(effectivePartial);
         // audit M-12: the in-flight partial is registered so LRU/age eviction
         // never deletes an active download's resume file mid-flight
-        cache.registerActivePartial(resumeFile);
+        cache.registerActivePartial(effectivePartial);
         try {
             for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 try {
@@ -148,8 +184,8 @@ public final class DownloadManager {
                         throw new java.io.IOException("download cancelled");
                     }
                     java.nio.file.Path path = attemptDownload(artifact, repositoryId, revision, cache,
-                            declaredSize, limit, resumeFile, cancelFlag);
-                    java.nio.file.Files.deleteIfExists(resumeFile);
+                            declaredSize, limit, effectivePartial, cancelFlag);
+                    java.nio.file.Files.deleteIfExists(effectivePartial);
                     Map<String, String> completed = new LinkedHashMap<String, String>(attributes);
                     completed.put("durationMillis",
                             String.valueOf(System.currentTimeMillis() - downloadStartedMillis));
@@ -254,13 +290,52 @@ public final class DownloadManager {
                     "Download failed after " + MAX_ATTEMPTS + " attempts: " + artifact.artifact().id(),
                     "Check network access and retry; the artifact location was "
                             + artifact.location()
-                            + (resumedOnce && java.nio.file.Files.exists(resumeFile)
+                            + (resumedOnce && java.nio.file.Files.exists(effectivePartial)
                             ? ". Partial progress is kept and will be resumed (HTTP Range)."
                             : ""), lastError);
             failure.detail("artifact", artifact.artifact().id());
             throw failure;
         } finally {
-            cache.unregisterActivePartial(resumeFile);
+            cache.unregisterActivePartial(effectivePartial);
+            if (partialLock != null) {
+                try {
+                    partialLock.release();
+                } catch (java.io.IOException ignored) {
+                    // the OS releases the lock when the channel closes anyway
+                }
+            }
+            if (partialLockChannel != null) {
+                try {
+                    partialLockChannel.close();
+                } catch (java.io.IOException ignored) {
+                    // the lock file itself stays (invisible to list()); deleting
+                    // it under contention is racy
+                }
+            }
+        }
+    }
+
+    /**
+     * audit #106: stale partials (an interrupted download older than the TTL -
+     * the JVM that owned it is long gone) are swept at download start; they
+     * used to be cleaned only by cache pressure or a manual cache clean.
+     */
+    private static void sweepStalePartials(java.nio.file.Path partialsDirectory) {
+        try {
+            if (!java.nio.file.Files.isDirectory(partialsDirectory)) {
+                return;
+            }
+            long cutoff = System.currentTimeMillis() - STALE_PARTIAL_TTL_MILLIS;
+            try (java.nio.file.DirectoryStream<java.nio.file.Path> stream =
+                         java.nio.file.Files.newDirectoryStream(partialsDirectory, "*.part")) {
+                for (java.nio.file.Path candidate : stream) {
+                    if (java.nio.file.Files.getLastModifiedTime(candidate).toMillis() < cutoff) {
+                        java.nio.file.Files.deleteIfExists(candidate);
+                    }
+                }
+            }
+        } catch (java.io.IOException bestEffort) {
+            // a failed sweep must not block the download
         }
     }
 
@@ -302,6 +377,11 @@ public final class DownloadManager {
         HttpURLConnection connection = open(url);
         connection.setConnectTimeout(CONNECT_TIMEOUT);
         connection.setReadTimeout(READ_TIMEOUT);
+        // audit #128: auto-follow stays off on the final connection too - if a
+        // "resolved" URL answers a redirect, the JDK would follow it with the
+        // current headers (its same-host logic is looser than sameOrigin);
+        // credential stripping must be the only path that sets headers
+        connection.setInstanceFollowRedirects(false);
         for (Map.Entry<String, String> header : effectiveHeaders.entrySet()) {
             connection.setRequestProperty(header.getKey(), header.getValue());
         }

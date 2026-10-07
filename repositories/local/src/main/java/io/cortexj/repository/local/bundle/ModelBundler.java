@@ -263,6 +263,9 @@ public final class ModelBundler {
         try {
             connection.setConnectTimeout(CONNECT_TIMEOUT);
             connection.setReadTimeout(READ_TIMEOUT);
+            // audit #128: auto-follow off - a 3xx must fail typed instead of
+            // the JDK following it with the request's headers
+            connection.setInstanceFollowRedirects(false);
             for (Map.Entry<String, String> header : artifact.downloadHeaders().entrySet()) {
                 connection.setRequestProperty(header.getKey(), header.getValue());
             }
