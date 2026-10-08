@@ -33,6 +33,7 @@
         <jackson.version>2.21.7</jackson.version>
         <junit.version>5.10.2</junit.version>
         <onnxruntime.version>1.30.0</onnxruntime.version>
+        <jinfer.version>0.3.1</jinfer.version>
         <opentelemetry.version>1.66.0</opentelemetry.version>
 
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
@@ -135,6 +136,7 @@
       <modules>
         <module>platform/java25</module>
         <module>starters/java25</module>
+        <module>runtimes/jinfer</module>
         <module>cli</module>
       </modules>
     </profile>
@@ -320,6 +322,11 @@
         <groupId>com.microsoft.onnxruntime</groupId>
         <artifactId>onnxruntime</artifactId>
         <version>${onnxruntime.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.qxotic</groupId>
+        <artifactId>jinfer-chat</artifactId>
+        <version>${jinfer.version}</version>
       </dependency>
       <dependency>
         <groupId>io.opentelemetry</groupId>
