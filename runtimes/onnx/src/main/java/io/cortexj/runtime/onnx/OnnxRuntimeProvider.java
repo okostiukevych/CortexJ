@@ -218,6 +218,10 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
         // resolved once at load: session.getInputNames() is a native call that
         // must not sit on the inference hot path (GitHub #67)
         final String inputName;
+        // auxiliary INT64 inputs (attention_mask, token_type_ids, ...) fed
+        // with conventional defaults; resolved once at load from the model
+        // metadata so inference never touches native introspection
+        final List<AuxiliaryInput> auxiliaryInputs;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean();
         // inference holds the READ lock so embeds run concurrently (OrtSession.run
@@ -233,6 +237,59 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
             this.tokenizer = tokenizer;
             this.inputName = inputName;
             this.executor = executor;
+            this.auxiliaryInputs = resolveAuxiliaryInputs(session, inputName);
+        }
+
+        /**
+         * An auxiliary model input the provider can feed itself.
+         * Mask-like inputs ({@code attention_mask}, {@code mask}) get ones
+         * (every token attended — we never pad), every other INT64 input
+         * gets zeros (the {@code token_type_ids} convention for single
+         * sequences). Anything else is left unfed: if the graph actually
+         * consumes it, inference fails typed instead of guessing values.
+         */
+        final class AuxiliaryInput {
+            final String name;
+            final boolean fillOnes;
+
+            AuxiliaryInput(String name, boolean fillOnes) {
+                this.name = name;
+                this.fillOnes = fillOnes;
+            }
+        }
+
+        private List<AuxiliaryInput> resolveAuxiliaryInputs(OrtSession session, String primaryName) {
+            List<AuxiliaryInput> auxiliaries = new ArrayList<AuxiliaryInput>();
+            Map<String, ai.onnxruntime.NodeInfo> infos;
+            try {
+                infos = session.getInputInfo();
+            } catch (Exception e) {
+                LOG.warning("cannot introspect ONNX inputs, auxiliary feeding disabled: " + e.getMessage());
+                return auxiliaries;
+            }
+            for (Map.Entry<String, ai.onnxruntime.NodeInfo> entry : infos.entrySet()) {
+                String name = entry.getKey();
+                if (name == null || name.equals(primaryName)) {
+                    continue;
+                }
+                ai.onnxruntime.ValueInfo info = entry.getValue() == null
+                        ? null : entry.getValue().getInfo();
+                if (!(info instanceof ai.onnxruntime.TensorInfo)) {
+                    LOG.warning("ONNX auxiliary input '" + name + "' is not a tensor, left unfed");
+                    continue;
+                }
+                ai.onnxruntime.TensorInfo tensor = (ai.onnxruntime.TensorInfo) info;
+                if (tensor.type != ai.onnxruntime.OnnxJavaType.INT64
+                        || tensor.getShape() == null || tensor.getShape().length != 2) {
+                    LOG.warning("ONNX auxiliary input '" + name + "' is not an INT64 [batch, seq] "
+                            + "tensor, left unfed");
+                    continue;
+                }
+                boolean fillOnes = "attention_mask".equalsIgnoreCase(name)
+                        || "mask".equalsIgnoreCase(name);
+                auxiliaries.add(new AuxiliaryInput(name, fillOnes));
+            }
+            return auxiliaries;
         }
 
         @Override
@@ -287,6 +344,10 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
             for (int i = 0; i < ids.length; i++) {
                 longIds[i] = ids[i];
             }
+            long[] mask = new long[ids.length];
+            for (int i = 0; i < mask.length; i++) {
+                mask[i] = 1L;
+            }
             java.util.concurrent.locks.Lock readLock = inferenceLock.readLock();
             readLock.lock();
             try {
@@ -301,9 +362,35 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
                             : session.getInputNames().iterator().next();
                     Map<String, OnnxTensor> inputs = new LinkedHashMap<String, OnnxTensor>();
                     inputs.put(sessionInputName, input);
-                    try (OrtSession.Result result = session.run(inputs)) {
-                        float[][] raw = (float[][]) result.get(0).getValue();
-                        return meanPool(raw);
+                    List<OnnxTensor> owned = new ArrayList<OnnxTensor>();
+                    try {
+                        for (AuxiliaryInput auxiliary : auxiliaryInputs) {
+                            long[] fill = auxiliary.fillOnes ? mask : new long[ids.length];
+                            OnnxTensor tensor = OnnxTensor.createTensor(environment(),
+                                    LongBuffer.wrap(fill), new long[]{1, fill.length});
+                            owned.add(tensor);
+                            inputs.put(auxiliary.name, tensor);
+                        }
+                        try (OrtSession.Result result = session.run(inputs)) {
+                            Object value = result.get(0).getValue();
+                            if (value instanceof float[][][]) {
+                                return meanPool((float[][][]) value, mask);
+                            }
+                            if (value instanceof float[][]) {
+                                return meanPool((float[][]) value, mask);
+                            }
+                            throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                                    "ONNX model returned an unsupported output rank: "
+                                            + (value == null ? "null" : value.getClass().getName()),
+                                    "Use a single-output embedding graph with rank 2 or 3.");
+                        }
+                    } finally {
+                        for (OnnxTensor tensor : owned) {
+                            try {
+                                tensor.close();
+                            } catch (Exception ignored) {
+                            }
+                        }
                     }
                 } catch (Exception e) {
                     InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
@@ -314,6 +401,41 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
             } finally {
                 readLock.unlock();
             }
+        }
+
+        private float[] meanPool(float[][][] tokenVectors, long[] mask) {
+            if (tokenVectors.length == 0 || tokenVectors[0].length == 0) {
+                return new float[0];
+            }
+            return meanPool(tokenVectors[0], mask);
+        }
+
+        private float[] meanPool(float[][] tokenVectors, long[] mask) {
+            if (tokenVectors.length == 0) {
+                return new float[0];
+            }
+            int dim = tokenVectors[0].length;
+            float[] pooled = new float[dim];
+            double weight = 0;
+            for (int row = 0; row < tokenVectors.length; row++) {
+                double rowWeight = row < mask.length ? mask[row] : 0;
+                // the provider never pads, so a zero weight here only means a
+                // sequence longer than the mask — skip rather than dilute
+                if (rowWeight == 0) {
+                    continue;
+                }
+                weight += rowWeight;
+                for (int i = 0; i < dim; i++) {
+                    pooled[i] += tokenVectors[row][i] * rowWeight;
+                }
+            }
+            if (weight == 0) {
+                return meanPool(tokenVectors);
+            }
+            for (int i = 0; i < dim; i++) {
+                pooled[i] /= weight;
+            }
+            return pooled;
         }
 
         private float[] meanPool(float[][] tokenVectors) {

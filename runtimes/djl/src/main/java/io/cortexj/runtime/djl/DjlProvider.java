@@ -237,6 +237,50 @@ public class DjlProvider implements RuntimeProvider {
             this.model = model;
             this.tokenizer = tokenizer;
             this.executor = executor;
+            this.auxiliaryInputs = resolveAuxiliaryInputs(model);
+        }
+
+        /** Auxiliary INT64 model inputs fed with conventional defaults. */
+        final class AuxiliaryInput {
+            final String name;
+            final boolean fillOnes;
+
+            AuxiliaryInput(String name, boolean fillOnes) {
+                this.name = name;
+                this.fillOnes = fillOnes;
+            }
+        }
+
+        private final List<AuxiliaryInput> auxiliaryInputs;
+
+        /**
+         * Reads the declared model inputs once at load. Mask-like inputs get
+         * ones (every token attended — we never pad), other inputs get INT64
+         * zeros (the {@code token_type_ids} convention). The declared shape
+         * is informational only here: feeding a non-INT64 auxiliary fails
+         * typed at inference instead of guessing values.
+         */
+        private List<AuxiliaryInput> resolveAuxiliaryInputs(Model model) {
+            List<AuxiliaryInput> auxiliaries = new ArrayList<AuxiliaryInput>();
+            ai.djl.util.PairList<String, ai.djl.ndarray.types.Shape> declared;
+            try {
+                declared = model.describeInput();
+            } catch (Exception e) {
+                LOG.warning("cannot introspect DJL inputs, auxiliary feeding disabled: " + e.getMessage());
+                return auxiliaries;
+            }
+            if (declared == null) {
+                return auxiliaries;
+            }
+            for (String name : declared.keys()) {
+                if (name == null || "input_ids".equals(name)) {
+                    continue;
+                }
+                boolean fillOnes = "attention_mask".equalsIgnoreCase(name)
+                        || "mask".equalsIgnoreCase(name);
+                auxiliaries.add(new AuxiliaryInput(name, fillOnes));
+            }
+            return auxiliaries;
         }
 
         @Override
@@ -300,13 +344,28 @@ public class DjlProvider implements RuntimeProvider {
                     NDArray input = manager.create(longIds, new ai.djl.ndarray.types.Shape(1, longIds.length));
                     input.setName("input_ids");
                     NDList inputList = new NDList(input);
+                    for (AuxiliaryInput auxiliary : auxiliaryInputs) {
+                        long[] fill = new long[longIds.length];
+                        if (auxiliary.fillOnes) {
+                            for (int i = 0; i < fill.length; i++) {
+                                fill[i] = 1L;
+                            }
+                        }
+                        NDArray tensor = manager.create(fill,
+                                new ai.djl.ndarray.types.Shape(1, fill.length));
+                        tensor.setName(auxiliary.name);
+                        inputList.add(tensor);
+                    }
                     try (ai.djl.inference.Predictor<NDList, NDList> predictor =
                                  model.newPredictor(new NoopTranslator())) {
                         NDList output = predictor.predict(inputList);
                         NDArray embedding = output.get(0);
                         float[] flat = embedding.toFloatArray();
                         long[] shape = embedding.getShape().getShape();
-                        int dimension = shape.length >= 2 ? (int) shape[1] : (int) shape[0];
+                        // hidden size is the LAST dimension: rank-2 [batch, dim]
+                        // and rank-3 [batch, seq, hidden] transformer outputs
+                        // share this layout (a middle dim is the sequence)
+                        int dimension = shape.length == 0 ? 0 : (int) shape[shape.length - 1];
                         return meanPool(flat, dimension);
                     }
                 } catch (InferenceException e) {

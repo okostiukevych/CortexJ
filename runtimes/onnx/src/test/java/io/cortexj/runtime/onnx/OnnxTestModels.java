@@ -32,16 +32,41 @@ final class OnnxTestModels {
     }
 
     private static byte[] castNode() {
+        return castNode("input_ids", "embeddings");
+    }
+
+    private static byte[] castNode(String input, String output) {
         ByteArrayOutputStream attribute = new ByteArrayOutputStream();
         writeFieldString(attribute, 1, "to");
         writeFieldVarint(attribute, 3, 1L);
         writeFieldVarint(attribute, 20, 2L);
         ByteArrayOutputStream node = new ByteArrayOutputStream();
-        writeFieldString(node, 1, "input_ids");
-        writeFieldString(node, 2, "embeddings");
+        writeFieldString(node, 1, input);
+        writeFieldString(node, 2, output);
         writeFieldString(node, 4, "Cast");
         writeFieldMessage(node, 5, attribute.toByteArray());
         return node.toByteArray();
+    }
+
+    /**
+     * Two-input graph whose output echoes one auxiliary input: proves the
+     * provider feeds auxiliaries itself (missing feeds fail in ORT) and with
+     * the documented defaults (ones for masks, zeros otherwise).
+     */
+    static Path echoModel(String echoInput) throws Exception {
+        ByteArrayOutputStream graph = new ByteArrayOutputStream();
+        writeFieldMessage(graph, 1, castNode(echoInput, "embeddings"));
+        writeFieldString(graph, 2, "cortexj-echo-graph");
+        writeFieldMessage(graph, 11, tensorValueInfo("input_ids", 7L, true));
+        writeFieldMessage(graph, 11, tensorValueInfo(echoInput, 7L, true));
+        writeFieldMessage(graph, 12, tensorValueInfo("embeddings", 1L, false));
+        ByteArrayOutputStream model = new ByteArrayOutputStream();
+        writeFieldVarint(model, 1, 8L);
+        writeFieldMessage(model, 7, graph.toByteArray());
+        writeFieldMessage(model, 8, onnxDomainOpset());
+        Path file = Files.createTempFile("cortexj-echo", ".onnx");
+        Files.write(file, model.toByteArray());
+        return file;
     }
 
     private static byte[] tensorValueInfo(String name, long elemType, boolean fixedBatchDim) {
