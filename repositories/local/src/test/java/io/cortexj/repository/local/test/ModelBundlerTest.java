@@ -121,4 +121,32 @@ class ModelBundlerTest {
         assertFalse(report.isOk());
         assertTrue(report.issues().get(0).contains("no cortexj-model.json"));
     }
+
+    @Test
+    void manifestVersionIsWrittenAndUnknownMajorFails() throws Exception {
+        // audit v3.0 §125.8 (issue #159)
+        Path source = tempDir.resolve("vmodel.gguf");
+        Files.write(source, new byte[]{1, 2, 3, 4});
+        CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));
+        ModelBundler bundler = new ModelBundler(
+                Collections.<io.cortexj.spi.repository.ModelRepositoryProvider>singletonList(localProvider()),
+                cache);
+        Path bundleDir = tempDir.resolve("vbundle");
+        bundler.create(ModelReference.of(source.toString()), bundleDir, context(false));
+        String manifest = new String(
+                Files.readAllBytes(bundleDir.resolve("cortexj-model.json")),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(manifest.contains("\"manifestVersion\" : \"1.0\""),
+                "created bundles must stamp the schema version, got: " + manifest);
+        assertTrue(bundler.verify(bundleDir).isOk());
+
+        Path futureDir = tempDir.resolve("future");
+        Files.createDirectories(futureDir);
+        Files.write(futureDir.resolve("cortexj-model.json"),
+                "{\"manifestVersion\":\"2.0\",\"id\":\"m\",\"revision\":\"r\",\"artifacts\":[]}"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        BundleReport future = bundler.verify(futureDir);
+        assertFalse(future.isOk(), "unknown manifest majors must fail verification");
+        assertTrue(future.issues().get(0).contains("major version 2"));
+    }
 }

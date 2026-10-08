@@ -225,4 +225,29 @@ class LockfileTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ModelLockfile.parse(Arrays.asList("revision: r1")));
     }
+
+    @Test
+    void schemaVersionRoundTripsAndGatesMajors() {
+        // audit v3.0 §125.8 (issue #159)
+        ModelLockfile lockfile = ModelLockfile.builder("org/model")
+                .revision("r1")
+                .build();
+        assertEquals("1.0", lockfile.schemaVersion());
+        assertTrue(lockfile.toYaml().contains("lockfileVersion: 1.0"));
+        ModelLockfile reread = ModelLockfile.parse(Arrays.asList(
+                "lockfileVersion: 1.0", "model: org/model", "revision: r1"));
+        assertEquals("1.0", reread.schemaVersion());
+        // absent version = legacy file, still accepted
+        ModelLockfile legacy = ModelLockfile.parse(Arrays.asList("model: org/model"));
+        assertEquals("1.0", legacy.schemaVersion());
+        // unknown major fails typed
+        IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class,
+                () -> ModelLockfile.parse(Arrays.asList(
+                        "lockfileVersion: 2.0", "model: org/model")));
+        assertTrue(unsupported.getMessage().contains("major version 2"));
+        // unparsable version fails typed
+        assertThrows(IllegalArgumentException.class,
+                () -> ModelLockfile.parse(Arrays.asList(
+                        "lockfileVersion: next", "model: org/model")));
+    }
 }
