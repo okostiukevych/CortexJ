@@ -512,7 +512,23 @@ public final class DefaultExecutionPlanner implements Planner {
         return new CachedProbe(result, System.currentTimeMillis() + ttl);
     }
 
-    private static final long PROBE_WAIT_MILLIS = 60_000L;
+    private static final long PROBE_WAIT_MILLIS = probeWaitMillis();
+
+    private static long probeWaitMillis() {
+        // audit 2026-10-08: the 60 s default stands, but strict deployments
+        // tune it without rebuilding
+        String property = System.getProperty("cortexj.planner.probeWaitMillis");
+        if (property != null && !property.trim().isEmpty()) {
+            try {
+                long parsed = Long.parseLong(property.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 60_000L;
+    }
 
     private RuntimeProbeResult awaitProbeResult(RuntimeProvider provider, String key,
                                                 java.util.concurrent.CompletableFuture<CachedProbe> inFlight) {
@@ -631,6 +647,15 @@ public final class DefaultExecutionPlanner implements Planner {
                 ? support.memoryEstimateOverride()
                 : memoryEstimator.estimate(artifact, contextLength);
         builder.memoryEstimate(estimate);
+        // audit 2026-10-08: the default is warn-and-allow for unknown
+        // estimates (fail-closed is opt-in via blockUnknownMemory) - make the
+        // warn half real instead of a silent pass-through
+        if (!estimate.isKnown()) {
+            outcome.warnings.add(PlanReason.warning(ReasonCode.PLANNER_NOTE,
+                    "memory estimate for artifact '" + artifact.id() + "' is unknown; "
+                            + "memory checks pass vacuously unless "
+                            + "cortexj.planner.blockUnknownMemory=true"));
+        }
         builder.note("supportLevel", support.level().name());
 
         outcome.builderByCandidateKey.put(candidateKey(descriptor.id().value(), artifact.id()), builder);

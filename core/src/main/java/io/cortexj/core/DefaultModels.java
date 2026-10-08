@@ -389,11 +389,13 @@ public final class DefaultModels implements io.cortexj.Models {
         return wrapped;
     }
 
+    // audit 2026-10-08: teardown paths catch Throwable - an Error
+    // mid-teardown must not strand the remaining handles/pins
     private static void closeAfterCancellation(RuntimeModel model, ModelRuntime runtime) {
         if (model != null) {
             try {
                 model.close();
-            } catch (RuntimeException closeError) {
+            } catch (Throwable closeError) {
                 LOG.log(java.util.logging.Level.FINE,
                         "model close failed during load cancellation; continuing", closeError);
             }
@@ -401,7 +403,7 @@ public final class DefaultModels implements io.cortexj.Models {
         if (runtime != null) {
             try {
                 runtime.close();
-            } catch (RuntimeException closeError) {
+            } catch (Throwable closeError) {
                 LOG.log(java.util.logging.Level.FINE,
                         "runtime close failed during load cancellation; continuing", closeError);
             }
@@ -411,7 +413,7 @@ public final class DefaultModels implements io.cortexj.Models {
     private static void closeHandleAfterCancellation(ModelHandle handle) {
         try {
             handle.close();
-        } catch (RuntimeException closeError) {
+        } catch (Throwable closeError) {
             LOG.log(java.util.logging.Level.FINE,
                     "handle close failed after load cancellation; continuing", closeError);
         }
@@ -516,8 +518,17 @@ public final class DefaultModels implements io.cortexj.Models {
             throw e;
         } catch (Error e) {
             // audit #102: release the (never-attached) pin and rethrow; the
-            // runtime itself was already closed by the inner handler
+            // runtime itself was already closed by the inner handler.
+            // audit 2026-10-08: mark FAILED so the handle never strands in a
+            // non-terminal state (fallback stays fail-fast for Error by
+            // design - retrying the next candidate after an OOM risks
+            // cascading the host).
             releasePin(handle);
+            try {
+                handle.lifecycleTo(ModelLifecycleState.FAILED);
+            } catch (RuntimeException transitionFailure) {
+                // the state machine must not mask the original Error
+            }
             throw e;
         }
     }
@@ -771,11 +782,23 @@ public final class DefaultModels implements io.cortexj.Models {
             if (artifact != null && artifact.artifact() != null
                     && artifact.artifact().checksum() != null
                     && artifact.artifact().checksum().value() != null
-                    && !artifact.artifact().checksum().value().trim().isEmpty()) {
+                    && !artifact.artifact().checksum().value().trim().isEmpty()
+                    // audit 2026-10-08: an MD5 manifest must not satisfy
+                    // TRUSTED_ONLY here only to die later with an untyped
+                    // IllegalArgumentException from verify
+                    && isTrustedAlgorithm(artifact.artifact().checksum().algorithm())) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean isTrustedAlgorithm(String algorithm) {
+        if (algorithm == null) {
+            return false;
+        }
+        String normalized = algorithm.trim().toLowerCase(java.util.Locale.ROOT);
+        return !normalized.equals("md5") && !normalized.equals("sha1") && !normalized.equals("sha-1");
     }
 
     private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
@@ -1034,7 +1057,9 @@ public final class DefaultModels implements io.cortexj.Models {
             for (DefaultModelHandle handle : openHandles) {
                 try {
                     handle.close();
-                } catch (RuntimeException failure) {
+                } catch (Throwable failure) {
+                    // audit 2026-10-08: an Error in one handle must not skip
+                    // the remaining handles and their pin releases
                     LOG.log(java.util.logging.Level.FINE,
                             "handle close failed during platform shutdown; continuing", failure);
                 }
