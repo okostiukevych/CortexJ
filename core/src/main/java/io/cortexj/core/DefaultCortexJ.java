@@ -342,6 +342,10 @@ public final class DefaultCortexJ implements CortexJ {
         }
         try {
             models.closeAll();
+            // audit 2026-10-08: close providers that hold processes - an
+            // isolated worker child (or any AutoCloseable provider) used to
+            // survive platform.close() and outlive the JVM
+            closeProviders();
             events.info(PlatformEvent.Type.PLATFORM_CLOSED, "CortexJ shutting down");
         } finally {
             events.close();
@@ -349,6 +353,20 @@ public final class DefaultCortexJ implements CortexJ {
             shutdownExecutor(asyncExecutor);
             shutdownExecutor(downloadExecutor);
             shutdownExecutor(loadExecutor);
+        }
+    }
+
+    private void closeProviders() {
+        for (RuntimeProvider provider : runtimeProviders) {
+            if (provider instanceof AutoCloseable) {
+                try {
+                    ((AutoCloseable) provider).close();
+                } catch (Throwable providerCloseFailure) {
+                    LOG.log(java.util.logging.Level.FINE,
+                            "runtime provider close failed; continuing",
+                            providerCloseFailure);
+                }
+            }
         }
     }
 

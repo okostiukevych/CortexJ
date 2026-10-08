@@ -15,5 +15,11 @@ public enum FallbackPolicy {
      */
     @Deprecated
     INFERENCE_SAFE,
+    /**
+     * Custom fallback behavior (audit 2026-10-08): currently selects the same
+     * planner-ordered chain as {@link #LOAD_TIME_ONLY} - per-policy custom
+     * sequencing is not implemented. Custom semantics today live in
+     * {@code ExecutionPolicy} implementations, not in this value.
+     */
     CUSTOM
 }

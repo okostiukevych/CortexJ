@@ -257,7 +257,12 @@ public final class DefaultModelHandle implements ModelHandle {
                     attributes.put("model", descriptor.canonicalId());
                     attributes.put("durationMillis", String.valueOf(durationMillis));
                     attributes.put("outputTokens", String.valueOf(outputTokens));
-                    attributes.put("firstTokenMillis", String.valueOf(firstTokenMillis));
+                    // audit 2026-10-08: never publish the string "null" - an
+                    // empty stream has no first token, and the listener must
+                    // not choke the whole INFERENCE_COMPLETED event on it
+                    if (firstTokenMillis != null) {
+                        attributes.put("firstTokenMillis", String.valueOf(firstTokenMillis));
+                    }
                     if (durationMillis > 0 && outputTokens > 0) {
                         attributes.put("tokensPerSecond", String.format(java.util.Locale.ROOT,
                                 "%.1f", outputTokens * 1000.0 / durationMillis));
