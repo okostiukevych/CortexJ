@@ -70,6 +70,11 @@ public final class EventBus {
         if (listeners.isEmpty()) {
             return;
         }
+        // audit 2026-10-08: post-close publishes used to sit in the queue
+        // until the 10k cap dropped them - fail silent-and-cheap instead
+        if (closed) {
+            return;
+        }
         Map<String, String> safeAttributes = attributes == null
                 ? new LinkedHashMap<String, String>()
                 : new LinkedHashMap<String, String>(attributes);
@@ -100,6 +105,10 @@ public final class EventBus {
         return new PlatformEventListener() {
             @Override
             public void onEvent(PlatformEvent event) {
+                // audit 2026-10-08: same post-close guard as publish()
+                if (closed) {
+                    return;
+                }
                 if (asyncQueue != null) {
                     if (!asyncQueue.offer(event)) {
                         LOG.log(java.util.logging.Level.FINE,

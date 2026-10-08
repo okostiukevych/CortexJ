@@ -101,13 +101,25 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
     @Override
     public java.util.concurrent.CompletionStage<InferenceResponse> executeAsync(
             final InferenceRequest request) {
-        return java.util.concurrent.CompletableFuture.supplyAsync(
-                new java.util.function.Supplier<InferenceResponse>() {
-                    @Override
-                    public InferenceResponse get() {
-                        return execute(request);
-                    }
-                }, ioExecutor);
+        // audit 2026-10-08: saturation must surface as a failed future, not
+        // a synchronous throw from an async contract
+        try {
+            return java.util.concurrent.CompletableFuture.supplyAsync(
+                    new java.util.function.Supplier<InferenceResponse>() {
+                        @Override
+                        public InferenceResponse get() {
+                            return execute(request);
+                        }
+                    }, ioExecutor);
+        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+            java.util.concurrent.CompletableFuture<InferenceResponse> rejected =
+                    new java.util.concurrent.CompletableFuture<InferenceResponse>();
+            rejected.completeExceptionally(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                    "llama-server runtime overloaded: too many concurrent executions ("
+                            + saturated.getMessage() + ").",
+                    "Await or cancel an in-flight call before submitting more."));
+            return rejected;
+        }
     }
 
     @Override

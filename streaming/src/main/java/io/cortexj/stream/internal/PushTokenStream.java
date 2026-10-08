@@ -153,7 +153,6 @@ public final class PushTokenStream implements TokenStream {
                         + "raise PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT; the "
                         + "stream never buffers without bound.");
     }
-
     private static CortexJException liveOverflowError(int limit) {
         return new InferenceException(
                 ErrorCode.INFERENCE_STREAM_FAILED,
@@ -163,6 +162,18 @@ public final class PushTokenStream implements TokenStream {
                 "Consume tokens faster (or offload the consumer), subscribe "
                         + "earlier, or raise PushTokenStream.LIVE_TOKEN_BUFFER_LIMIT; "
                         + "the stream never buffers without bound.");
+    }
+
+    private static CortexJException consumerError(Throwable consumerFailure) {
+        String detail = consumerFailure == null
+                ? "null"
+                : consumerFailure.getClass().getName()
+                + (consumerFailure.getMessage() == null ? "" : ": " + consumerFailure.getMessage());
+        return new InferenceException(
+                ErrorCode.INFERENCE_STREAM_FAILED,
+                "token stream consumer threw and the stream was failed: " + detail,
+                "Do not throw from TokenConsumer callbacks; handle consumer errors inside onToken/onError/onComplete.",
+                consumerFailure);
     }
 
     public void onCancel(Runnable action) {
@@ -181,9 +192,16 @@ public final class PushTokenStream implements TokenStream {
             // hand the buffered tokens to the delivery queue in FIFO order;
             // they were enqueued before any post-subscribe emit can enqueue,
             // so replay-before-live ordering holds without invoking user code
-            // under the monitor
+            // under the monitor.
+            // audit 2026-10-08: enforce the live invariant explicitly instead
+            // of relying on EARLY_TOKEN_BUFFER_LIMIT staying below
+            // LIVE_TOKEN_BUFFER_LIMIT - unreachable today, fail-closed if the
+            // caps ever drift apart
             pending.addAll(earlyTokens);
             earlyTokens.clear();
+            if (pending.size() > LIVE_TOKEN_BUFFER_LIMIT) {
+                failLocked(liveOverflowError(LIVE_TOKEN_BUFFER_LIMIT));
+            }
             consumer.set(tokenConsumer);
         }
         // replay + live delivery happens in drain(), outside the monitor
@@ -219,13 +237,27 @@ public final class PushTokenStream implements TokenStream {
                         return;
                     }
                 }
-                // user code invoked OUTSIDE the monitor (GitHub #57)
-                if (token != null) {
-                    target.onToken(token);
-                } else if (error != null) {
-                    target.onError(error);
-                } else {
-                    target.onComplete(completion);
+                // user code invoked OUTSIDE the monitor (GitHub #57).
+                // audit 2026-10-08: a throwing consumer must not stall the
+                // stream - fail it with a typed error instead of abandoning
+                // the remaining tokens and the terminal signal
+                try {
+                    if (token != null) {
+                        target.onToken(token);
+                    } else if (error != null) {
+                        target.onError(error);
+                    } else {
+                        target.onComplete(completion);
+                    }
+                } catch (Throwable consumerFailure) {
+                    CortexJException typed = consumerError(consumerFailure);
+                    fail(typed);
+                    try {
+                        target.onError(typed);
+                    } catch (Throwable ignored) {
+                        // the consumer is gone; the stream is failed, stop here
+                    }
+                    return;
                 }
             }
         } finally {
