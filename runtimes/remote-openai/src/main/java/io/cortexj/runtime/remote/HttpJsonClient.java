@@ -81,44 +81,116 @@ final class HttpJsonClient {
         return exchange("GET", baseUrl, path, null, apiKey, 5_000, 15_000);
     }
 
+    private static final int MAX_REDIRECTS = 5;
+
     private Response exchange(String method, String baseUrl, String path, String jsonBody,
                               String apiKey, int connectTimeout, int readTimeout) throws IOException {
+        // audit 2026-10-08: manual redirects - auto-follow would resend the
+        // Bearer token to wherever a compromised endpoint points, including
+        // internal hosts. Each hop is guard-validated, credentials are
+        // dropped cross-origin, same as the download manager.
+        io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(trimSlash(baseUrl) + path);
         URL url = new URL(trimSlash(baseUrl) + path);
-        HttpURLConnection connection = proxy == null
-                ? (HttpURLConnection) url.openConnection()
-                : (HttpURLConnection) url.openConnection(proxy);
-        try {
-            connection.setRequestMethod(method);
-            connection.setConnectTimeout(connectTimeout);
-            connection.setReadTimeout(readTimeout);
-            connection.setRequestProperty("Accept", "application/json");
-            if (apiKey != null && !apiKey.isEmpty()) {
-                connection.setRequestProperty("Authorization", "Bearer " + apiKey);
-            }
-            if (jsonBody != null) {
-                connection.setRequestProperty("Content-Type", "application/json");
-                connection.setDoOutput(true);
-                byte[] payload = jsonBody.getBytes(StandardCharsets.UTF_8);
-                connection.setFixedLengthStreamingMode(payload.length);
-                OutputStream output = connection.getOutputStream();
-                try {
-                    output.write(payload);
-                } finally {
-                    output.close();
+        String hopApiKey = apiKey;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            HttpURLConnection connection = proxy == null
+                    ? (HttpURLConnection) url.openConnection()
+                    : (HttpURLConnection) url.openConnection(proxy);
+            try {
+                connection.setRequestMethod(method);
+                connection.setConnectTimeout(connectTimeout);
+                connection.setReadTimeout(readTimeout);
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestProperty("Accept", "application/json");
+                if (hopApiKey != null && !hopApiKey.isEmpty()) {
+                    connection.setRequestProperty("Authorization", "Bearer " + hopApiKey);
                 }
+                if (jsonBody != null) {
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    connection.setDoOutput(true);
+                    byte[] payload = jsonBody.getBytes(StandardCharsets.UTF_8);
+                    connection.setFixedLengthStreamingMode(payload.length);
+                    OutputStream output = connection.getOutputStream();
+                    try {
+                        output.write(payload);
+                    } finally {
+                        output.close();
+                    }
+                }
+                int status = connection.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    if (hop == MAX_REDIRECTS) {
+                        throw new IOException("Too many redirects from remote runtime at "
+                                + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                url.toString()));
+                    }
+                    String target = connection.getHeaderField("Location");
+                    if (target == null) {
+                        throw new IOException("Redirect without Location header from "
+                                + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                url.toString()));
+                    }
+                    URL next;
+                    try {
+                        next = new URL(url, target);
+                    } catch (java.net.MalformedURLException malformed) {
+                        throw new IOException("Unparseable redirect target from remote runtime", malformed);
+                    }
+                    String scheme = next.getProtocol() == null ? "" : next.getProtocol();
+                    if (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https")) {
+                        throw new IOException("Redirect to non-http(s) target blocked: "
+                                + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                next.toString()));
+                    }
+                    try {
+                        io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(next.toString());
+                    } catch (IllegalArgumentException blocked) {
+                        throw new IOException("Redirect target blocked by the SSRF guard: "
+                                + blocked.getMessage());
+                    }
+                    if (!sameOrigin(url, next)) {
+                        hopApiKey = null;
+                    }
+                    url = next;
+                    // POST with a body is never replayed across hops:
+                    // HttpURLConnection never auto-followed it either, so the
+                    // 3xx response is returned as-is (previous behavior).
+                    if (jsonBody != null) {
+                        InputStream stream = connection.getErrorStream();
+                        return new Response(status, readAll(stream));
+                    }
+                    continue;
+                }
+                InputStream stream = status >= 200 && status < 300
+                        ? connection.getInputStream()
+                        : connection.getErrorStream();
+                return new Response(status, readAll(stream));
+            } catch (IOException requestFailure) {
+                connection.disconnect();
+                throw requestFailure;
+            } catch (RuntimeException requestFailure) {
+                connection.disconnect();
+                throw requestFailure;
             }
-            int status = connection.getResponseCode();
-            InputStream stream = status >= 200 && status < 300
-                    ? connection.getInputStream()
-                    : connection.getErrorStream();
-            return new Response(status, readAll(stream));
-        } catch (IOException requestFailure) {
-            connection.disconnect();
-            throw requestFailure;
-        } catch (RuntimeException requestFailure) {
-            connection.disconnect();
-            throw requestFailure;
         }
+        throw new IOException("Too many redirects from remote runtime");
+    }
+
+    private static boolean sameOrigin(URL a, URL b) {
+        if (a.getProtocol() == null || !a.getProtocol().equalsIgnoreCase(b.getProtocol())) {
+            return false;
+        }
+        if (a.getHost() == null || !a.getHost().equalsIgnoreCase(b.getHost())) {
+            return false;
+        }
+        return effectivePort(a) == effectivePort(b);
+    }
+
+    private static int effectivePort(URL url) {
+        if (url.getPort() != -1) {
+            return url.getPort();
+        }
+        return "https".equalsIgnoreCase(url.getProtocol()) ? 443 : 80;
     }
 
     // audit #99: a hostile or misconfigured endpoint must not stream an

@@ -34,7 +34,12 @@ public final class DescriptorEnricher {
         String quantization = inspection.quantization() != null
                 ? inspection.quantization()
                 : quantizationFromFileName(artifactFileName);
-        if (quantization != null) {
+        // audit 2026-10-08: never overwrite a trust marker (e.g. "community
+        // upload") with a quantization label - an absent note used to mean
+        // "trusted" for TRUSTED_ONLY, and clobbering it here would silently
+        // reclassify the model once enrich() gains callers
+        if (quantization != null && (descriptor.trustNote() == null
+                || descriptor.trustNote().trim().isEmpty())) {
             builder.trustNote(quantization);
             changed = true;
         }

@@ -72,6 +72,7 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
     }
 
     @Override
+    @org.junit.jupiter.api.Test
     public void supportsIsPrecise() {
         super.supportsIsPrecise();
     }

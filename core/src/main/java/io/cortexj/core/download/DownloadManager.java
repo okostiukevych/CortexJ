@@ -116,6 +116,21 @@ public final class DownloadManager {
                     "Unsupported artifact location scheme: " + scheme,
                     "Use a repository provider that exposes http(s) or file locations.");
         }
+        // audit 2026-10-08: the initial location used to skip the SSRF guard
+        // entirely (only redirect hops were validated) - an artifact from a
+        // third-party provider pointing at an internal URL downloaded directly
+        try {
+            io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(artifact.location().toString());
+        } catch (IllegalArgumentException blocked) {
+            ArtifactResolutionException ssrf = new ArtifactResolutionException(
+                    ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                    "Artifact location blocked by the SSRF guard: " + blocked.getMessage(),
+                    "Serve the artifact from a public URL, or set "
+                            + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY
+                            + "=true for intranet mirrors.");
+            ssrf.detail("artifact", artifact.artifact().id());
+            throw ssrf;
+        }
         long declaredSize = artifact.artifact().sizeBytes();
         long limit = maxArtifactBytes > 0 ? maxArtifactBytes : DEFAULT_MAX_ARTIFACT_BYTES;
         if (declaredSize > limit) {
@@ -208,12 +223,24 @@ public final class DownloadManager {
                 if (attempt < MAX_ATTEMPTS) {
                     long backoff = backoffMillis(attempt, retryAfterMillisOf(lastError));
                     if (backoff > 0L) {
-                        try {
-                            Thread.sleep(backoff);
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            lastError = new java.io.IOException("download cancelled");
-                            break;
+                        // audit 2026-10-08: slice the sleep so cancellation
+                        // lands promptly instead of waiting out up to 30 s of
+                        // backoff (Retry-After) after the user gave up
+                        long deadline = System.currentTimeMillis() + backoff;
+                        long remaining = backoff;
+                        while (remaining > 0L) {
+                            try {
+                                Thread.sleep(Math.min(remaining, 100L));
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                lastError = new java.io.IOException("download cancelled");
+                                break;
+                            }
+                            if (cancelFlag != null && cancelFlag.get()) {
+                                lastError = new java.io.IOException("download cancelled");
+                                break;
+                            }
+                            remaining = deadline - System.currentTimeMillis();
                         }
                     }
                 }
@@ -589,7 +616,11 @@ public final class DownloadManager {
         long written = alreadyWritten;
         int read;
         while ((read = input.read(buffer)) >= 0) {
-            if (cancelFlag != null && cancelFlag.get()) {
+            // audit 2026-10-08: cooperate with thread interruption too, not
+            // just the cooperative flag - shutdownNow() must stop a stuck
+            // copy instead of waiting out the 120 s socket timeout
+            if (Thread.currentThread().isInterrupted()
+                    || (cancelFlag != null && cancelFlag.get())) {
                 throw new IOException("download cancelled");
             }
             if (written + read > byteCap) {

@@ -182,12 +182,24 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             if (executor == null) {
                 return CompletableFuture.completedFuture(execute(request));
             }
-            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
-                @Override
-                public InferenceResponse get() {
-                    return execute(request);
-                }
-            }, executor);
+            // audit 2026-10-08: a saturated/shut-down pool must surface as a
+            // failed future, not a synchronous throw from an async contract
+            try {
+                return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, executor);
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                CompletableFuture<InferenceResponse> rejected =
+                        new CompletableFuture<InferenceResponse>();
+                rejected.completeExceptionally(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "Remote runtime overloaded: too many concurrent executions ("
+                                + saturated.getMessage() + ").",
+                        "Await or cancel an in-flight call before submitting more."));
+                return rejected;
+            }
         }
 
         @Override
@@ -336,7 +348,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                                     "the remote endpoint did not answer the stream request within "
                                             + SSE_HEADER_TIMEOUT_MILLIS + " ms",
                                     "Check the remote endpoint health and its request queue.")
-                                    .detail("endpoint", baseUrl);
+                                    .detail("endpoint", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl));
                         }
                         continue;
                     }
@@ -474,7 +486,10 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         }
 
         private void requireOpen(String operation) {
-            if (closed) {
+            // audit 2026-10-08: the runtime-level flag covers close() racing
+            // new calls - the model flag alone let post-close generate/embed
+            // walk into the network
+            if (closed || runtimeClosed.get()) {
                 throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                         "Cannot " + operation + " on a closed remote model handle.",
                         "Create a new handle via CortexJ.models().load(...).");
@@ -529,7 +544,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
                         "Remote runtime call to " + path + " failed: " + e.getMessage(),
                         "Verify the endpoint URL and network connectivity.", e);
-                failure.detail("endpoint", baseUrl);
+                failure.detail("endpoint", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl));
                 throw failure;
             }
         }
@@ -540,7 +555,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                             + abbreviate(response.body),
                     "Check the model id, endpoint configuration and API key.");
             failure.detail("status", String.valueOf(response.status));
-            failure.detail("endpoint", baseUrl);
+            failure.detail("endpoint", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl));
             return failure;
         }
 

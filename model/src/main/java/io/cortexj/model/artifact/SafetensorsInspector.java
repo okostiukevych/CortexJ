@@ -18,6 +18,9 @@ import java.util.Iterator;
 public final class SafetensorsInspector implements ArtifactInspector {
 
     private static final int HEADER_LIMIT_BYTES = 64 * 1024 * 1024;
+    // audit 2026-10-08: unbounded tensor-entry iteration allocates without
+    // bound on hostile headers
+    private static final int MAX_TENSOR_ENTRIES = 10_000_000;
 
     private final ObjectMapper mapper = constrainedMapper();
 
@@ -102,6 +105,18 @@ public final class SafetensorsInspector implements ArtifactInspector {
                 continue;
             }
             JsonNode tensor = header.get(name);
+            // audit 2026-10-08: unknown non-tensor entries must not NPE the
+            // inspector (nor inflate the tensor count)
+            if (tensor == null || !tensor.isObject() || !tensor.has("dtype")) {
+                continue;
+            }
+            tensorCount++;
+            // audit 2026-10-08: cap entries; reject negative dims instead of
+            // masking them with max(1L) (which understated parameterCount)
+            if (tensorCount > MAX_TENSOR_ENTRIES) {
+                throw new MalformedArtifactException(
+                        "Safetensors header declares too many tensors (cap " + MAX_TENSOR_ENTRIES + ")");
+            }
             JsonNode dtype = tensor.get("dtype");
             long[] shape = parseShape(tensor.get("shape"));
             // audit 2026-10-07: multiplyExact turns hostile dims into a typed
@@ -110,6 +125,10 @@ public final class SafetensorsInspector implements ArtifactInspector {
             long elements = 1L;
             try {
                 for (long dimension : shape) {
+                    if (dimension < 0) {
+                        throw new MalformedArtifactException(
+                                "Safetensors tensor '" + name + "' has a negative dimension");
+                    }
                     elements = Math.multiplyExact(elements, Math.max(1L, dimension));
                 }
                 parameterCount = Math.addExact(parameterCount, elements);
@@ -117,7 +136,6 @@ public final class SafetensorsInspector implements ArtifactInspector {
                 throw new MalformedArtifactException(
                         "Safetensors tensor '" + name + "' has unreasonable dimensions (overflow)");
             }
-            tensorCount++;
             if (dtype != null && quantization == null && name.toLowerCase().contains("weight")) {
                 quantization = dtype.asText();
             }

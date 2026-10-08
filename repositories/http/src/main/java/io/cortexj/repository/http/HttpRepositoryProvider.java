@@ -93,7 +93,9 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         String fileName = fileNameOf(url);
         ArtifactFormat format = ArtifactFormat.fromFileName(fileName);
         Map<String, String> metadata = new LinkedHashMap<String, String>();
-        metadata.put("sourceUrl", url);
+        // audit 2026-10-08: descriptor metadata surfaces in explanations -
+        // keep the origin without the bearer query
+        metadata.put("sourceUrl", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
         String quantization = io.cortexj.model.descriptor.DescriptorEnricher.quantizationFromFileName(fileName);
         if (quantization != null) {
             metadata.put("quantization", quantization);
@@ -134,10 +136,12 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
     }
 
     private static ModelResolutionException offline(String url) {
+        // audit 2026-10-08: reference may carry userinfo/presigned query
         ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_OFFLINE_UNRESOLVED,
-                "HTTP model resolution is disabled in offline mode: " + url,
+                "HTTP model resolution is disabled in offline mode: "
+                        + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url),
                 "Pre-download the model with 'cortexj pull' or use a local repository bundle.");
-        failure.detail("reference", url);
+        failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
         return failure;
     }
 

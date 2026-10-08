@@ -103,6 +103,18 @@ public final class RemoteOpenAiProvider implements RuntimeProvider {
                 optionAsString(request, "apiKey"),
                 System.getenv("CORTEXJ_REMOTE_API_KEY"),
                 System.getenv("OPENAI_API_KEY"));
+        // audit 2026-10-08: a typo (or poisoned config) pointing the base URL
+        // at an internal host must fail fast here, not send the Bearer token
+        // there on the first request
+        try {
+            io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(baseUrl);
+        } catch (IllegalArgumentException blocked) {
+            throw new RuntimeCompatibilityException(ErrorCode.RUNTIME_MISCONFIGURED,
+                    "openai-remote base URL blocked by the SSRF guard: " + blocked.getMessage(),
+                    "Point CORTEXJ_REMOTE_BASE_URL at the public endpoint, or set "
+                            + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY
+                            + "=true for intranet endpoints.");
+        }
         return new RemoteOpenAiRuntime(id, baseUrl, apiKey, request.executor(), request.eventListener(),
                 HttpJsonClient.fromConfiguration(request.platformConfiguration()));
     }
