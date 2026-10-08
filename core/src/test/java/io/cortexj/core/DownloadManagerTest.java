@@ -134,6 +134,30 @@ class DownloadManagerTest {
     }
 
     @Test
+    void privateInitialLocationIsBlockedWithoutConnection() {
+        // audit 2026-10-08: the initial location used to skip the guard -
+        // no socket may be opened for it; ensure the opt-out is off here
+        // even though the class-level surefire config allows private hosts
+        System.clearProperty("cortexj.http.allowPrivateHosts");
+        try {
+            CacheStorage cache = new CacheStorage(tempDir);
+            DownloadManager manager = new DownloadManager(new EventBus(Collections.emptyList()));
+            io.cortexj.error.ArtifactResolutionException blocked =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            io.cortexj.error.ArtifactResolutionException.class,
+                            () -> manager.download(
+                                    resolvedArtifact("model.gguf", 100L, null,
+                                            URI.create("http://169.254.169.254/latest/meta-data/")),
+                                    "test-repo", "rev1", cache, 0L));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    blocked.getMessage().contains("SSRF"),
+                    "private initial locations must be refused, got: " + blocked.getMessage());
+        } finally {
+            System.setProperty("cortexj.http.allowPrivateHosts", "true");
+        }
+    }
+
+    @Test
     void downloadsAndStoresInCache() throws IOException {
         byte[] bytes = payload("gguf-payload-123");
         serve("/good/model.gguf", bytes);

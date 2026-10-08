@@ -191,11 +191,13 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **~129 test classes / ~497 tests green on JDK 25** (13 gated
-skips are loud assumeTrue, never silent); the full 2026-10-01 audit pass (31 issues
+Current test matrix: **~132 test classes / ~548 tests green on JDK 25** (14 gated
+skips are loud assumeTrue, never silent; perf-tagged load/fuzz/throughput tests
+run separately with `mvn test -Pperf`); the full 2026-10-01 audit pass (31 issues
 resolved: concurrency refcount races, carrier pinning, executor bounds, download
 caps/retry/resume validation, parser hardening, server hardening, pinned in-use
-artifacts) and the full 2026-10-05 audit pass (issues #89-#128) are
+artifacts), the full 2026-10-05 audit pass (issues #89-#128), the 2026-10-07
+follow-up (issues #139-#148) and the 2026-10-08 re-audit (issues #149-#153) are
 regression-tested. GitHub Actions lanes (JDK 8/11/17/21/25 on
 ubuntu/macos/windows, JPMS lanes via `mvn -Pjpms`, SpotBugs + JaCoCo
 coverage lanes per issue #53, gated self-hosted GPU lanes per spec 70) are
@@ -254,13 +256,15 @@ Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 - `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
   and the exact remediation: *replace with cortexj-starter-java8*.
 
-~457 automated tests across ~126 test classes: planner synthetic matrices (determinism, hard
+~548 automated tests across ~132 test classes: planner synthetic matrices (determinism, hard
 constraints, JVM/quality/offline policies, benchmark hints, enterprise policy rules), provider
-TCK (lifecycle, streaming, cancellation, registration contracts), concurrency/race regression
+TCK (lifecycle, streaming, cancellation, registration, conversion, platform, policy contracts), concurrency/race regression
 suite (double-close, cold-load races, close-during-stream, cancellation - tagged `concurrency`),
 download integrity + retry matrix, cache safety + amortized eviction, resource-leak assertions
 (process exit, executor termination, temp cleanup, handle closure), isolated-worker child-JVM
-round-trips (crash, streaming, leaks), and end-to-end load→plan→execute→close cycles.
+round-trips (crash, streaming, leaks), SSRF/secret/parser hardening suites, and end-to-end load→plan→execute→close cycles.
+Perf-tagged suites (server load, wide-matrix planning, parser fuzz, cache contention, conversion
+throughput) run separately with `mvn test -Pperf`.
 
 ## Configuration priority
 
