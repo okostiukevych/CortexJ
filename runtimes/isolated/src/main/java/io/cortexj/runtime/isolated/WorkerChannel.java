@@ -310,7 +310,15 @@ final class WorkerChannel {
         payload.put("op", op);
         CompletableFuture<JsonNode> future = new CompletableFuture<JsonNode>();
         pending.put(Long.valueOf(id), future);
-        write(payload);
+        try {
+            write(payload);
+        } catch (RuntimeException writeFailure) {
+            // audit 2026-10-08: when the channel was already dead, markDead
+            // is a no-op and the entry above would strand forever - remove it
+            // (a fresh markDead already failed every other pending future)
+            pending.remove(Long.valueOf(id));
+            throw writeFailure;
+        }
         JsonNode reply;
         try {
             reply = future.get(requestTimeoutMillis(), TimeUnit.MILLISECONDS);
@@ -377,7 +385,14 @@ final class WorkerChannel {
         payload.put("id", nextId());
         payload.put("op", "cancelStream");
         payload.put("streamId", streamId);
-        write(payload);
+        try {
+            write(payload);
+        } catch (RuntimeException alreadyGone) {
+            // audit 2026-10-08: dying between the check and the write is a
+            // benign race - the stream is dead either way, stay silent so
+            // cancel keeps its idempotent contract
+            return;
+        }
         activeStreams.remove(Long.valueOf(streamId));
     }
 
@@ -433,7 +448,15 @@ final class WorkerChannel {
         }
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean tornDown =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private void teardownAfterDeath() {
+        // audit 2026-10-08: shutdown() and markDead() both funnel here - run
+        // the ladder once so concurrent deaths cannot double-close/kill
+        if (!tornDown.compareAndSet(false, true)) {
+            return;
+        }
         writer.close();
         killProcess(process);
         // audit #104: the child working directory is created per worker start

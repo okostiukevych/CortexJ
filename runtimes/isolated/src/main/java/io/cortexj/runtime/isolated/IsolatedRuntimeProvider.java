@@ -181,23 +181,74 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
                 sanitizeForChild(request.platformConfiguration())));
         active.call(active.nextId(), "open", payload);
         IsolatedModelRuntime runtime = new IsolatedModelRuntime(this, active, request.executor());
+        // audit 2026-10-08: re-check under no window - a close() that ran
+        // entirely after the entry check must not leave this session
+        // unclosed (nor resurrect the channel for it)
+        if (closed.get()) {
+            try {
+                runtime.close();
+            } catch (Throwable ignored) {
+            }
+            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "the isolated runtime provider is closed",
+                    "Create a new IsolatedRuntimeProvider instance.");
+        }
         openSessions.add(runtime);
+        if (closed.get()) {
+            // lost the race after all: close the just-registered session now
+            // that close() is guaranteed to have run (or be running, in which
+            // case its snapshot missed us and we self-close instead of
+            // leaking)
+            openSessions.remove(runtime);
+            try {
+                runtime.close();
+            } catch (Throwable ignored) {
+            }
+            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "the isolated runtime provider is closed",
+                    "Create a new IsolatedRuntimeProvider instance.");
+        }
         return runtime;
     }
 
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            for (IsolatedModelRuntime session : openSessions) {
+            // audit 2026-10-08: release in-flight spawn waiters immediately
+            // instead of parking them until the handshake times out
+            java.util.concurrent.CompletableFuture<WorkerChannel> inFlight;
+            synchronized (channelLock) {
+                inFlight = channelFuture;
+                channelFuture = null;
+            }
+            if (inFlight != null) {
+                inFlight.completeExceptionally(new RuntimeUnavailableException(
+                        ErrorCode.RUNTIME_UNAVAILABLE,
+                        "the isolated runtime provider is closed",
+                        "Create a new IsolatedRuntimeProvider instance."));
+            }
+            // audit 2026-10-08: iterate a snapshot - an open() racing close
+            // must not slip a session between iteration and clear that nobody
+            // ever closes (open() itself is closed-guarded, this is the
+            // residual window)
+            for (IsolatedModelRuntime session :
+                    new java.util.ArrayList<IsolatedModelRuntime>(openSessions)) {
                 try {
                     session.close();
-                } catch (RuntimeException ignored) {
-                    // teardown must not fail on one broken session
+                } catch (Throwable ignored) {
+                    // audit 2026-10-08: teardown must not fail on one broken
+                    // session, whatever it throws
                 }
             }
             openSessions.clear();
-            WorkerChannel active = channel;
-            channel = null;
+            // audit 2026-10-08: take the channel under the same lock the
+            // spawn owner publishes under - otherwise a spawn finishing
+            // concurrently resurrects (and orphans) the worker after close
+            WorkerChannel active;
+            synchronized (channelLock) {
+                active = channel;
+                channel = null;
+            }
             if (active != null) {
                 active.shutdown();
             }
@@ -275,6 +326,22 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
         try {
             WorkerChannel fresh = WorkerChannel.start(targetRuntimeId);
             synchronized (channelLock) {
+                // audit 2026-10-08: close() during spawn must not resurrect
+                // the channel or orphan the child - tear the fresh worker
+                // down and fail the claim instead
+                if (closed.get()) {
+                    if (channelFuture == claimed) {
+                        channelFuture = null;
+                    }
+                    claimed.completeExceptionally(new RuntimeUnavailableException(
+                            ErrorCode.RUNTIME_UNAVAILABLE,
+                            "the isolated runtime provider is closed",
+                            "Create a new IsolatedRuntimeProvider instance."));
+                    fresh.shutdown();
+                    throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                            "the isolated runtime provider is closed",
+                            "Create a new IsolatedRuntimeProvider instance.");
+                }
                 channel = fresh;
                 if (channelFuture == claimed) {
                     channelFuture = null;
