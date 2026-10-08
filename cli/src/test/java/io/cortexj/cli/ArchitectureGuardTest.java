@@ -8,10 +8,10 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spec v3.0 §125.1-125.4, §134.2 (issue #157): the Runtime foundation must
- * never depend on future product tracks (Lab / Data / Experiments / Train
- * / Tensor / Autograd / Research), and core must stay free of framework
- * and engine dependencies (AP-001/AP-002).
+ * Architecture guard (ADR-016): the Runtime foundation must never depend
+ * on future product tracks (Lab / Data / Experiments / Train / Tensor /
+ * Autograd / Research), and core must stay free of framework and engine
+ * dependencies (AP-001/AP-002).
  *
  * <p>The future-track packages do not exist yet, so the first rule passes
  * vacuously today - its value is failing the build the moment someone
@@ -37,14 +37,14 @@ class ArchitectureGuardTest {
                         "io.cortexj.research..",
                         "io.cortexj.notebook..",
                         "io.cortexj.nn..")
-                .because("spec v3.0 §125: runtime modules MUST NOT depend on future tracks; "
+                .because("ADR-016: runtime modules MUST NOT depend on future tracks; "
                         + "the production path stays standalone")
                 .check(RUNTIME);
     }
 
     @Test
     void experimentalApisDoNotLeakIntoStableRuntime() {
-        // spec v3.0 §150 (ADR-016): incubating Lab/Research APIs live under
+        // ADR-016: incubating Lab/Research APIs live under
         // io.cortexj.experimental and never in stable Runtime signatures.
         // Vacuous until the first experimental package exists — then it
         // guards the stabilization boundary.
@@ -53,7 +53,7 @@ class ArchitectureGuardTest {
                         "io.cortexj..")
                 .should().dependOnClassesThat().resideInAnyPackage(
                         "io.cortexj.experimental..")
-                .because("spec v3.0 §150: experimental APIs must not leak into stable Runtime")
+                .because("ADR-016: experimental APIs must not leak into stable Runtime")
                 .check(RUNTIME);
     }
 

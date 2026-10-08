@@ -61,7 +61,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 /**
- * Optional JInfer {@link RuntimeProvider} (spec v3.0 sections 0/19, issue #160).
+ * Optional JInfer {@link RuntimeProvider} over Quixotic JInfer (issue #160).
  *
  * <p>Covers Quixotic JInfer {@code 0.3.1} ({@code com.qxotic:jinfer-chat},
  * Apache-2.0, Java 25+). JInfer types never leak into shared signatures:

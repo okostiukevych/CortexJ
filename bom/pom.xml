@@ -25,6 +25,9 @@
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-data-api</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-data-csv</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-data-parquet</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-experiments-api</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-experiments-local</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-lab-api</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-hardware</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-cache</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-streaming</artifactId><version>${project.version}</version></dependency>

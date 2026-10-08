@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-experiments-api</artifactId>
+  <name>CortexJ Experiments API</name>
+  <description>Experiment lifecycle contracts with embedded provenance (ADR-020). Java 17, Properties-based, no Jackson.</description>
+  <properties>
+    <cortexj.shared.release>17</cortexj.shared.release>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-provenance</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+</project>
