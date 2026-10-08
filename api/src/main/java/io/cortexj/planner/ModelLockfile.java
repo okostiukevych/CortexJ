@@ -11,7 +11,17 @@ import java.util.Map;
 
 public final class ModelLockfile {
 
+    /**
+     * Lockfile schema version (spec v3.0 §125.8, issue #159): {@code major}
+     * gates compatibility, {@code minor} is forward-compatible. Readers
+     * reject unknown majors with a typed error instead of misreading the
+     * file; cross-track provenance (§148) keys off the same scheme.
+     */
+    public static final int SCHEMA_MAJOR = 1;
+    public static final int SCHEMA_MINOR = 0;
+
     private final String model;
+    private final String schemaVersion;
     private final String revision;
     private final String artifactFile;
     private final String artifactSha256;
@@ -22,6 +32,9 @@ public final class ModelLockfile {
 
     private ModelLockfile(Builder builder) {
         this.model = builder.model;
+        this.schemaVersion = builder.schemaVersion == null
+                ? SCHEMA_MAJOR + "." + SCHEMA_MINOR
+                : builder.schemaVersion;
         this.revision = builder.revision;
         this.artifactFile = builder.artifactFile;
         this.artifactSha256 = builder.artifactSha256;
@@ -37,6 +50,10 @@ public final class ModelLockfile {
 
     public String model() {
         return model;
+    }
+
+    public String schemaVersion() {
+        return schemaVersion;
     }
 
     public String revision() {
@@ -77,6 +94,7 @@ public final class ModelLockfile {
 
     public ModelLockfile withRuntimeId(String newRuntimeId) {
         return builder(model)
+                .schemaVersion(schemaVersion)
                 .revision(revision)
                 .artifactFile(artifactFile)
                 .artifactSha256(artifactSha256)
@@ -89,6 +107,7 @@ public final class ModelLockfile {
 
     public String toYaml() {
         StringBuilder sb = new StringBuilder();
+        sb.append("lockfileVersion: ").append(schemaVersion).append('\n');
         sb.append("model: ").append(model).append('\n');
         if (revision != null) {
             sb.append("revision: ").append(revision).append('\n');
@@ -163,7 +182,23 @@ public final class ModelLockfile {
         if (model == null || model.isEmpty()) {
             throw new IllegalArgumentException("Lockfile is missing the required 'model' entry");
         }
+        String schemaVersion = flat.get("lockfileVersion");
+        if (schemaVersion != null && !schemaVersion.trim().isEmpty()) {
+            int major = majorOf(schemaVersion);
+            if (major < 0) {
+                throw new IllegalArgumentException(
+                        "Lockfile has an unparsable schema version '" + schemaVersion
+                                + "'; expected '<major>.<minor>' starting at 1.0.");
+            }
+            if (major != SCHEMA_MAJOR) {
+                throw new IllegalArgumentException(
+                        "Unsupported lockfile schema major version " + major
+                                + " (this build reads " + SCHEMA_MAJOR + ".x); regenerate the "
+                                + "lockfile with a compatible CortexJ version.");
+            }
+        }
         return builder(model)
+                .schemaVersion(schemaVersion)
                 .revision(flat.get("revision"))
                 .artifactFile(flat.get("nested.file"))
                 .artifactSha256(flat.get("nested.sha256"))
@@ -174,8 +209,18 @@ public final class ModelLockfile {
                 .build();
     }
 
-    public static ModelLockfile fromPlan(ExecutionPlan plan) {
-        String artifactId = plan.selected() == null || plan.selected().artifact() == null
+    private static int majorOf(String schemaVersion) {
+        String raw = schemaVersion.trim();
+        int dot = raw.indexOf('.');
+        String major = dot < 0 ? raw : raw.substring(0, dot);
+        try {
+            return Integer.parseInt(major.trim());
+        } catch (NumberFormatException invalid) {
+            return -1;
+        }
+    }
+
+    public static ModelLockfile fromPlan(ExecutionPlan plan) {        String artifactId = plan.selected() == null || plan.selected().artifact() == null
                 ? null
                 : plan.selected().artifact().id();
         String artifactSha = plan.selected() == null
@@ -198,6 +243,7 @@ public final class ModelLockfile {
     public static final class Builder {
 
         private final String model;
+        private String schemaVersion;
         private String revision;
         private String artifactFile;
         private String artifactSha256;
@@ -215,6 +261,11 @@ public final class ModelLockfile {
 
         public Builder revision(String value) {
             this.revision = value;
+            return this;
+        }
+
+        public Builder schemaVersion(String value) {
+            this.schemaVersion = value;
             return this;
         }
 

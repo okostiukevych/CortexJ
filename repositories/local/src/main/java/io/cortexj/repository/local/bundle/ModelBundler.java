@@ -35,6 +35,14 @@ import java.util.Map;
 public final class ModelBundler {
 
     public static final String MANIFEST_FILE = "cortexj-model.json";
+
+    /**
+     * Bundle manifest schema version (spec v3.0 §125.8, issue #159): major
+     * gates compatibility, minor is forward-compatible. Absent version
+     * means a pre-1.0 legacy bundle and is accepted as 1.x.
+     */
+    public static final int MANIFEST_SCHEMA_MAJOR = 1;
+    public static final int MANIFEST_SCHEMA_MINOR = 0;
     private static final int CONNECT_TIMEOUT = 15_000;
     private static final int READ_TIMEOUT = 300_000;
     // mirrors core DownloadManager's DEFAULT_MAX_ARTIFACT_BYTES (core is not
@@ -63,6 +71,7 @@ public final class ModelBundler {
 
         ArrayNode artifactEntries = mapper.createArrayNode();
         ObjectNode manifest = mapper.createObjectNode();
+        manifest.put("manifestVersion", MANIFEST_SCHEMA_MAJOR + "." + MANIFEST_SCHEMA_MINOR);
         manifest.put("id", resolved.descriptor().canonicalId());
         manifest.put("revision", resolved.revision());
         if (resolved.descriptor().architecture() != null) {
@@ -141,6 +150,22 @@ public final class ModelBundler {
             if (modelId == null || modelId.isEmpty()) {
                 issues.add("manifest is missing the model id");
             }
+            // audit v3.0 §125.8 (issue #159): unknown majors fail, newer
+            // minors pass, absent version is a legacy 1.x bundle
+            String manifestVersion = manifest.path("manifestVersion").asText(null);
+            if (manifestVersion != null && !manifestVersion.trim().isEmpty()) {
+                int major = manifestMajorOf(manifestVersion);
+                if (major < 0) {
+                    issues.add("bundle manifest has an unparsable version '"
+                            + manifestVersion + "'; expected '<major>.<minor>'");
+                } else if (major != MANIFEST_SCHEMA_MAJOR) {
+                    issues.add("bundle manifest schema major version " + major
+                            + " is not supported by this build (reads "
+                            + MANIFEST_SCHEMA_MAJOR + ".x); re-create the bundle with a "
+                            + "compatible CortexJ version");
+                    return new BundleReport(modelId, revision, verified, unverified, issues);
+                }
+            }
             for (JsonNode entry : manifest.path("artifacts")) {
                 String file = entry.path("file").asText(null);
                 if (file == null || file.isEmpty()) {
@@ -177,6 +202,17 @@ public final class ModelBundler {
             issues.add("cannot read bundle manifest: " + e.getMessage());
         }
         return new BundleReport(modelId, revision, verified, unverified, issues);
+    }
+
+    private static int manifestMajorOf(String manifestVersion) {
+        String raw = manifestVersion.trim();
+        int dot = raw.indexOf('.');
+        String major = dot < 0 ? raw : raw.substring(0, dot);
+        try {
+            return Integer.parseInt(major.trim());
+        } catch (NumberFormatException invalid) {
+            return -1;
+        }
     }
 
     private ResolvedModel resolve(ModelReference reference, ResolutionContext context) {
