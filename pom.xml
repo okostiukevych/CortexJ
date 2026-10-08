@@ -48,6 +48,8 @@
     <module>api</module>
     <module>spi</module>
     <module>model</module>
+    <module>model-metadata</module>
+    <module>provenance</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>

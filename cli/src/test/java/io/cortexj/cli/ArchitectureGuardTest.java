@@ -43,6 +43,21 @@ class ArchitectureGuardTest {
     }
 
     @Test
+    void experimentalApisDoNotLeakIntoStableRuntime() {
+        // spec v3.0 §150 (ADR-016): incubating Lab/Research APIs live under
+        // io.cortexj.experimental and never in stable Runtime signatures.
+        // Vacuous until the first experimental package exists — then it
+        // guards the stabilization boundary.
+        noClasses()
+                .that().resideInAnyPackage(
+                        "io.cortexj..")
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "io.cortexj.experimental..")
+                .because("spec v3.0 §150: experimental APIs must not leak into stable Runtime")
+                .check(RUNTIME);
+    }
+
+    @Test
     void coreHasNoFrameworkOrEngineDependencies() {
         long violations = RUNTIME.stream()
                 .filter(clazz -> clazz.getPackageName().startsWith("io.cortexj.core"))
