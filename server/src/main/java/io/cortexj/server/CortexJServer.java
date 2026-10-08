@@ -97,17 +97,17 @@ public final class CortexJServer {
     }
 
     private volatile com.sun.net.httpserver.HttpServer httpServer;
-    private ThreadPoolExecutor requestExecutor;
+    private volatile ThreadPoolExecutor requestExecutor;
     // audit 2026-10-07 (#146): long SSE streams wait here, not on request
     // threads - 16 concurrent streams must not exhaust unary capacity and
     // 503 the whole server while the GPU idles
-    private ThreadPoolExecutor streamExecutor;
+    private volatile ThreadPoolExecutor streamExecutor;
     // audit 2026-10-08 (#153): blocking unary generations wait here with a
     // ceiling - a stuck multi-minute generate must time out to the client
     // instead of pinning a request thread forever
-    private ThreadPoolExecutor generateExecutor;
-    private Semaphore admission;
-    private Semaphore streamAdmission;
+    private volatile ThreadPoolExecutor generateExecutor;
+    private volatile Semaphore admission;
+    private volatile Semaphore streamAdmission;
     private final long generateTimeoutMillis;
 
     public CortexJServer(CortexJ platform, String modelReference) {
@@ -370,7 +370,8 @@ public final class CortexJServer {
             fresh.failures = 1;
             fresh.windowStartMillis = now;
             AuthAttempts raced = authFailures.putIfAbsent(clientIp, fresh);
-            attempts = raced == null ? fresh : raced;
+            // SpotBugs DLS: no dead store - either we won (fresh counts) or we
+            // lost (recurse onto the winner's counter)
             if (raced != null) {
                 return noteAuthFailure(clientIp);
             }
@@ -555,15 +556,19 @@ public final class CortexJServer {
             // audit 2026-10-07 (#146): hand the long-lived exchange to the
             // stream pool and free the request thread - dispatch() releases
             // the unary permit on return while the stream permit below guards
-            // SSE capacity separately (503 instead of silent pile-up)
-            if (streamAdmission == null || !streamAdmission.tryAcquire()) {
+            // SSE capacity separately (503 instead of silent pile-up).
+            // Locals are read once: stop() may null the pools concurrently,
+            // which degrades to 503 here instead of an NPE + leaked permit.
+            final Semaphore streamPermits = streamAdmission;
+            final ThreadPoolExecutor streams = streamExecutor;
+            if (streamPermits == null || streams == null || !streamPermits.tryAcquire()) {
                 respondServiceUnavailable(exchange);
                 return;
             }
             final GenerationRequest streamRequest = request.build();
             final AtomicBoolean streamHeadersSent = headersSent;
             try {
-                streamExecutor.execute(new Runnable() {
+                streams.execute(new Runnable() {
                     @Override
                     public void run() {
                         try {
@@ -577,12 +582,12 @@ public final class CortexJServer {
                             respondError(exchange, streamHeadersSent, 500,
                                     "CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE);
                         } finally {
-                            streamAdmission.release();
+                            streamPermits.release();
                         }
                     }
                 });
             } catch (java.util.concurrent.RejectedExecutionException saturated) {
-                streamAdmission.release();
+                streamPermits.release();
                 respondServiceUnavailable(exchange);
             }
             return;
@@ -635,8 +640,14 @@ public final class CortexJServer {
         // interrupted (native calls may ignore it and finish late; the pool
         // stays bounded either way) and the client gets 504, not silence
         java.util.concurrent.Future<GenerationResponse> future;
+        // Locals read once (see the stream handoff above for why).
+        final ThreadPoolExecutor generations = generateExecutor;
+        if (generations == null) {
+            throw new java.util.concurrent.ExecutionException(new CortexJException(
+                    "CORTEXJ-SERVER-5030", "server busy: too many in-flight generations"));
+        }
         try {
-            future = generateExecutor.submit(new java.util.concurrent.Callable<GenerationResponse>() {
+            future = generations.submit(new java.util.concurrent.Callable<GenerationResponse>() {
                 @Override
                 public GenerationResponse call() {
                     return generator.generate(generation);

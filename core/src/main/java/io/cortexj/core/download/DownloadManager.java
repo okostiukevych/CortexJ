@@ -184,8 +184,16 @@ public final class DownloadManager {
         }
         java.nio.file.Path effectivePartial = resumeFile;
         if (partialLock == null) {
+            // SpotBugs NP: getFileName() is null for root paths - resolveSibling
+            // below already guarantees a file name, fail loudly otherwise
+            java.nio.file.Path fileName = resumeFile.getFileName();
+            if (fileName == null) {
+                throw new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                        "Cannot derive a partial-download name from " + resumeFile,
+                        "Point the working directory at a regular cache location.");
+            }
             effectivePartial = resumeFile.resolveSibling(
-                    resumeFile.getFileName().toString().replaceAll("\\.part$", "")
+                    fileName.toString().replaceAll("\\.part$", "")
                             + "-" + java.util.UUID.randomUUID() + ".part");
         }
         boolean resumedOnce = java.nio.file.Files.exists(effectivePartial);
