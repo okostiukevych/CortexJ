@@ -35,6 +35,7 @@
       <!-- audit #107: every shipped module from the README table must be
            managed here so BOM consumers can align versions -->
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-runtime-djl</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-runtime-jinfer</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-runtime-isolated</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-worker</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-repository-http</artifactId><version>${project.version}</version></dependency>
