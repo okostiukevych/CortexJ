@@ -57,6 +57,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 /**
@@ -101,7 +102,7 @@ public class JInferRuntimeProvider implements RuntimeProvider {
             .metadata("engine", "Quixotic JInfer " + JINFER_VERSION)
             .metadata("license", "Apache-2.0")
             .metadata("artifact", "com.qxotic:jinfer-chat:" + JINFER_VERSION)
-            .metadata("streaming", "coarse-single-chunk (token-granular streaming is a follow-up)")
+            .metadata("streaming", "token-granular via ReplySink (CONTENT channel)")
             .build();
 
     @Override
@@ -260,29 +261,49 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                 throw failure;
             }
             // Capability-based dispatch: a GGUF file can hold a chat model,
-            // an embedding model or a reranker. The first successful load wins;
-            // anything else is a typed error with remediation, never a guess.
+            // an embedding model or a reranker. Chat checkpoints are distinct
+            // (the family provider declines anything else), but the embedding
+            // and reranking loaders of one family accept each other's files
+            // (verified live on Qwen3) — order alone cannot tell them apart.
+            // So the retrieval kind reported by JInfer decides; only when it
+            // is unavailable does the declared model task break the tie.
+            // A decline is never silent: every attempt is recorded, and the
+            // final error carries them all.
             List<String> attempts = new ArrayList<String>();
             try {
                 return openChatModel(artifactPath);
-            } catch (CortexJException e) {
-                throw e;
             } catch (Throwable chatFailure) {
-                attempts.add("chat: " + chatFailure);
+                attempts.add("chat: " + shortCause(chatFailure));
             }
-            try {
-                return openEmbeddingModel(artifactPath);
-            } catch (CortexJException e) {
-                throw e;
-            } catch (Throwable embeddingFailure) {
-                attempts.add("embedding: " + embeddingFailure);
-            }
-            try {
+            com.qxotic.jinfer.chat.ModelProvider.Retrieval retrieval = retrievalKind(artifactPath);
+            if (retrieval == com.qxotic.jinfer.chat.ModelProvider.Retrieval.RERANKING) {
                 return openRerankingModel(artifactPath);
-            } catch (CortexJException e) {
-                throw e;
-            } catch (Throwable rerankingFailure) {
-                attempts.add("reranking: " + rerankingFailure);
+            }
+            if (retrieval == com.qxotic.jinfer.chat.ModelProvider.Retrieval.EMBEDDING) {
+                return openEmbeddingModel(artifactPath);
+            }
+            if (prefersReranking(request)) {
+                try {
+                    return openRerankingModel(artifactPath);
+                } catch (Throwable rerankingFailure) {
+                    attempts.add("reranking: " + shortCause(rerankingFailure));
+                }
+                try {
+                    return openEmbeddingModel(artifactPath);
+                } catch (Throwable embeddingFailure) {
+                    attempts.add("embedding: " + shortCause(embeddingFailure));
+                }
+            } else {
+                try {
+                    return openEmbeddingModel(artifactPath);
+                } catch (Throwable embeddingFailure) {
+                    attempts.add("embedding: " + shortCause(embeddingFailure));
+                }
+                try {
+                    return openRerankingModel(artifactPath);
+                } catch (Throwable rerankingFailure) {
+                    attempts.add("reranking: " + shortCause(rerankingFailure));
+                }
             }
             ModelLoadException failure = new ModelLoadException(ErrorCode.LOAD_FAILED,
                     "JInfer cannot execute " + artifactPath + " as chat, embedding or reranking model.",
@@ -342,8 +363,40 @@ public class JInferRuntimeProvider implements RuntimeProvider {
             }
         }
 
-        private RuntimeException typedLoadError(Path artifactPath, Throwable cause) {
-            if (cause instanceof CortexJException) {
+        private com.qxotic.jinfer.chat.ModelProvider.Retrieval retrievalKind(Path artifactPath) {
+            try {
+                java.util.Optional<com.qxotic.jinfer.chat.ModelProvider.Retrieval> retrieval =
+                        com.qxotic.jinfer.chat.Models.retrieval(artifactPath);
+                if (retrieval != null && retrieval.isPresent()) {
+                    return retrieval.get();
+                }
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
+
+        private boolean prefersReranking(RuntimeModelRequest request) {
+            try {
+                if (request != null && request.model() != null && request.model().tasks() != null) {
+                    Set<TaskCapability> tasks = request.model().tasks();
+                    return tasks.contains(TaskCapability.RERANKING)
+                            && !tasks.contains(TaskCapability.EMBEDDING);
+                }
+            } catch (Throwable ignored) {
+            }
+            return false;
+        }
+
+        private String shortCause(Throwable failure) {            Throwable root = failure;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            String message = root.getMessage();
+            String name = root.getClass().getSimpleName();
+            return message == null ? name : name + ": " + message;
+        }
+
+        private RuntimeException typedLoadError(Path artifactPath, Throwable cause) {            if (cause instanceof CortexJException) {
                 return (CortexJException) cause;
             }
             ModelLoadException failure = new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -457,24 +510,11 @@ public class JInferRuntimeProvider implements RuntimeProvider {
         @Override
         public GenerationResponse generate(GenerationRequest request) {
             requireKind(Kind.CHAT, TaskCapability.TEXT_GENERATION);
-            List<com.qxotic.jinfer.chat.Message> messages = toJInferMessages(request);
-            int maxTokens = request.maxTokens() != null
-                    ? request.maxTokens().intValue() : DEFAULT_MAX_TOKENS;
             try {
                 synchronized (engine) {
                     ensureOpen();
-                    com.qxotic.jinfer.llm.Sampling sampling = engine.loaded()
-                            .samplingDefaults()
-                            .resolve(toFloat(request.temperature()), toFloat(request.topP()),
-                                    request.topK(), null, request.seed());
-                    com.qxotic.jinfer.chat.ChatEngine.Request jinferRequest =
-                            com.qxotic.jinfer.chat.ChatEngine.Request
-                                    .builder(messages, sampling)
-                                    .maxOutputTokens(maxTokens)
-                                    .stops(new ArrayList<String>(request.stopSequences()))
-                                    .build();
                     com.qxotic.jinfer.chat.ChatEngine.Completion completion =
-                            engine.complete(jinferRequest);
+                            engine.complete(toJInferRequest(request));
                     String text = completion.reply().text();
                     Map<String, String> metadata = new LinkedHashMap<String, String>();
                     metadata.put("runtime", id.value());
@@ -495,12 +535,36 @@ public class JInferRuntimeProvider implements RuntimeProvider {
             }
         }
 
+        private com.qxotic.jinfer.chat.ChatEngine.Request toJInferRequest(GenerationRequest request) {
+            List<com.qxotic.jinfer.chat.Message> messages = toJInferMessages(request);
+            int maxTokens = request.maxTokens() != null
+                    ? request.maxTokens().intValue() : DEFAULT_MAX_TOKENS;
+            com.qxotic.jinfer.llm.Sampling sampling = engine.loaded()
+                    .samplingDefaults()
+                    .resolve(toFloat(request.temperature()), toFloat(request.topP()),
+                            request.topK(), null, request.seed());
+            return com.qxotic.jinfer.chat.ChatEngine.Request
+                    .builder(messages, sampling)
+                    .maxOutputTokens(maxTokens)
+                    .stops(new ArrayList<String>(request.stopSequences()))
+                    .build();
+        }
+
+        private com.qxotic.jinfer.chat.ChatEngine.Completion completeWithSink(
+                GenerationRequest request,
+                com.qxotic.jinfer.chat.ChatEngine.ReplySink sink) {
+            synchronized (engine) {
+                ensureOpen();
+                return engine.complete(toJInferRequest(request), sink);
+            }
+        }
+
         @Override
         public TokenStream stream(final GenerationRequest request) {
             requireKind(Kind.CHAT, TaskCapability.TEXT_GENERATION);
-            // Coarse single-chunk stream over the synchronous ChatEngine path:
-            // exactly one subscription, at most one terminal. Token-granular
-            // streaming over ReplySink is an explicit follow-up.
+            // Token-granular streaming over the ChatEngine ReplySink path:
+            // CONTENT-channel deltas become tokens; exactly one subscription,
+            // at most one terminal; cancel propagates into JInfer.
             return new TokenStream() {
                 private final AtomicBoolean subscribed = new AtomicBoolean();
                 private final AtomicBoolean terminalDelivered = new AtomicBoolean();
@@ -515,13 +579,37 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                         @Override
                         public void run() {
                             try {
-                                GenerationResponse response = generate(request);
+                                final AtomicInteger index = new AtomicInteger();
+                                com.qxotic.jinfer.chat.ChatEngine.ReplySink sink =
+                                        new com.qxotic.jinfer.chat.ChatEngine.ReplySink() {
+                                            @Override
+                                            public void on(com.qxotic.jinfer.chat.ChatEngine.Delta delta) {
+                                                if (cancelled.get()) {
+                                                    return;
+                                                }
+                                                if (delta != null && delta.text() != null
+                                                        && !delta.text().isEmpty()
+                                                        && com.qxotic.jinfer.chat.Channel.CONTENT
+                                                                .equals(delta.channel())) {
+                                                    consumer.onToken(new Token(delta.text(),
+                                                            index.getAndIncrement(), null));
+                                                }
+                                            }
+
+                                            @Override
+                                            public boolean cancelled() {
+                                                return cancelled.get();
+                                            }
+                                        };
+                                com.qxotic.jinfer.chat.ChatEngine.Completion completion =
+                                        completeWithSink(request, sink);
                                 if (cancelled.get()) {
                                     deliverError(consumer, cancelledError());
                                 } else {
-                                    consumer.onToken(new Token(response.text(), 0, null));
                                     deliverComplete(consumer, new StreamCompletion(
-                                            response.finishReason(), response.usage()));
+                                            toFinishReason(completion.result().finishReason()),
+                                            new TokenUsage(completion.promptTokens(),
+                                                    completion.result().completionTokens())));
                                 }
                             } catch (Throwable e) {
                                 deliverError(consumer, toInferenceError(e));

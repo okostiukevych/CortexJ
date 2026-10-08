@@ -146,7 +146,23 @@ Apache-2.0 — verified on Maven Central 2026-10-08). All of the following hold:
 |---|---|---|
 | 0.1.x | 0.3.1 (`com.qxotic:jinfer-chat`, Apache-2.0) | available (Java 25+, GGUF chat/embedding/reranking) |
 
-Follow-ups (explicit, not blockers): token-granular streaming over `ReplySink`
-(today: coarse single-chunk stream), live-model integration test with a small
-GGUF (embedding `newState` capacity + reranker instruction mapping are
-unverified against a real checkpoint).
+Live verification (2026-10-08, JDK 25, CPU-only, scratch harness outside
+the repo; model files deleted after the run):
+- chat `LiquidAI/LFM2.5-350M-GGUF:Q8_0` → TEXT_GENERATION, `generate`
+  returns text + STOP + token usage; `execute()` consistent;
+- `Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` → EMBEDDING, 1024-dim unit
+  vectors; `newState(2048)` confirmed sufficient for short-text batches;
+- `mradermacher/Qwen3-Reranker-0.6B-GGUF:Q8_0` → RERANKING, correct
+  ordering (0.9988 vs 0.00007); `defaultInstruction()` confirmed as the
+  instruction mapping;
+- dispatch subtlety found and fixed: the embedding and reranking loaders
+  of one family accept each other's files, so order alone misclassifies —
+  `Models.retrieval()` now decides, declared model task breaks ties;
+- token-granular streaming over `ReplySink` (CONTENT channel): 38 tokens,
+  exactly one terminal, second subscription rejected, immediate cancel
+  delivers exactly one terminal;
+- wrong-kind capability use and missing files both fail typed
+  (`INFERENCE_UNSUPPORTED_TASK` / `LOAD_FAILED`).
+
+Follow-ups (explicit, not blockers): none open — the two items from the
+previous revision are closed by the run above.
