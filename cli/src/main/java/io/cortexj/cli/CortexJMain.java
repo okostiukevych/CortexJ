@@ -84,7 +84,9 @@ public final class CortexJMain {
     }
 
     private static void usage() {
-        System.out.println("cortexj - AI runtime orchestration for the JVM");
+        // spec v3.0 §123.1: Runtime-level messaging
+        System.out.println("cortexj - portable AI execution for the JVM");
+        System.out.println("One JVM API. Compatible models. The best available runtime.");
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  cortexj doctor                       show environment, runtimes and recommendations");
