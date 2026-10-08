@@ -19,7 +19,10 @@ import java.util.List;
  * <p>Engines on the plugin classpath are verification fixtures (optional
  * dependencies, audit 2026-10-07 #148): the checks probe health and
  * plannability over whichever providers ServiceLoader discovers and never
- * load a model, so the engine set can be swapped without forking.</p>
+ * load a model, so the engine set can be swapped without forking. Note the
+ * posture is fail-closed, not plan-only degrade (audit 2026-10-08): with a
+ * model reference set and no viable path discovered, verification fails the
+ * build - omit both model and requiredRuntime for a pure presence check.</p>
  */
 @Mojo(name = "verify", defaultPhase = LifecyclePhase.VALIDATE)
 public class CortexJVerifyMojo extends AbstractMojo {

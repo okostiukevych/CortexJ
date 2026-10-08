@@ -2,7 +2,6 @@ package io.cortexj.tck;
 
 import io.cortexj.model.ArtifactFormat;
 import io.cortexj.model.ModelArtifact;
-import io.cortexj.model.ModelArtifact;
 import io.cortexj.spi.conversion.ConversionRequest;
 import io.cortexj.spi.conversion.ConversionResult;
 import io.cortexj.spi.conversion.ConversionSupport;

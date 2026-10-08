@@ -266,8 +266,37 @@ class OtelEventListenerTest {
         }
     }
 
-    private static MetricData metric(InMemoryMetricReader reader, String name) {
-        for (MetricData data : reader.collectAllMetrics()) {
+    @Test
+    void malformedMetricValueDoesNotDropTheEvent() {
+        // audit 2026-10-08 (N2): one bad value used to return before the
+        // counters and span handling below
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        SdkMeterProvider provider = SdkMeterProvider.builder()
+                .registerMetricReader(reader)
+                .build();
+        InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracers = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        OtelEventListener listener = new OtelEventListener(OpenTelemetrySdk.builder()
+                .setMeterProvider(provider).setTracerProvider(tracers).build());
+
+        Map<String, String> attributes = new LinkedHashMap<String, String>();
+        attributes.put("model", "m");
+        attributes.put("artifact", "a.gguf");
+        attributes.put("durationMillis", "12");
+        attributes.put("firstTokenMillis", "null");
+        listener.onEvent(new PlatformEvent(PlatformEvent.Type.INFERENCE_COMPLETED,
+                PlatformEvent.Level.INFO, "done", attributes, 0L));
+
+        MetricData inference = metric(reader, "cortexj.inference.completed");
+        assertTrue(inference != null && sum(inference) == 1L,
+                "INFERENCE_COMPLETED must be counted despite the bad first-token value");
+        MetricData duration = metric(reader, "cortexj.operation.duration");
+        assertTrue(duration != null, "the valid duration histogram must still record");
+    }
+
+    private static MetricData metric(InMemoryMetricReader reader, String name) {        for (MetricData data : reader.collectAllMetrics()) {
             if (name.equals(data.getName())) {
                 return data;
             }

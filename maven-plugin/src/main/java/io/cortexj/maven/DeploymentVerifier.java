@@ -39,7 +39,9 @@ public final class DeploymentVerifier {
         }
         int target;
         try {
-            target = Integer.parseInt(compilerTarget.trim());
+            // audit 2026-10-08: legacy "1.8" style targets must map to line 8,
+            // not fail the build with a parse error
+            target = normalizeBytecodeTarget(compilerTarget);
         } catch (NumberFormatException invalid) {
             issues.add("cannot determine maven.compiler.release/target: '"
                     + compilerTarget + "'");
@@ -250,5 +252,20 @@ public final class DeploymentVerifier {
         } catch (NumberFormatException invalid) {
             return -1;
         }
+    }
+
+    static int normalizeBytecodeTarget(String compilerTarget) {
+        if (compilerTarget == null) {
+            throw new NumberFormatException("null");
+        }
+        String raw = compilerTarget.trim();
+        if (raw.startsWith("1.")) {
+            raw = raw.substring(2);
+        }
+        int dot = raw.indexOf('.');
+        if (dot >= 0) {
+            raw = raw.substring(0, dot);
+        }
+        return Integer.parseInt(raw.trim());
     }
 }
