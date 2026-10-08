@@ -1,0 +1,8 @@
+# actionlint configuration (audit 2026-10-08): the GPU lanes run on
+# self-hosted runners with custom labels - declare them so the lint is
+# clean and the topology is documented in one place.
+self-hosted-runner:
+  labels:
+    - self-hosted
+    - cuda
+    - metal

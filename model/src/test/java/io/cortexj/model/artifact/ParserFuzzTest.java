@@ -61,10 +61,103 @@ class ParserFuzzTest {
                 + typed + " typed failures, " + accepted + " accepted");
     }
 
+    @Test
+    @Timeout(120)
+    void validDocumentsSurviveTargetedMutations() throws Exception {
+        // audit 2026-10-08: structure-aware round - a valid document with one
+        // mutated field must still end typed (or valid), exercising deeper
+        // parser states than pure noise
+        byte[] validGguf = validGguf();
+        byte[] validSt = validSafetensors();
+        Random random = new Random(0xF005EL);
+        int typed = 0;
+        int accepted = 0;
+        for (int i = 0; i < 200; i++) {
+            byte[] mutated = validGguf.clone();
+            // flip 1-4 bytes at random offsets (lengths, counts, types)
+            int flips = 1 + random.nextInt(4);
+            for (int f = 0; f < flips; f++) {
+                mutated[random.nextInt(mutated.length)] = (byte) random.nextInt(256);
+            }
+            try {
+                new GgufArtifactInspector().inspect(writeTemp("v2-" + i + ".gguf", mutated));
+                accepted++;
+            } catch (IllegalArgumentException | IOException expected) {
+                typed++;
+            }
+            byte[] mutatedSt = validSt.clone();
+            int flipsSt = 1 + random.nextInt(4);
+            for (int f = 0; f < flipsSt; f++) {
+                mutatedSt[random.nextInt(mutatedSt.length)] = (byte) random.nextInt(256);
+            }
+            try {
+                new SafetensorsInspector().inspect(writeTemp("v2-" + i + ".safetensors", mutatedSt));
+                accepted++;
+            } catch (IllegalArgumentException | IOException expected) {
+                typed++;
+            }
+        }
+        // declared-huge header with a short body must fail fast on
+        // truncation, not hang or allocate without bound
+        ByteBuffer huge = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+        huge.putLong(64L * 1024 * 1024);
+        try {
+            new SafetensorsInspector().inspect(writeTemp("huge.st", huge.array()));
+            accepted++;
+        } catch (IllegalArgumentException | IOException expected) {
+            typed++;
+        }
+        assertTrue(typed > 0, "mutations must mostly fail typed");
+        System.out.println("parser fuzz v2: 401 structured inputs, "
+                + typed + " typed failures, " + accepted + " accepted");
+    }
+
     private Path writeTemp(String name, byte[] bytes) throws IOException {
         Path file = tempDir.resolve(name);
         Files.write(file, bytes);
         return file;
+    }
+
+    private static byte[] validGguf() {
+        // magic + v3 + 1 tensor + 1 KV + minimal tensor directory
+        ByteBuffer name = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN);
+        name.putInt(0x46554747);
+        name.putInt(3);
+        name.putLong(1L);
+        name.putLong(1L);
+        byte[] key = "general.architecture".getBytes(StandardCharsets.UTF_8);
+        name.putLong(key.length);
+        name.put(key);
+        name.putInt(8); // STRING type
+        byte[] value = "llama".getBytes(StandardCharsets.UTF_8);
+        name.putLong(value.length);
+        name.put(value);
+        byte[] tensor = "w.weight".getBytes(StandardCharsets.UTF_8);
+        name.putLong(tensor.length);
+        name.put(tensor);
+        name.putInt(1); // 1 dimension
+        name.putLong(4L); // 4 elements
+        name.putInt(0); // F32
+        name.putLong(0L); // offset
+        byte[] header = new byte[name.position()];
+        System.arraycopy(name.array(), 0, header, 0, header.length);
+        long padding = (64L - (header.length % 64L)) % 64L;
+        byte[] out = new byte[(int) (header.length + padding + 16)];
+        System.arraycopy(header, 0, out, 0, header.length);
+        ByteBuffer data = ByteBuffer.wrap(out, (int) (header.length + padding), 16)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        data.putFloat(1.0f).putFloat(2.0f).putFloat(3.0f).putFloat(4.0f);
+        return out;
+    }
+
+    private static byte[] validSafetensors() {
+        String header = "{\"__metadata__\":{},\"w\":{\"dtype\":\"F32\",\"shape\":[4],\"data_offsets\":[0,16]}}";
+        byte[] headerBytes = header.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer out = ByteBuffer.allocate(8 + headerBytes.length + 16).order(ByteOrder.LITTLE_ENDIAN);
+        out.putLong(headerBytes.length);
+        out.put(headerBytes);
+        out.put(new byte[16]);
+        return out.array();
     }
 
     private static byte[] mutatedGguf(Random random) {
