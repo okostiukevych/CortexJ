@@ -126,3 +126,21 @@ behavior with the provider staying usable, and streaming contracts (single
 subscription, cancel semantics, at-most-once terminal). Contracts that need a
 loadable artifact skip loudly via assumeTrue when none is available. See
 `cortexj-tck` sources for the exact contract.
+
+## 9. Optional JInfer provider conditions (spec v3.0 §0/§19, issue #160)
+
+`cortexj-runtime-jinfer` does not exist yet (JInfer is absent from Maven
+Central) — no code is possible. When it becomes possible, all of the
+following must hold before the adapter ships:
+
+- baseline follows the actual JInfer release (current target: Java 25+);
+  starters for Java 8/11/17/21 must NOT include it;
+- public API + license compatibility verified and recorded here;
+- JInfer types encapsulated inside the adapter (planner sees only
+  descriptors, presence + compatibility gated);
+- full Runtime Provider TCK green;
+- version matrix published (CortexJ x JInfer), kept current:
+
+| CortexJ | JInfer | Status |
+|---|---|---|
+| 0.1.x | n/a (absent from Central) | blocked |
