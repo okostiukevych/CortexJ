@@ -50,6 +50,9 @@
     <module>model</module>
     <module>model-metadata</module>
     <module>provenance</module>
+    <module>data/data-api</module>
+    <module>data/data-csv</module>
+    <module>data/data-parquet</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>

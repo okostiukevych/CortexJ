@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-data-parquet</artifactId>
+  <name>CortexJ Data Parquet</name>
+  <description>Parquet file adapter over the Data API (ADR-019). The Parquet library never leaks into data-api signatures.</description>
+  <properties>
+    <cortexj.shared.release>17</cortexj.shared.release>
+    <parquet.version>1.18.1</parquet.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-data-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-hadoop</artifactId>
+      <version>${parquet.version}</version>
+    </dependency>
+    <!-- parquet-hadoop declares Hadoop provided: local-filesystem reads
+         need it on the classpath, isolated in this adapter (ADR-019).
+         3.4.3 (not parquet's 3.3.0 default): 3.3.0/3.4.1 call the removed
+         Subject.getSubject API and die on JDK 24+; fixed upstream since -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client</artifactId>
+      <version>3.4.3</version>
+    </dependency>
+  </dependencies>
+</project>
