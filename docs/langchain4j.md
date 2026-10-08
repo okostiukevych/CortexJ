@@ -1,6 +1,6 @@
 # LangChain4j Integration
 
-The `cortexj-langchain4j` adapter exposes a loaded CortexJ model as LangChain4j 1.0.x
+The `cortexj-langchain4j` adapter exposes a loaded CortexJ model as LangChain4j 1.21.x
 `ChatModel`, `StreamingChatModel`, and `EmbeddingModel`. Requires Java 17+.
 
 ## Dependency

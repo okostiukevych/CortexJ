@@ -1,8 +1,11 @@
 # API Stability (spec 73/74)
 
 CortexJ follows semantic versioning. The contract surface is split into four tiers,
-with the boundary between them enforced by JPMS module boundaries (spec 95) and the
-`jpms` build profile.
+with the boundary between them declared by JPMS module descriptors (spec 95) and the
+`jpms` build profile. Note the honest scope (audit 2026-10-08): the `jpms` profile
+compiles the descriptors into multi-release jars but the main build and all tests
+run on the classpath, so cross-module `internal` use is conventional, not
+machine-enforced - treat the tier table as the contract, not the module system.
 
 ## Stability tiers
 

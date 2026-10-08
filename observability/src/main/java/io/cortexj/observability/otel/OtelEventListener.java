@@ -83,18 +83,11 @@ public final class OtelEventListener implements PlatformEventListener {
     public void onEvent(PlatformEvent event) {
         Attributes attributes = attributes(event);
         eventCounter.add(1, attributes);
-        String durationMillis = event.attributes().get("durationMillis");
-        String firstTokenMillis = event.attributes().get("firstTokenMillis");
-        try {
-            if (durationMillis != null) {
-                inferenceHistogram.record(Double.parseDouble(durationMillis), attributes);
-            }
-            if (firstTokenMillis != null) {
-                firstTokenHistogram.record(Double.parseDouble(firstTokenMillis), attributes);
-            }
-        } catch (NumberFormatException ignored) {
-            return;
-        }
+        // audit 2026-10-08: each metric parses independently - one malformed
+        // value must not drop the event counter, the sibling histogram, the
+        // type-switched counters below, or the span lifecycle
+        recordLong(event.attributes().get("durationMillis"), inferenceHistogram, attributes);
+        recordLong(event.attributes().get("firstTokenMillis"), firstTokenHistogram, attributes);
         switch (event.type()) {
             case MODEL_RESOLUTION_STARTED:
                 startSpan(event, "cortexj.model.resolution");
@@ -143,6 +136,19 @@ public final class OtelEventListener implements PlatformEventListener {
         stack.push(tracer.spanBuilder(name)
                 .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
                 .startSpan());
+    }
+
+    private static void recordLong(String raw,
+                                   io.opentelemetry.api.metrics.DoubleHistogram histogram,
+                                   Attributes attributes) {
+        if (raw == null) {
+            return;
+        }
+        try {
+            histogram.record(Double.parseDouble(raw), attributes);
+        } catch (NumberFormatException ignored) {
+            // malformed values never fail the event pipeline
+        }
     }
 
     private void recordBytes(PlatformEvent event) {

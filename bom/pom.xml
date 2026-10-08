@@ -48,6 +48,10 @@
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-cli</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-repository-local</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-repository-huggingface</artifactId><version>${project.version}</version></dependency>
+      <!-- audit 2026-10-08: the two shipped integrations were the only
+           artifacts missing from management -->
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-spring-ai</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-langchain4j</artifactId><version>${project.version}</version></dependency>
       <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-starter-java8</artifactId>
