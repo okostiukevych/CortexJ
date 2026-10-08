@@ -36,6 +36,13 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Optional embedded server mode (spec 60): exposes an OpenAI-compatible local
  * endpoint on top of a selected runtime.
+ *
+ * <p>Capacity model (audit 2026-10-08, #153), stated explicitly: one server
+ * instance serves one loaded model; unary generations wait on a bounded pool
+ * with {@code cortexj.server.generateTimeoutMillis} (504 on timeout), streams
+ * on a separate bounded pool (503 on saturation). SESSION_SCOPED runtimes
+ * additionally serialize per handle - throughput of one stateful model is 1
+ * by native-session design, not by server choice.</p>
  */
 public final class CortexJServer {
 
@@ -95,8 +102,13 @@ public final class CortexJServer {
     // threads - 16 concurrent streams must not exhaust unary capacity and
     // 503 the whole server while the GPU idles
     private ThreadPoolExecutor streamExecutor;
+    // audit 2026-10-08 (#153): blocking unary generations wait here with a
+    // ceiling - a stuck multi-minute generate must time out to the client
+    // instead of pinning a request thread forever
+    private ThreadPoolExecutor generateExecutor;
     private Semaphore admission;
     private Semaphore streamAdmission;
+    private final long generateTimeoutMillis;
 
     public CortexJServer(CortexJ platform, String modelReference) {
         this(platform, modelReference, 0L);
@@ -121,6 +133,8 @@ public final class CortexJServer {
         this.platform = platform;
         this.model = platform.models().load(ModelReference.of(modelReference));
         this.streamAwaitMillis = resolveStreamAwaitMillis(streamAwaitMillis);
+        this.generateTimeoutMillis = positiveLongProperty(
+                "cortexj.server.generateTimeoutMillis", DEFAULT_STREAM_AWAIT_MILLIS);
         this.maxBodyBytes = positiveLongProperty("cortexj.server.maxBodyBytes", DEFAULT_MAX_BODY_BYTES);
         this.authToken = authToken == null || authToken.trim().isEmpty() ? null : authToken.trim();
     }
@@ -200,6 +214,15 @@ public final class CortexJServer {
                 io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server-stream"),
                 new ThreadPoolExecutor.AbortPolicy());
         streamAdmission = new Semaphore(streamWorkers);
+        // audit 2026-10-08 (#153): unary generations are synchronous upstream
+        // calls - they wait on their own bounded pool so one stuck model
+        // cannot pin every request thread; timeouts surface as 504
+        generateExecutor = new ThreadPoolExecutor(
+                streamWorkers, streamWorkers,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(Math.max(MIN_QUEUED_REQUESTS, streamWorkers)),
+                io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server-generate"),
+                new ThreadPoolExecutor.AbortPolicy());
         httpServer.createContext("/v1/models", exchange ->
                 dispatch(exchange, (ctx, headersSent) -> {
                     if (!authorized(ctx, headersSent)) {
@@ -240,6 +263,10 @@ public final class CortexJServer {
         if (streamExecutor != null) {
             streamExecutor.shutdownNow();
             streamExecutor = null;
+        }
+        if (generateExecutor != null) {
+            generateExecutor.shutdownNow();
+            generateExecutor = null;
         }
     }
 
@@ -560,7 +587,26 @@ public final class CortexJServer {
             }
             return;
         }
-        GenerationResponse response = generator.generate(request.build());
+        GenerationRequest generation = request.build();
+        GenerationResponse response;
+        try {
+            response = generateWithTimeout(generator, generation);
+        } catch (java.util.concurrent.TimeoutException timedOut) {
+            respondError(exchange, headersSent, 504, "CORTEXJ-SERVER-5040",
+                    "generation timed out after " + generateTimeoutMillis + " ms");
+            return;
+        } catch (java.util.concurrent.ExecutionException failed) {
+            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+            if (cause instanceof CortexJException
+                    && "CORTEXJ-SERVER-5030".equals(((CortexJException) cause).code())) {
+                respondServiceUnavailable(exchange);
+                return;
+            }
+            if (cause instanceof CortexJException) {
+                throw (CortexJException) cause;
+            }
+            throw new CortexJException("CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE);
+        }
         ObjectNode payload = mapper.createObjectNode();
         payload.put("id", "chatcmpl-" + UUID.randomUUID().toString().substring(0, 8));
         payload.put("object", "chat.completion");
@@ -578,6 +624,41 @@ public final class CortexJServer {
                 response.usage().isKnown() ? response.usage().outputTokens() : 0);
         usage.put("total_tokens", response.usage().totalTokens());
         respondJson(exchange, headersSent, 200, payload);
+    }
+
+    private GenerationResponse generateWithTimeout(
+            final TextGenerationCapability generator, final GenerationRequest generation)
+            throws java.util.concurrent.TimeoutException,
+            java.util.concurrent.ExecutionException {
+        // audit 2026-10-08 (#153): the blocking upstream call waits on the
+        // bounded generate pool with a ceiling - on timeout the worker is
+        // interrupted (native calls may ignore it and finish late; the pool
+        // stays bounded either way) and the client gets 504, not silence
+        java.util.concurrent.Future<GenerationResponse> future;
+        try {
+            future = generateExecutor.submit(new java.util.concurrent.Callable<GenerationResponse>() {
+                @Override
+                public GenerationResponse call() {
+                    return generator.generate(generation);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+            throw new java.util.concurrent.ExecutionException(new CortexJException(
+                    "CORTEXJ-SERVER-5030", "server busy: too many in-flight generations"));
+        }
+        try {
+            return future.get(generateTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            throw new java.util.concurrent.ExecutionException(new CortexJException(
+                    "CORTEXJ-SERVER-5000", GENERIC_ERROR_MESSAGE));
+        } catch (java.util.concurrent.TimeoutException timedOut) {
+            future.cancel(true);
+            LOG.log(java.util.logging.Level.WARNING,
+                    "unary generation timed out after " + generateTimeoutMillis + "ms; worker interrupted");
+            throw timedOut;
+        }
     }
 
     private void respondStream(com.sun.net.httpserver.HttpExchange exchange,

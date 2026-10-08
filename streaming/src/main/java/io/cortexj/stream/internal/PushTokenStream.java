@@ -211,62 +211,73 @@ public final class PushTokenStream implements TokenStream {
     }
 
     private void drain() {
+        // audit 2026-10-08 (#153): iterative re-acquire instead of end
+        // recursion - under a continuous feed the old tail call nested one
+        // frame per re-check and risked StackOverflow on long streams
         if (!delivering.compareAndSet(false, true)) {
             // another thread owns dispatch; it will observe our buffered work
             return;
         }
         try {
-            TokenConsumer target = consumer.get();
-            if (target == null) {
+            dispatchLoop();
+        } finally {
+            delivering.set(false);
+        }
+        while (hasWork()) {
+            if (!delivering.compareAndSet(false, true)) {
                 return;
             }
-            while (true) {
-                Token token = null;
-                StreamCompletion completion = null;
-                CortexJException error = null;
-                synchronized (lock) {
-                    if (!pending.isEmpty()) {
-                        token = pending.poll();
-                    } else if (bufferedError != null) {
-                        error = bufferedError;
-                        bufferedError = null;
-                    } else if (bufferedCompletion != null) {
-                        completion = bufferedCompletion;
-                        bufferedCompletion = null;
-                    } else {
-                        return;
-                    }
-                }
-                // user code invoked OUTSIDE the monitor (GitHub #57).
-                // audit 2026-10-08: a throwing consumer must not stall the
-                // stream - fail it with a typed error instead of abandoning
-                // the remaining tokens and the terminal signal
-                try {
-                    if (token != null) {
-                        target.onToken(token);
-                    } else if (error != null) {
-                        target.onError(error);
-                    } else {
-                        target.onComplete(completion);
-                    }
-                } catch (Throwable consumerFailure) {
-                    CortexJException typed = consumerError(consumerFailure);
-                    fail(typed);
-                    try {
-                        target.onError(typed);
-                    } catch (Throwable ignored) {
-                        // the consumer is gone; the stream is failed, stop here
-                    }
+            try {
+                dispatchLoop();
+            } finally {
+                delivering.set(false);
+            }
+        }
+    }
+
+    private void dispatchLoop() {
+        TokenConsumer target = consumer.get();
+        if (target == null) {
+            return;
+        }
+        while (true) {
+            Token token = null;
+            StreamCompletion completion = null;
+            CortexJException error = null;
+            synchronized (lock) {
+                if (!pending.isEmpty()) {
+                    token = pending.poll();
+                } else if (bufferedError != null) {
+                    error = bufferedError;
+                    bufferedError = null;
+                } else if (bufferedCompletion != null) {
+                    completion = bufferedCompletion;
+                    bufferedCompletion = null;
+                } else {
                     return;
                 }
             }
-        } finally {
-            delivering.set(false);
-            // missed-work re-check: work may have arrived between the last
-            // empty check and the release; whoever added it may have returned
-            // early because we held the drain guard
-            if (hasWork()) {
-                drain();
+            // user code invoked OUTSIDE the monitor (GitHub #57).
+            // audit 2026-10-08: a throwing consumer must not stall the
+            // stream - fail it with a typed error instead of abandoning
+            // the remaining tokens and the terminal signal
+            try {
+                if (token != null) {
+                    target.onToken(token);
+                } else if (error != null) {
+                    target.onError(error);
+                } else {
+                    target.onComplete(completion);
+                }
+            } catch (Throwable consumerFailure) {
+                CortexJException typed = consumerError(consumerFailure);
+                fail(typed);
+                try {
+                    target.onError(typed);
+                } catch (Throwable ignored) {
+                    // the consumer is gone; the stream is failed, stop here
+                }
+                return;
             }
         }
     }

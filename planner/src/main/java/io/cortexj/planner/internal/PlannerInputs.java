@@ -39,6 +39,8 @@ public final class PlannerInputs {
     public final String platformVersion;
     public final long defaultMemoryLimitBytes;
     public final io.cortexj.planner.benchmark.BenchmarkHints benchmarkHints;
+    // audit 2026-10-08 (#153): trust visibility in plan/inspect warnings
+    public final io.cortexj.model.TrustPolicy trustPolicy;
 
     private final Map<String, String> runtimeConfiguration;
 
@@ -102,6 +104,30 @@ public final class PlannerInputs {
                         long defaultMemoryLimitBytes,
                         Map<String, String> runtimeConfiguration,
                         io.cortexj.planner.benchmark.BenchmarkHints benchmarkHints) {
+        this(runtimeProviders, repositoryProviders, converters, policies, inspector, environment,
+                hardware, cacheLookup, tokenSupplier, executor, eventListener, offline, remoteAllowed,
+                platformVersion, defaultMemoryLimitBytes, runtimeConfiguration, benchmarkHints,
+                io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING);
+    }
+
+    public PlannerInputs(List<RuntimeProvider> runtimeProviders,
+                        List<ModelRepositoryProvider> repositoryProviders,
+                        List<ModelConverter> converters,
+                        List<ExecutionPolicy> policies,
+                        io.cortexj.model.artifact.ArtifactInspectorRegistry inspector,
+                        EnvironmentProfile environment,
+                        HardwareProfile hardware,
+                        PlanningContext.CacheLookup cacheLookup,
+                        io.cortexj.spi.repository.TokenSupplier tokenSupplier,
+                        java.util.concurrent.ExecutorService executor,
+                        PlatformEventListener eventListener,
+                        boolean offline,
+                        boolean remoteAllowed,
+                        String platformVersion,
+                        long defaultMemoryLimitBytes,
+                        Map<String, String> runtimeConfiguration,
+                        io.cortexj.planner.benchmark.BenchmarkHints benchmarkHints,
+                        io.cortexj.model.TrustPolicy trustPolicy) {
         this.runtimeProviders = immutable(runtimeProviders);
         this.repositoryProviders = immutable(repositoryProviders);
         this.converters = immutable(converters);
@@ -124,6 +150,9 @@ public final class PlannerInputs {
         this.benchmarkHints = benchmarkHints == null
                 ? io.cortexj.planner.benchmark.BenchmarkHints.empty()
                 : benchmarkHints;
+        this.trustPolicy = trustPolicy == null
+                ? io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING
+                : trustPolicy;
     }
 
     public PlanningContext toPlanningContext(io.cortexj.planner.ExecutionRequest request) {

@@ -357,6 +357,31 @@ public final class DefaultModelHandle implements ModelHandle {
         }
     }
 
+    @Override
+    public boolean waitForReady(long timeoutMillis) throws InterruptedException {
+        // audit 2026-10-08 (#153): monitor-based instead of the interface
+        // polling default - wakes on notifyAll instead of 50 ms slices
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+        for (;;) {
+            ModelLifecycleState current = state.get();
+            if (current == ModelLifecycleState.READY || current == ModelLifecycleState.DEGRADED) {
+                return true;
+            }
+            if (current.isTerminal()) {
+                throw new IllegalStateException("Model handle is already " + current);
+            }
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0L) {
+                return false;
+            }
+            synchronized (lifecycleMonitor) {
+                if (state.get() == current) {
+                    lifecycleMonitor.wait(Math.min(50L, remaining));
+                }
+            }
+        }
+    }
+
     public InferenceResponse execute(InferenceRequest request) {
         requireActive("execute");
         if (!serializeAccess) {

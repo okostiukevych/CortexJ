@@ -65,6 +65,12 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
     // open/probe/descriptor share one spawn and wait interruptibly instead of
     // serializing on the monitor for the whole 60 s handshake
     private volatile java.util.concurrent.CompletableFuture<WorkerChannel> channelFuture;
+    // audit 2026-10-08 (#153): crash-loop throttle - timestamps of recent
+    // spawns under channelLock; a worker dying 3+ times in 60 s fails fast
+    // instead of forking a JVM per probe/open
+    private final java.util.ArrayDeque<Long> recentSpawns = new java.util.ArrayDeque<Long>();
+    private static final int CRASH_LOOP_SPAWNS = 3;
+    private static final long CRASH_LOOP_WINDOW_MILLIS = 60_000L;
     private volatile RuntimeDescriptor cachedDescriptor;
 
     public IsolatedRuntimeProvider(String targetRuntimeId) {
@@ -134,6 +140,18 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
                             + failure.getMessage(),
                     failure);
         } catch (Throwable unexpected) {
+            // audit 2026-10-08: Errors (OOM and friends) must not masquerade
+            // as "runtime unavailable" - rethrow so the catastrophe stays
+            // visible instead of degrading into mysterious plan misses
+            if (unexpected instanceof Error) {
+                throw (Error) unexpected;
+            }
+            if (unexpected instanceof CortexJException) {
+                return RuntimeProbeResult.unavailable(
+                        "isolated worker probe failed for runtime '" + targetRuntimeId + "': "
+                                + unexpected.getMessage(),
+                        (CortexJException) unexpected);
+            }
             RuntimeUnavailableException wrapped = new RuntimeUnavailableException(
                     ErrorCode.RUNTIME_UNAVAILABLE,
                     "isolated worker probe failed unexpectedly: " + unexpected,
@@ -324,6 +342,29 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
             }
         }
         try {
+            synchronized (channelLock) {
+                long now = System.currentTimeMillis();
+                while (!recentSpawns.isEmpty()
+                        && now - recentSpawns.peekFirst().longValue() > CRASH_LOOP_WINDOW_MILLIS) {
+                    recentSpawns.pollFirst();
+                }
+                if (recentSpawns.size() >= CRASH_LOOP_SPAWNS) {
+                    RuntimeUnavailableException throttled = new RuntimeUnavailableException(
+                            ErrorCode.RUNTIME_UNAVAILABLE,
+                            "isolated worker for runtime '" + targetRuntimeId + "' crashed "
+                                    + recentSpawns.size() + " times within "
+                                    + (CRASH_LOOP_WINDOW_MILLIS / 1000L)
+                                    + " s; respawn throttled to break the crash loop",
+                            "Inspect the worker stderr output (drained into the parent log) and "
+                                    + "fix the hosted runtime; respawns resume automatically after the window.");
+                    if (channelFuture == claimed) {
+                        channelFuture = null;
+                    }
+                    claimed.completeExceptionally(throttled);
+                    throw throttled;
+                }
+                recentSpawns.addLast(Long.valueOf(now));
+            }
             WorkerChannel fresh = WorkerChannel.start(targetRuntimeId);
             synchronized (channelLock) {
                 // audit 2026-10-08: close() during spawn must not resurrect
