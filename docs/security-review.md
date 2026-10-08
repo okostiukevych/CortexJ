@@ -38,7 +38,6 @@ threat model of spec §64-§65 and the acceptance criteria of §113.
    probe contexts; propagated through `PlannerInputs`.
 
 ## Residual risks (accepted, documented)
-
 - Plain HTTP model references (`cortexj-repository-http`) serve content without TLS —
   documented in the provider guide and flagged with `trustNote` on every descriptor.
 - **Model references are trusted configuration input (audit 2026-10-05, issue #111):**
@@ -63,6 +62,22 @@ threat model of spec §64-§65 and the acceptance criteria of §113.
   managed llama-server process bridge (process isolation is the safer default).
 - GPU execution paths (CUDA/Metal) are declared by runtimes but not exercised in CI
   (no GPU runners; lanes are prepared for self-hosted runners per §70).
+
+## Trust boundary split: Runtime vs Research (spec v3.0 §125.10/§149, issue #161)
+
+- **Runtime (this platform, production):** model/repository loading executes
+  no arbitrary code by default (§35.1); artifacts are checksummed
+  (`TRUSTED_ONLY` / `ALLOW_UNSIGNED_WITH_WARNING` + checksum requirement);
+  native binaries are probed before use; network and trust policies are
+  enforced at resolve/plan/load time.
+- **Research (future tracks, NOT this codebase):** may execute user code
+  (notebooks, custom kernels, training loops) under a *different* trust
+  profile with process/container isolation.
+- **Non-relaxation rule:** Research ergonomics MUST NOT weaken any Runtime
+  control above. Any proposal that does requires an ADR and is rejected by
+  default. In particular: no `ALLOW_UNSIGNED` defaults, no unsigned
+  native auto-fetch, no user-code execution in the repository/download/
+  conversion path.
 
 ## Sign-off
 

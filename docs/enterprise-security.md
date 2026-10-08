@@ -19,7 +19,15 @@ CortexJ platform = CortexJ.builder()
   [writing planner policies](writing-planner-policy.md)).
 
 Repositories set `trustNote` on descriptors they cannot vouch for (the HTTP repository
-always does; Hugging Face marks community models).
+always does; Hugging Face marks community models). Since audit 2026-10-07
+(#143) a missing note additionally requires an artifact checksum under
+`TRUSTED_ONLY` — unchecked local files no longer bypass the policy.
+
+> Spec v3.0 §125.10/§149 (issue #161): the strict posture above is the
+> **Runtime production boundary** and is never relaxed for Research
+> ergonomics. Future research tracks execute user code under a separate
+> trust profile with process/container isolation; any proposal weakening
+> a Runtime control requires an ADR and is rejected by default.
 
 ## Artifact limits and path safety (§35.3, §113)
 
