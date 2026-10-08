@@ -266,6 +266,18 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                     "Invalid Hugging Face apiBase or model slug: " + apiBase + "/" + slug,
                     "Check the apiBase configuration and the model id (expected 'owner/name').", e);
         }
+        // audit 2026-10-08: the API base is operator configuration, but a
+        // typo (or a poisoned config) pointing at an internal host must not
+        // receive the bearer token - validate before the first hop
+        try {
+            io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(location.toString());
+        } catch (IllegalArgumentException blocked) {
+            throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "Hugging Face apiBase blocked by the SSRF guard: " + blocked.getMessage(),
+                    "Point apiBase at the public API or set "
+                            + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY
+                            + "=true for mirrors.");
+        }
         Map<String, String> headers = new LinkedHashMap<String, String>();
         headers.put("Accept", "application/json");
         if (token != null && !token.isEmpty()) {
@@ -289,17 +301,35 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                 if (status >= 300 && status < 400) {
                     String target = connection.getHeaderField("Location");
                     if (target == null) {
-                        throw new IOException("Redirect without Location header from " + current);
+                        throw new IOException("Redirect without Location header from "
+                                + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                current.toString()));
                     }
                     URI next = current.resolve(target);
                     String nextScheme = next.getScheme() == null ? "" : next.getScheme();
                     if (!nextScheme.equalsIgnoreCase("http") && !nextScheme.equalsIgnoreCase("https")) {
                         ModelResolutionException rejected = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
-                                "Redirect target uses a non-http(s) scheme: " + next,
+                                "Redirect target uses a non-http(s) scheme: "
+                                        + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
+                                        next.toString()),
                                 "Redirect hops must stay http(s); metadata fetch aborted before "
                                         + "any credential reached the target.");
-                        rejected.detail("redirectTarget", next.toString());
+                        rejected.detail("redirectTarget", io.cortexj.spi.support.HttpGuards
+                                .redactUrlForLogging(next.toString()));
                         throw rejected;
+                    }
+                    // audit 2026-10-08: a redirect to an internal target must
+                    // not be fetched with the bearer token attached
+                    try {
+                        io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(next.toString());
+                    } catch (IllegalArgumentException blocked) {
+                        ModelResolutionException ssrf = new ModelResolutionException(
+                                ErrorCode.MODEL_RESOLUTION_FAILED,
+                                "Redirect target blocked by the SSRF guard: " + blocked.getMessage(),
+                                "Redirect hops must stay on public hosts.");
+                        ssrf.detail("redirectTarget", io.cortexj.spi.support.HttpGuards
+                                .redactUrlForLogging(next.toString()));
+                        throw ssrf;
                     }
                     if (!sameOrigin(current, next)) {
                         headers = stripCredentials(headers);
@@ -421,10 +451,10 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             return generic;
         }
         String property = System.getProperty("cortexj.hf.token");
-        // audit 2026-10-07 (#98, parity with #125): same loud warning as the
-        // remote key - sysprops surface in jcmd and hs_err dumps
-        if ((env == null || env.isEmpty()) && (generic == null || generic.isEmpty())
-                && property != null && !property.isEmpty()) {
+        // audit 2026-10-07 (#98, parity with #125) + 2026-10-08: warn whenever
+        // the sysprop is set and non-empty - a simultaneously set env var
+        // does not stop jcmd/hs_err dumps from exposing the sysprop value
+        if (property != null && !property.isEmpty()) {
             java.util.logging.Logger.getLogger(HuggingFaceRepositoryProvider.class.getName()).warning(
                     "cortexj.hf.token is set via a system property; system properties "
                             + "are readable by 'jcmd VM.system_properties' and hs_err dumps - "

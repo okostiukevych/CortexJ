@@ -20,6 +20,9 @@ public final class GgufDocument {
     public static final int TENSOR_BF16 = 30;
 
     private static final int MAX_TENSOR_DIMENSIONS = 63;
+    // audit 2026-10-08: unbounded int64 counts allocate without bound below
+    private static final long MAX_TENSOR_COUNT = 10_000_000L;
+    private static final long MAX_METADATA_COUNT = 10_000_000L;
 
     public static final class KeyValue {
 
@@ -130,6 +133,12 @@ public final class GgufDocument {
         }
         long tensorCount = reader.readInt64();
         long metadataCount = reader.readInt64();
+        if (tensorCount < 0 || tensorCount > MAX_TENSOR_COUNT) {
+            throw new GgufFormatException("unreasonable GGUF tensor count: " + tensorCount);
+        }
+        if (metadataCount < 0 || metadataCount > MAX_METADATA_COUNT) {
+            throw new GgufFormatException("unreasonable GGUF metadata count: " + metadataCount);
+        }
 
         for (long i = 0; i < metadataCount; i++) {
             String key = reader.readString();

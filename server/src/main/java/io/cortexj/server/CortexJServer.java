@@ -178,7 +178,10 @@ public final class CortexJServer {
                             + "acknowledge the risk explicitly with "
                             + "-Dcortexj.server.insecureBind=true");
         }
-        httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(bindHost, port), 0);
+        // audit 2026-10-08: explicit SYN backlog - with 0 (system default,
+        // ~50) bursts were dropped by the kernel before the semaphore could
+        // answer 503 with Retry-After
+        httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(bindHost, port), 128);
         int workers = Math.max(8, 2 * Runtime.getRuntime().availableProcessors());
         requestExecutor = new ThreadPoolExecutor(
                 workers + SATURATION_HEADROOM_THREADS, workers + SATURATION_HEADROOM_THREADS,
@@ -516,6 +519,9 @@ public final class CortexJServer {
                         "top_p must be a number in [0, 1]");
                 return;
             }
+            // audit 2026-10-08: validated before, silently dropped after -
+            // now actually honored by runtimes that support it
+            request.topP(topP);
         }
 
         if (stream) {
@@ -579,6 +585,8 @@ public final class CortexJServer {
                                TextGenerationCapability generator,
                                GenerationRequest request) throws IOException {
         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
+        // audit 2026-10-08: same sniffing guard as the JSON paths
+        exchange.getResponseHeaders().add("X-Content-Type-Options", "nosniff");
         exchange.sendResponseHeaders(200, 0);
         headersSent.set(true);
         final java.util.concurrent.CountDownLatch finished =
@@ -648,7 +656,12 @@ public final class CortexJServer {
                     }
                 }));
             } catch (CortexJException error) {
-                writeSseErrorQuietly(output, error.code(), error.getMessage());
+                // audit 2026-10-08: subscribe-time failures stay generic on
+                // the wire like every other upstream failure (the message may
+                // carry an excerpt of the remote endpoint's response body)
+                LOG.log(java.util.logging.Level.WARNING,
+                        "stream subscription failed: " + error.code() + " - " + error.getMessage());
+                writeSseErrorQuietly(output, error.code(), GENERIC_ERROR_MESSAGE);
                 return;
             } catch (RuntimeException failure) {
                 LOG.log(java.util.logging.Level.SEVERE, "stream subscription failed", failure);

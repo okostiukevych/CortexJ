@@ -215,8 +215,11 @@ public final class GgufFloatConverter implements ModelConverter {
         if (targetType == tensor.type) {
             return tensor.byteSize();
         }
+        // audit 2026-10-08: exact arithmetic to match TensorInfo.byteSize()
         long elements = tensor.elementCount();
-        return targetType == GgufDocument.TENSOR_F16 ? elements * 2L : elements * 4L;
+        return targetType == GgufDocument.TENSOR_F16
+                ? Math.multiplyExact(elements, 2L)
+                : Math.multiplyExact(elements, 4L);
     }
 
     private static final int CONVERT_CHUNK_ELEMENTS = 8192;

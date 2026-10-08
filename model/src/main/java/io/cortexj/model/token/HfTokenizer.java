@@ -90,7 +90,7 @@ public final class HfTokenizer {
         private final Map<String, Integer> vocab;
         private final int longest;
 
-        WordPiece(JsonNode model) {
+        WordPiece(JsonNode model) throws java.io.IOException {
             this.vocab = readVocab(model);
             int longest = 1;
             for (String token : vocab.keySet()) {
@@ -143,7 +143,7 @@ public final class HfTokenizer {
         private final Map<String, Integer> vocab;
         private final List<String[]> merges;
 
-        Bpe(JsonNode model) {
+        Bpe(JsonNode model) throws java.io.IOException {
             this.vocab = readVocab(model);
             this.merges = new ArrayList<String[]>();
             for (JsonNode merge : model.path("merges")) {
@@ -258,7 +258,7 @@ public final class HfTokenizer {
         private final Map<Character, List<String>> piecesByFirstChar;
         private final Map<String, Integer> vocab;
 
-        Unigram(JsonNode model) {
+        Unigram(JsonNode model) throws java.io.IOException {
             List<String[]> sortable = new ArrayList<String[]>();
             for (JsonNode entry : model.path("vocab")) {
                 if (entry.isArray() && entry.size() == 2) {
@@ -321,6 +321,8 @@ public final class HfTokenizer {
         }
     }
 
+    private static final int MAX_VOCAB_ENTRIES = 2_000_000;
+
     private static final Pattern PRE_TOKEN = Pattern.compile("[\\w]+|[^\\s\\w]");
 
     private static List<String> preTokens(String text) {
@@ -335,13 +337,18 @@ public final class HfTokenizer {
         return parts;
     }
 
-    private static Map<String, Integer> readVocab(JsonNode model) {
+    private static Map<String, Integer> readVocab(JsonNode model) throws IOException {
         Map<String, Integer> vocab = new LinkedHashMap<String, Integer>();
         if (model.path("vocab").isObject()) {
             JsonNode vocabNode = model.path("vocab");
             java.util.Iterator<String> fields = vocabNode.fieldNames();
             int index = 0;
             while (fields.hasNext()) {
+                // audit 2026-10-08: millions of tiny tokens would turn the
+                // vocab map into GBs of heap despite the file-size cap
+                if (index >= MAX_VOCAB_ENTRIES) {
+                    throw new IOException("tokenizer vocab exceeds " + MAX_VOCAB_ENTRIES + " entries");
+                }
                 vocab.put(fields.next(), Integer.valueOf(index++));
             }
         } else {
@@ -352,6 +359,10 @@ public final class HfTokenizer {
                 if (!token.isArray() || token.size() == 0 || !token.get(0).isTextual()) {
                     index++;
                     continue;
+                }
+                // audit 2026-10-08: see the object-vocab branch above
+                if (index >= MAX_VOCAB_ENTRIES) {
+                    throw new IOException("tokenizer vocab exceeds " + MAX_VOCAB_ENTRIES + " entries");
                 }
                 // array vocab entries are [piece, score] pairs: asText() on the
                 // array node returns "" and collapsed every id to zero
