@@ -199,11 +199,37 @@ final class IsolatedModelProxy implements InvocationHandler {
         ObjectNode payload = WorkerCodec.object();
         payload.put("modelToken", modelToken);
         payload.set("request", WorkerCodec.generationRequest(request));
-        try {
-            channel.call(streamId, "stream", payload);
-        } catch (CortexJException refused) {
-            channel.unregisterStream(streamId);
-            publisher.fail(refused);
+        // audit 2026-10-08 (#153): the ack wait must not block the caller -
+        // a cancel arriving before the child acknowledges used to pile behind
+        // future.get() for up to the full request timeout. The publisher
+        // replays a pre-subscribe terminal, so async refusal is lossless.
+        final ObjectNode ackPayload = payload;
+        Runnable awaitAck = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    channel.call(streamId, "stream", ackPayload);
+                } catch (CortexJException refused) {
+                    channel.unregisterStream(streamId);
+                    publisher.fail(refused);
+                } catch (RuntimeException unexpected) {
+                    channel.unregisterStream(streamId);
+                    publisher.fail(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "isolated stream setup failed: " + unexpected.getMessage(), unexpected));
+                }
+            }
+        };
+        if (executor == null) {
+            awaitAck.run();
+        } else {
+            try {
+                executor.execute(awaitAck);
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                channel.unregisterStream(streamId);
+                publisher.fail(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "the isolated runtime IO executor rejected the stream request (queue saturated)",
+                        "Retry when in-flight requests drain."));
+            }
         }
         return publisher.stream();
     }

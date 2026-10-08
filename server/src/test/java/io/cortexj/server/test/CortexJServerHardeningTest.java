@@ -176,7 +176,12 @@ class CortexJServerHardeningTest {
     @Test
     void saturatedPoolResponds503() throws Exception {
         final int workers = Math.max(8, 2 * Runtime.getRuntime().availableProcessors());
-        final CountDownLatch allInFlight = new CountDownLatch(workers);
+        // audit 2026-10-08 (#153): unary generations wait on the bounded
+        // generate pool now (max(4, NCPU)), not on request threads - the first
+        // wave of generates occupies it while the rest queue, all holding
+        // their request-thread admission permits
+        final int generateWidth = Math.max(4, Runtime.getRuntime().availableProcessors());
+        final CountDownLatch allInFlight = new CountDownLatch(generateWidth);
         final CountDownLatch release = new CountDownLatch(1);
         ModelHandle handle = StubRuntime.handle(new TextGenerationCapability() {
             @Override
@@ -218,16 +223,30 @@ class CortexJServerHardeningTest {
                 requester.start();
             }
             assertTrue(allInFlight.await(10, TimeUnit.SECONDS),
-                    "all " + workers + " requests must be in flight");
-            HttpURLConnection probe = (HttpURLConnection)
-                    new URL("http://127.0.0.1:" + port + "/v1/models").openConnection();
-            probe.setConnectTimeout(5_000);
-            probe.setReadTimeout(5_000);
-            assertEquals(503, probe.getResponseCode(),
+                    "the generate pool (" + generateWidth + ") must fill while "
+                            + workers + " requests hold admission permits");
+            // poll until every requester has arrived: early probes may still
+            // find a free permit, but once all blocked requests hold theirs
+            // every further probe is refused
+            int probeCode = 0;
+            String retryAfter = null;
+            long probeDeadline = System.currentTimeMillis() + 15_000L;
+            do {
+                HttpURLConnection probe = (HttpURLConnection)
+                        new URL("http://127.0.0.1:" + port + "/v1/models").openConnection();
+                probe.setConnectTimeout(5_000);
+                probe.setReadTimeout(5_000);
+                probeCode = probe.getResponseCode();
+                retryAfter = probe.getHeaderField("Retry-After");
+                probe.disconnect();
+                if (probeCode != 503) {
+                    Thread.sleep(100L);
+                }
+            } while (probeCode != 503 && System.currentTimeMillis() < probeDeadline);
+            assertEquals(503, probeCode,
                     "a request beyond the bounded pool capacity must be refused with 503");
-            assertTrue(probe.getHeaderField("Retry-After") != null,
+            assertTrue(retryAfter != null,
                     "the 503 response must carry a Retry-After header");
-            probe.disconnect();
         } finally {
             release.countDown();
             server.stop();

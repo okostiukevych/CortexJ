@@ -331,7 +331,47 @@ public final class DefaultExecutionPlanner implements Planner {
         applyConstraints(outcome, request, resolved, probes);
         applyPolicies(outcome, request);
         scoreAndSort(outcome, request);
+        warnOnTrustBlock(outcome);
         return outcome;
+    }
+
+    /**
+     * audit 2026-10-08 (#153): trust was enforced only at load, so
+     * {@code inspect()} never showed it - surface the coming refusal as a
+     * plan warning using the previously dead TRUST_POLICY_BLOCKED code.
+     * Mirrors DefaultModels.enforceTrustPolicy without duplicating its
+     * throw semantics (planning stays advisory, load stays enforcing).
+     */
+    private void warnOnTrustBlock(Outcome outcome) {
+        if (inputs.trustPolicy != io.cortexj.model.TrustPolicy.TRUSTED_ONLY
+                || outcome.resolved == null || outcome.resolved.descriptor() == null) {
+            return;
+        }
+        String note = outcome.resolved.descriptor().trustNote();
+        if (note != null && !note.trim().isEmpty()) {
+            outcome.warnings.add(PlanReason.warning(io.cortexj.planner.ReasonCode.TRUST_POLICY_BLOCKED,
+                    "model '" + outcome.resolved.descriptor().canonicalId()
+                            + "' will be refused at load under TRUSTED_ONLY: " + note));
+            return;
+        }
+        boolean checksummed = false;
+        if (outcome.resolved.artifacts() != null) {
+            for (ResolvedArtifact artifact : outcome.resolved.artifacts()) {
+                if (artifact != null && artifact.artifact() != null
+                        && artifact.artifact().checksum() != null
+                        && artifact.artifact().checksum().value() != null
+                        && !artifact.artifact().checksum().value().trim().isEmpty()) {
+                    checksummed = true;
+                    break;
+                }
+            }
+        }
+        if (!checksummed) {
+            outcome.warnings.add(PlanReason.warning(io.cortexj.planner.ReasonCode.TRUST_POLICY_BLOCKED,
+                    "model '" + outcome.resolved.descriptor().canonicalId()
+                            + "' carries no trust note and no artifact checksum and will be "
+                            + "refused at load under TRUSTED_ONLY."));
+        }
     }
 
     private void generateConversionCandidates(Outcome outcome,
@@ -446,6 +486,13 @@ public final class DefaultExecutionPlanner implements Planner {
 
     private RuntimeProbeResult probeCached(RuntimeProvider provider) {
         String key = provider.id().value();
+        // audit 2026-10-08 (#153): open circuit short-circuits before any
+        // claim - explicit invalidations cannot force physical probes through
+        // it until the cooldown passes (that is the point of the breaker)
+        if (circuitOpen(key)) {
+            return io.cortexj.spi.runtime.RuntimeProbeResult.unavailable(
+                    "circuit open for '" + key + "': repeated probe failures, cooling down");
+        }
         for (int attempt = 0; attempt < 4; attempt++) {
             long now = System.currentTimeMillis();
             java.util.concurrent.CompletableFuture<CachedProbe> seen = probeFutures.get(key);
@@ -509,7 +556,75 @@ public final class DefaultExecutionPlanner implements Planner {
                     "probe threw: " + probeFailure.getMessage());
         }
         long ttl = result.isUsable() ? positiveProbeTtlMillis : negativeProbeTtlMillis;
+        String key = probeKey(provider);
+        if (result.isUsable()) {
+            consecutiveProbeFailures.remove(key);
+            lastProbeFailureMillis.remove(key);
+        } else {
+            // audit 2026-10-08 (#153): minimal circuit breaker - count and
+            // timestamp consecutive failures; probeCached gates on them
+            incrementProbeFailures(key);
+            lastProbeFailureMillis.put(key, Long.valueOf(System.currentTimeMillis()));
+        }
         return new CachedProbe(result, System.currentTimeMillis() + ttl);
+    }
+
+    private static final int CIRCUIT_BREAKER_THRESHOLD = 5;
+
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>
+            consecutiveProbeFailures = new java.util.concurrent.ConcurrentHashMap<String,
+            java.util.concurrent.atomic.AtomicInteger>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastProbeFailureMillis =
+            new java.util.concurrent.ConcurrentHashMap<String, Long>();
+
+    private static long circuitCooldownMillis() {
+        String property = System.getProperty("cortexj.planner.circuitCooldownMillis");
+        if (property != null && !property.trim().isEmpty()) {
+            try {
+                long parsed = Long.parseLong(property.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 60_000L;
+    }
+
+    private boolean circuitOpen(String key) {
+        java.util.concurrent.atomic.AtomicInteger counter = consecutiveProbeFailures.get(key);
+        if (counter == null || counter.get() < CIRCUIT_BREAKER_THRESHOLD) {
+            return false;
+        }
+        Long last = lastProbeFailureMillis.get(key);
+        long now = System.currentTimeMillis();
+        if (last == null || now - last.longValue() >= circuitCooldownMillis()) {
+            // half-open: let one trial through, counting resumes after it
+            consecutiveProbeFailures.remove(key);
+            lastProbeFailureMillis.remove(key);
+            return false;
+        }
+        return true;
+    }
+
+    private static String probeKey(RuntimeProvider provider) {
+        try {
+            return provider.id() == null ? provider.getClass().getName() : provider.id().value();
+        } catch (RuntimeException unreadable) {
+            return provider.getClass().getName();
+        }
+    }
+
+    private int incrementProbeFailures(String key) {
+        java.util.concurrent.atomic.AtomicInteger counter = consecutiveProbeFailures.get(key);
+        if (counter == null) {
+            java.util.concurrent.atomic.AtomicInteger fresh =
+                    new java.util.concurrent.atomic.AtomicInteger(0);
+            java.util.concurrent.atomic.AtomicInteger raced =
+                    consecutiveProbeFailures.putIfAbsent(key, fresh);
+            counter = raced == null ? fresh : raced;
+        }
+        return counter.incrementAndGet();
     }
 
     private static final long PROBE_WAIT_MILLIS = probeWaitMillis();

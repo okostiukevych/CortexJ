@@ -123,6 +123,48 @@ class CortexJServerValidationTest {
         }
     }
 
+    @Test
+    void stuckGenerationTimesOutWith504() throws Exception {
+        // audit 2026-10-08 (#153): a stuck unary generate must time out to
+        // the client instead of pinning a request thread forever
+        System.setProperty("cortexj.server.generateTimeoutMillis", "300");
+        final java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        TextGenerationCapability stuck = new TextGenerationCapability() {
+            @Override
+            public GenerationResponse generate(GenerationRequest request) {
+                try {
+                    release.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return new GenerationResponse("late",
+                        io.cortexj.inference.FinishReason.STOP,
+                        new io.cortexj.inference.TokenUsage(1L, 1L), null);
+            }
+
+            @Override
+            public io.cortexj.stream.TokenStream stream(GenerationRequest request) {
+                return new io.cortexj.stream.internal.PushTokenStream();
+            }
+        };
+        CortexJServer server = new CortexJServer(
+                StubRuntime.platform(StubRuntime.handle(stuck)), "server/test-model");
+        try {
+            int port = server.start(0);
+            HttpURLConnection connection = post(
+                    new URL("http://127.0.0.1:" + port + "/v1/chat/completions"),
+                    "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
+            assertEquals(504, connection.getResponseCode(),
+                    "a stuck generation must time out with 504");
+            connection.disconnect();
+        } finally {
+            release.countDown();
+            System.clearProperty("cortexj.server.generateTimeoutMillis");
+            server.stop();
+        }
+    }
+
     private static TextGenerationCapability echoGenerator() {
         return new TextGenerationCapability() {
             @Override

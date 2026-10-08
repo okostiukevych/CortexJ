@@ -214,32 +214,51 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         }
 
         private void drain() {
+            // audit 2026-10-08 (#153): iterative re-acquire, same tail-call
+            // StackOverflow rationale as PushTokenStream.drain()
             if (!draining.compareAndSet(false, true)) {
                 // another thread owns dispatch; it will observe our buffered work
                 return;
             }
             try {
-                while (true) {
-                    Token token = null;
-                    boolean complete = false;
-                    io.cortexj.error.CortexJException errorToDeliver = null;
-                    synchronized (lock) {
-                        if (cancelled.get()) {
-                            return;
-                        }
-                        if (demand.get() > 0 && !buffered.isEmpty()) {
-                            token = buffered.poll();
-                            demand.decrementAndGet();
-                        } else if (overflowed.get() && !errorDelivered) {
-                            errorDelivered = true;
-                            errorToDeliver = new io.cortexj.error.InferenceException(
-                                    io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
-                                    "token stream buffer overflow: the subscriber lagged more than "
-                                            + bufferCapacity + " tokens behind the producer; "
-                                            + "the generation was cancelled",
-                                    "Request demand proactively or consume tokens faster; the "
-                                            + "adapter never buffers without bound.");
-                        } else if (upstreamError != null && !errorDelivered) {
+                dispatchLoop();
+            } finally {
+                draining.set(false);
+            }
+            while (hasWork()) {
+                if (!draining.compareAndSet(false, true)) {
+                    return;
+                }
+                try {
+                    dispatchLoop();
+                } finally {
+                    draining.set(false);
+                }
+            }
+        }
+
+        private void dispatchLoop() {
+            while (true) {
+                Token token = null;
+                boolean complete = false;
+                io.cortexj.error.CortexJException errorToDeliver = null;
+                synchronized (lock) {
+                    if (cancelled.get()) {
+                        return;
+                    }
+                    if (demand.get() > 0 && !buffered.isEmpty()) {
+                        token = buffered.poll();
+                        demand.decrementAndGet();
+                    } else if (overflowed.get() && !errorDelivered) {
+                        errorDelivered = true;
+                        errorToDeliver = new io.cortexj.error.InferenceException(
+                                io.cortexj.ErrorCode.INFERENCE_STREAM_FAILED,
+                                "token stream buffer overflow: the subscriber lagged more than "
+                                        + bufferCapacity + " tokens behind the producer; "
+                                        + "the generation was cancelled",
+                                "Request demand proactively or consume tokens faster; the "
+                                        + "adapter never buffers without bound.");
+                    } else if (upstreamError != null && !errorDelivered) {
                             errorDelivered = true;
                             errorToDeliver = upstreamError;
                         } else if (completed.get() && buffered.isEmpty() && !completionDelivered) {
@@ -272,15 +291,6 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                     }
                     downstream.onNext(token);
                 }
-            } finally {
-                draining.set(false);
-                // missed-work re-check: work may have arrived between the last
-                // empty check and the release; whoever added it may have returned
-                // early because we held the drain guard
-                if (hasWork()) {
-                    drain();
-                }
             }
         }
     }
-}

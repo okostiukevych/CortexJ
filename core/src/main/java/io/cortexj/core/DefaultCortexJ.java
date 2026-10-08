@@ -185,7 +185,8 @@ public final class DefaultCortexJ implements CortexJ {
                             CortexJInfo.VERSION,
                             resolved.memoryLimitBytes == null ? 0L : resolved.memoryLimitBytes,
                             resolved.runtimeConfiguration(),
-                            loadBenchmarkHints(resolved.workingDirectory)));
+                            loadBenchmarkHints(resolved.workingDirectory),
+                            resolved.trustPolicy));
 
             this.models = new DefaultModels(this);
             this.resolvedConfiguration = resolved;

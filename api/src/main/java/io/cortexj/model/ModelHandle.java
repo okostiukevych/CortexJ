@@ -31,6 +31,32 @@ public interface ModelHandle extends AutoCloseable {
      */
     void waitForReady() throws InterruptedException;
 
+    /**
+     * Bounded variant of {@link #waitForReady()} (audit 2026-10-08, #153):
+     * returns {@code true} when READY/DEGRADED is reached in time,
+     * {@code false} on timeout, and throws on a terminal state like the
+     * unbounded version. A default polling implementation is provided so
+     * existing implementers keep compiling; implementations with a state
+     * monitor should override it.
+     */
+    default boolean waitForReady(long timeoutMillis) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+        for (;;) {
+            ModelLifecycleState current = state();
+            if (current == ModelLifecycleState.READY || current == ModelLifecycleState.DEGRADED) {
+                return true;
+            }
+            if (current.isTerminal()) {
+                throw new IllegalStateException("Model handle is already " + current);
+            }
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0L) {
+                return false;
+            }
+            Thread.sleep(Math.min(50L, remaining));
+        }
+    }
+
     @Override
     void close();
 

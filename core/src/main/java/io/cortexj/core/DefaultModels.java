@@ -4,6 +4,7 @@ import io.cortexj.ErrorCode;
 import io.cortexj.error.ArtifactIntegrityException;
 import io.cortexj.error.ArtifactResolutionException;
 import io.cortexj.error.CortexJException;
+import io.cortexj.error.InsufficientMemoryException;
 import io.cortexj.error.ModelLoadException;
 import io.cortexj.error.NativeRuntimeException;
 import io.cortexj.error.RuntimeUnavailableException;
@@ -322,6 +323,10 @@ public final class DefaultModels implements io.cortexj.Models {
                 if (e instanceof ModelLoadException || e instanceof RuntimeUnavailableException
                         || e instanceof ArtifactResolutionException || e instanceof NativeRuntimeException
                         || e instanceof ArtifactIntegrityException
+                        // audit 2026-10-08 (#153): a load-time memory
+                        // re-check failure should try the next (possibly
+                        // smaller) candidate instead of failing the chain
+                        || e instanceof InsufficientMemoryException
                         // audit 2026-10-07 (#147): a worker-child crash
                         // surfaces from provider.open() as InferenceException -
                         // without this the fallback chain never tries the next
@@ -377,6 +382,32 @@ public final class DefaultModels implements io.cortexj.Models {
                     || ErrorCode.SEC_LICENSE_BLOCKED.equals(code);
         }
         return false;
+    }
+
+    /**
+     * audit 2026-10-08 (#153): fail-before-load with current host numbers.
+     */
+    private void recheckMemory(ExecutionPlan plan, ExecutionCandidate candidate) {
+        if (candidate.memoryEstimate() == null || !candidate.memoryEstimate().isKnown()) {
+            return;
+        }
+        long available = platform.environment().availableMemoryEstimateBytes();
+        if (available <= 0) {
+            available = platform.environment().totalPhysicalMemoryBytes();
+        }
+        if (available <= 0) {
+            return;
+        }
+        long estimated = candidate.memoryEstimate().totalBytes();
+        if (candidate.memoryEstimate().confidence() == io.cortexj.planner.MemoryConfidence.LOW) {
+            estimated = estimated + estimated / 2;
+        }
+        if (estimated > available) {
+            throw new InsufficientMemoryException(ErrorCode.MEM_INSUFFICIENT,
+                    "Model " + plan.modelId() + " no longer fits: needs ~" + estimated
+                            + " bytes but only ~" + available + " are available now.",
+                    "Free memory, pick a smaller quantization, or set an explicit memory limit.");
+        }
     }
 
     private static ModelLoadException asLoadFailure(RuntimeException e, ExecutionCandidate candidate) {
@@ -448,6 +479,11 @@ public final class DefaultModels implements io.cortexj.Models {
             enforceTrustPolicy(resolved);
 
             Path artifactPath = ensureArtifact(plan, resolved, candidate, handle, cancelFlag);
+
+            // audit 2026-10-08 (#153): plan/load TOCTOU - re-check memory
+            // right before the native open with fresh host numbers; LOW
+            // confidence estimates are weighed up 1.5x instead of equally
+            recheckMemory(plan, candidate);
 
             if (cancelFlag != null && cancelFlag.get()) {
                 throw new java.util.concurrent.CancellationException(
