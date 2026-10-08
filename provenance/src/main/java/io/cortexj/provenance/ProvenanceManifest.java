@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Versioned answer to "what produced this artifact" (spec v3.0 §148):
+ * Versioned answer to "what produced this artifact" (ADR-020):
  * producer, model revision, dataset fingerprint, code/platform version,
  * parameters, seeds, backend/hardware identity, parent artifacts and
  * checksums. Missing data is explicit (empty, never fabricated).

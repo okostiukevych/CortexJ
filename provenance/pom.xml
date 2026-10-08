@@ -11,7 +11,7 @@
   </parent>
   <artifactId>cortexj-provenance</artifactId>
   <name>CortexJ Provenance</name>
-  <description>Shared versioned provenance manifest (ADR-020, spec 148). Java 8, Jackson-free.</description>
+  <description>Shared versioned provenance manifest (ADR-020). Java 8, Jackson-free.</description>
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>
