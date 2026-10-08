@@ -56,6 +56,10 @@
     <module>experiments/experiments-api</module>
     <module>experiments/experiments-local</module>
     <module>lab/lab-api</module>
+    <module>train/train-api</module>
+    <module>train/train-peft</module>
+    <module>train/train-djl</module>
+    <module>train/train-remote</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>
