@@ -1,9 +1,15 @@
 # CortexJ
 
-**CortexJ — AI runtime orchestration and model portability platform for the JVM.**
+**CortexJ Runtime — portable AI execution for the JVM.**
 
-One JVM API. Any compatible model. The best available runtime. From legacy Java 8 applications
+One JVM API. Compatible models. The best available runtime. Production AI from
+Java 8 to Java 25+, without mandatory Python. From legacy Java 8 applications
 to modern Java 25 systems, across interchangeable local and remote runtimes.
+
+> Long-term direction (spec v3.0 §123.2): **CortexJ — the AI development
+> platform for the JVM, from experimentation to production.** The Runtime
+> below is its first production product and stays standalone: no Lab, Data,
+> Train or research dependencies ever leak into the production path.
 
 ```java
 CortexJ platform = CortexJ.builder().build();
