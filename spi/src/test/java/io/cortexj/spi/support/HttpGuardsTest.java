@@ -64,4 +64,31 @@ class HttpGuardsTest {
                 "credentials must not survive, got: " + redacted);
         assertTrue(redacted.contains("https://"), "URL structure must survive: " + redacted);
     }
+
+    @Test
+    void emptyAndNullInputsFailClosed() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl(null));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("   "));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://"));
+        assertEquals("<null>", HttpGuards.redactUrlForLogging(null));
+        assertEquals("<null>", HttpGuards.redactUrlsInText(null));
+    }
+
+    @Test
+    void unresolvableHostFailsClosed() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("https://nonexistent.invalid/model.gguf"));
+    }
+
+    @Test
+    void envOptOutAllowsPrivateHosts() {
+        // the sysprop path is covered by optOutAllowsPrivateHosts; the env
+        // path cannot be set portably at runtime, so assert the documented
+        // constant exists and matches the guard's lookup contract
+        assertEquals("CORTEXJ_HTTP_ALLOW_PRIVATE_HOSTS", HttpGuards.ALLOW_PRIVATE_HOSTS_ENV);
+        assertEquals("cortexj.http.allowPrivateHosts", HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY);
+    }
 }

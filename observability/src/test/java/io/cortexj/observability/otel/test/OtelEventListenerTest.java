@@ -296,6 +296,33 @@ class OtelEventListenerTest {
         assertTrue(duration != null, "the valid duration histogram must still record");
     }
 
+    @Test
+    void firstTokenLatencyHasItsOwnHistogram() {
+        // audit 2026-10-07 (#148): p95-first-token must be buildable
+        // separately from operation durations
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        SdkMeterProvider provider = SdkMeterProvider.builder()
+                .registerMetricReader(reader)
+                .build();
+        OtelEventListener listener = new OtelEventListener(OpenTelemetrySdk.builder()
+                .setMeterProvider(provider).build());
+
+        Map<String, String> attributes = new LinkedHashMap<String, String>();
+        attributes.put("model", "m");
+        attributes.put("firstTokenMillis", "42");
+        listener.onEvent(new PlatformEvent(PlatformEvent.Type.INFERENCE_FIRST_TOKEN,
+                PlatformEvent.Level.INFO, "first token", attributes, 0L));
+
+        MetricData firstToken = metric(reader, "cortexj.inference.first_token");
+        assertTrue(firstToken != null, "the first-token histogram must exist");
+        long count = 0L;
+        for (io.opentelemetry.sdk.metrics.data.HistogramPointData point
+                : firstToken.getHistogramData().getPoints()) {
+            count += point.getCount();
+        }
+        assertEquals(1L, count, "exactly one first-token measurement must be recorded");
+    }
+
     private static MetricData metric(InMemoryMetricReader reader, String name) {        for (MetricData data : reader.collectAllMetrics()) {
             if (name.equals(data.getName())) {
                 return data;

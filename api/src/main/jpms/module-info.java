@@ -15,4 +15,8 @@ open module io.cortexj.api {
     exports io.cortexj.spi.repository;
     exports io.cortexj.spi.runtime;
     exports io.cortexj.stream;
+    // audit 2026-10-08 (JPMS smoke): consumers still declare their own
+    // `uses`, but stating it here keeps jlink service binding working when
+    // api is a root module
+    uses io.cortexj.PlatformFactory;
 }
