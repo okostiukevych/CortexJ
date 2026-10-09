@@ -34,6 +34,13 @@ public interface Tensor extends AutoCloseable {
      */
     Tensor to(Device device);
 
+    /**
+     * Writes flat row-major values into the storage in place (state-dict
+     * loading). Metadata (shape/dtype/device) stays immutable; a closed
+     * tensor fails typed.
+     */
+    void setAll(double[] values);
+
     @Override
     void close();
 }
