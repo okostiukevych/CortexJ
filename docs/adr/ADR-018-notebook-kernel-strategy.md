@@ -16,9 +16,13 @@ Two-step, in this order:
    new dependencies). Covers eval, display contracts, environment
    descriptor and project-skeleton export. Proves the API shape real
    kernels will implement.
-2. **Follow-up: adapter over a mature Java/JShell Jupyter kernel**
-   (IJava-style). Own protocol implementation only if a spike proves
-   integration limitations.
+2. **Implemented: `cortexj-notebook`** — a minimal Jupyter wire-protocol
+   kernel over ZeroMQ (jeromq): HMAC-signed envelopes, heartbeat,
+   shell (kernel_info, execute_request), iopub (status, execute_result)
+   with the `LabSession` behind execute. Live in-process contract test
+   green (kernel_info reply + execute `1 + 2` -> `3` over real sockets).
+   Frontend wiring (connection files, jupyter console) and the stdin
+   socket are declared follow-ups.
 
 Scope-gate §159 answers: problem = JVM-first interactive AI without a
 Python kernel; existing libs insufficient alone only at the CortexJ

@@ -15,12 +15,20 @@ Date: 2026-10-08. `mvn clean verify` BUILD SUCCESS, 55 modules. New:
   OnnxRuntime engines installed, no training engine); remote trainer
   unconfigured → unsupported, configured → partial.
 
+## Live verification (2026-10-09, follow-up closed)
+
+- Live LoRA through a real engine: the DJL PyTorch engine trains a
+  tiny linear model (`y = 2x` learned: `y(10) = 20.01`), the trained
+  weight delta becomes the LoRA adapter artifact (safetensors,
+  checksummed, reads back through the standard PEFT path), the backend
+  reports FULL for the verified path. Contract test in
+  `DjlLiveTrainingTest` skips loudly without the engine.
+- Adapter deployability: the artifact loads through the PEFT module;
+  Runtime-side direct LoRA application to GGUF checkpoints stays a
+  declared follow-up (no fake compatibility).
+
 ## Explicitly NOT verified here (tracked, not silent)
 
-- Live LoRA fine-tuning through a real external engine and deployment
-  of the produced adapter through Runtime — needs a training engine
-  (DJL PyTorch) or a live fine-tuning endpoint; tracked as a follow-up
-  issue.
-- Two FULL backends on one machine (DoD item p.6) — the 0.x providers
-  are deliberately probe-gated partial/unavailable; synthetic FULL
-  backends cover the orchestration contract in unit tests.
+- Two FULL backends on one machine (DoD item p.6) — the remote trainer
+  stays deliberately probe-gated partial; synthetic FULL backends cover
+  the orchestration contract in unit tests.

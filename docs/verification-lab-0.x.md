@@ -6,7 +6,8 @@ descriptor, frame table render, project-skeleton export).
 
 1. Supported Java baseline documented — Java 17 (ADR-017).
 2. Notebook-compatible workflow — `LabSession` over the JDK JShell;
-   the full Jupyter-wire adapter is an explicit follow-up (ADR-018).
+   plus `cortexj-notebook`, a minimal Jupyter wire-protocol kernel
+   (ZeroMQ, HMAC-signed envelopes) with a live in-process contract test.
 3. Runtime model load/generation interactively — the session inherits
    the process classpath, so `CortexJ` snippets work; live inference
    from the kernel is exercised by the provider tests (live-verified)

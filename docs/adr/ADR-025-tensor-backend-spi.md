@@ -34,3 +34,9 @@ impact = none; native cost = zero (pure Java + JDK incubator).
 - A GPU/native backend is a new provider module, never an api change.
 - The vector backend is honest about its incubator status in its
   descriptor metadata.
+- Honest benchmark finding (2026-10-08, 128x128 F32, Apple arm64):
+  the JIT-auto-vectorized scalar reference outperforms the Vector API
+  path (~6x) — the C2 compiler is very strong on simple loops. The
+  vector backend exists for the SPI contract and correctness parity;
+  kernel tuning beyond this is a declared follow-up, never a perf
+  claim (raw backend numbers are not attributed to the platform).
