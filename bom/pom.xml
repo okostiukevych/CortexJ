@@ -32,6 +32,10 @@
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-train-peft</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-train-djl</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-train-remote</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-tensor-api</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-tensor-cpu</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-tensor-vector</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-autograd</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-hardware</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-cache</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-streaming</artifactId><version>${project.version}</version></dependency>

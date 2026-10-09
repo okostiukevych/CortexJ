@@ -60,6 +60,10 @@
     <module>train/train-peft</module>
     <module>train/train-djl</module>
     <module>train/train-remote</module>
+    <module>tensor/tensor-api</module>
+    <module>tensor/tensor-cpu</module>
+    <module>tensor/tensor-vector</module>
+    <module>tensor/autograd</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>
