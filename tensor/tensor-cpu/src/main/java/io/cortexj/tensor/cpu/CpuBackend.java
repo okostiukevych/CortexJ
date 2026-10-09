@@ -237,6 +237,17 @@ public class CpuBackend implements TensorBackend {
             throw failure;
         }
 
+        @Override
+        public void setAll(double[] values) {
+            requireOpen();
+            if (values == null || values.length != storage.length) {
+                throw new IllegalArgumentException("value count "
+                        + (values == null ? 0 : values.length)
+                        + " does not match tensor size " + storage.length);
+            }
+            System.arraycopy(values, 0, storage, 0, values.length);
+        }
+
         public void requireOpen() {
             if (closed.get()) {
                 throw new CortexJException("CORTEXJ-TENSOR-0004",

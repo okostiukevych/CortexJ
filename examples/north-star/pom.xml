@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-example-north-star</artifactId>
+  <name>CortexJ Example North Star</name>
+  <description>End-to-end reference flow: dataset, experiment, LoRA adapter, provenance, lockfile (ADR-028). Java 17, CPU-only.</description>
+  <properties>
+    <cortexj.shared.release>17</cortexj.shared.release>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-data-csv</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-experiments-local</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-peft</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-planner</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

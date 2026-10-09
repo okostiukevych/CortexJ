@@ -86,6 +86,14 @@ public final class Variable {
         return new Variable(data, false);
     }
 
+    /**
+     * Writes flat values into the storage in place (state-dict loading).
+     * The gradient is kept.
+     */
+    public void loadValues(double[] values) {
+        data.setAll(values);
+    }
+
     @Override
     public String toString() {
         return "Variable" + data.shape() + (requiresGradient ? "*" : "");
