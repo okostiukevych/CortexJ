@@ -37,6 +37,7 @@
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-tensor-vector</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-autograd</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-nn</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-research</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-train-distributed</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-hardware</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.cortexj</groupId><artifactId>cortexj-cache</artifactId><version>${project.version}</version></dependency>

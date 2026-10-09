@@ -15,13 +15,14 @@ container round-trip → provenance manifest → model lockfile.
 | Track | Version | Maturity | Notes |
 |---|---|---|---|
 | Runtime | 0.1.0 | beta (1.0 DoD recorded) | P0; onnx/llamacpp/remote/jinfer/djl/isolated providers |
-| Lab | 0.x | incubating | JShell session, display, export; Jupyter kernel adapter follow-up |
+| Lab | 0.x | incubating (DoD recorded) | JShell session, display, export; Jupyter kernel adapter follow-up |
 | Data | 0.x | incubating | Dataset/Frame + CSV/Parquet; Arrow/JDBC/Tablesaw/Tribuo adapters follow |
 | Experiments | 0.x | incubating | lifecycle + local store; external trackers follow |
-| Train | 0.x | incubating | contracts + LoRA artifacts + safetensors; live fine-tune follow-up (#176) |
-| Tensor | 0.x | incubating | CPU reference + vector backend; conformance suite green |
-| Autograd | 0.x | incubating | tape graph + differential suite green |
+| Train | 0.x | incubating (DoD recorded) | full policy surface + LoRA artifacts + safetensors; live fine-tune follow-up (#176) |
+| Tensor | 0.x | incubating (DoD recorded) | CPU reference + vector backend; conformance suite green (incl. gather/scatter) |
+| Autograd | 0.x | incubating (DoD recorded) | tape graph + differential suite + hooks/checkpointing |
 | Distributed | Phase A | incubating | single-node data-parallel; B/C need ADRs |
+| Research | 0.x | incubating | cards/citations/bundles; benchmark suites follow |
 
 Messaging stays two-level: Runtime is the production product; no
 PyTorch-replacement or "any HF model works" claims.

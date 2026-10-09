@@ -33,6 +33,29 @@ public interface TensorBackend {
 
     Tensor softmax(Tensor tensor);
 
+    Tensor sigmoid(Tensor tensor);
+
+    Tensor tanh(Tensor tensor);
+
+    Tensor gelu(Tensor tensor);
+
+    /**
+     * Layer normalization over the last dimension: (x - mean) /
+     * sqrt(variance + epsilon), scaled and shifted if gamma/beta given.
+     */
+    Tensor layerNorm(Tensor tensor, double epsilon);
+
+    /**
+     * Gathers rows from a 2D source by the given indices.
+     */
+    Tensor gather(Tensor source, long[] indices);
+
+    /**
+     * Scatters values into a 2D target at the given row indices
+     * (target starts zeroed; repeated indices add).
+     */
+    Tensor scatter(long[] indices, Tensor values, Shape targetShape);
+
     Tensor relu(Tensor tensor);
 
     Tensor reshape(Tensor tensor, Shape shape);

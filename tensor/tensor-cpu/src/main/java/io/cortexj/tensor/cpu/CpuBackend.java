@@ -117,6 +117,129 @@ public class CpuBackend implements TensorBackend {
     }
 
     @Override
+    public Tensor sigmoid(Tensor tensor) {
+        CpuTensor value = checked(tensor);
+        double[] data = value.toArray();
+        double[] result = new double[data.length];
+        for (int i = 0; i < data.length; i++) {
+            result[i] = 1.0 / (1.0 + Math.exp(-data[i]));
+        }
+        return new CpuTensor(value.shape(), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor tanh(Tensor tensor) {
+        CpuTensor value = checked(tensor);
+        double[] data = value.toArray();
+        double[] result = new double[data.length];
+        for (int i = 0; i < data.length; i++) {
+            result[i] = Math.tanh(data[i]);
+        }
+        return new CpuTensor(value.shape(), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor gelu(Tensor tensor) {
+        CpuTensor value = checked(tensor);
+        double[] data = value.toArray();
+        double[] result = new double[data.length];
+        for (int i = 0; i < data.length; i++) {
+            double x = data[i];
+            result[i] = 0.5 * x * (1.0 + Math.tanh(Math.sqrt(2.0 / Math.PI)
+                    * (x + 0.044715 * x * x * x)));
+        }
+        return new CpuTensor(value.shape(), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor layerNorm(Tensor tensor, double epsilon) {
+        CpuTensor value = checked(tensor);
+        long[] shape = value.shape().dimensions();
+        if (shape.length < 1) {
+            throw new IllegalArgumentException("layerNorm needs at least 1D");
+        }
+        long lastDimension = shape[shape.length - 1];
+        double[] data = value.toArray();
+        double[] result = new double[data.length];
+        int rows = (int) (data.length / lastDimension);
+        for (int row = 0; row < rows; row++) {
+            int offset = (int) (row * lastDimension);
+            double mean = 0;
+            for (int c = 0; c < lastDimension; c++) {
+                mean += data[offset + c];
+            }
+            mean /= lastDimension;
+            double variance = 0;
+            for (int c = 0; c < lastDimension; c++) {
+                variance += (data[offset + c] - mean) * (data[offset + c] - mean);
+            }
+            variance /= lastDimension;
+            double scale = 1.0 / Math.sqrt(variance + epsilon);
+            for (int c = 0; c < lastDimension; c++) {
+                result[offset + c] = (data[offset + c] - mean) * scale;
+            }
+        }
+        return new CpuTensor(value.shape(), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor gather(Tensor source, long[] indices) {
+        CpuTensor value = checked(source);
+        long[] shape = value.shape().dimensions();
+        if (shape.length != 2 || indices == null || indices.length == 0) {
+            throw new IllegalArgumentException("gather needs a 2D source and indices");
+        }
+        for (long index : indices) {
+            if (index < 0 || index >= shape[0]) {
+                throw new IndexOutOfBoundsException("gather index " + index
+                        + " outside " + shape[0]);
+            }
+        }
+        int columns = (int) shape[1];
+        if ((long) indices.length * columns > Integer.MAX_VALUE - 8) {
+            throw new IllegalArgumentException("gather result is too large for this backend");
+        }
+        double[] result = new double[indices.length * columns];
+        for (int i = 0; i < indices.length; i++) {
+            for (int c = 0; c < columns; c++) {
+                result[i * columns + c] = value.get(indices[i], c);
+            }
+        }
+        return new CpuTensor(Shape.of(indices.length, columns), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor scatter(long[] indices, Tensor values, Shape targetShape) {
+        CpuTensor value = checked(values);
+        long[] shape = value.shape().dimensions();
+        if (shape.length != 2 || indices == null || indices.length == 0
+                || indices.length != shape[0]) {
+            throw new IllegalArgumentException("scatter needs row indices matching the values");
+        }
+        long[] target = targetShape.dimensions();
+        if (target.length != 2 || target[1] != shape[1]) {
+            throw new IllegalArgumentException("target shape must be 2D with matching columns");
+        }
+        for (long index : indices) {
+            if (index < 0 || index >= target[0]) {
+                throw new IndexOutOfBoundsException("scatter index " + index
+                        + " outside " + target[0]);
+            }
+        }
+        int columns = (int) shape[1];
+        double[] data = value.toArray();
+        double[] result = new double[(int) (target[0] * target[1])];
+        for (int i = 0; i < indices.length; i++) {
+            int row = (int) indices[i];
+            for (int c = 0; c < columns; c++) {
+                // repeated indices add (scatter-add semantics)
+                result[row * columns + c] += data[i * columns + c];
+            }
+        }
+        return new CpuTensor(targetShape, value.dtype(), result, null);
+    }
+
+    @Override
     public Tensor relu(Tensor tensor) {
         return elementwise(checked(tensor), null, Math::max);
     }

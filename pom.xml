@@ -65,6 +65,7 @@
     <module>tensor/tensor-vector</module>
     <module>tensor/autograd</module>
     <module>research/nn</module>
+    <module>research/research</module>
     <module>train/train-distributed</module>
     <module>examples/north-star</module>
     <module>hardware</module>

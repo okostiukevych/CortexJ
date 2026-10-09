@@ -15,6 +15,8 @@ public final class Variable {
     private final Tensor data;
     private final boolean requiresGradient;
     private double[] grad;
+    private final java.util.List<io.cortexj.autograd.GradientHooks.Hook> hooks =
+            new java.util.ArrayList<>();
 
     Variable(Tensor data, boolean requiresGradient) {
         if (data == null) {
@@ -22,6 +24,15 @@ public final class Variable {
         }
         this.data = data;
         this.requiresGradient = requiresGradient;
+    }
+
+    void addHook(io.cortexj.autograd.GradientHooks.Hook hook) {
+        hooks.add(hook);
+    }
+
+    void removeHook(io.cortexj.autograd.GradientHooks.Hook hook) {
+        hook.remove();
+        hooks.remove(hook);
     }
 
     public static Variable constant(Tensor data) {
@@ -64,10 +75,13 @@ public final class Variable {
         }
         if (grad == null) {
             grad = values.clone();
-            return;
+        } else {
+            for (int i = 0; i < grad.length; i++) {
+                grad[i] += values[i];
+            }
         }
-        for (int i = 0; i < grad.length; i++) {
-            grad[i] += values[i];
+        for (io.cortexj.autograd.GradientHooks.Hook hook : new java.util.ArrayList<>(hooks)) {
+            hook.fire(grad);
         }
     }
 
