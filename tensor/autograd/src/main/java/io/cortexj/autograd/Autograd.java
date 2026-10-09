@@ -209,6 +209,10 @@ public final class Autograd {
         return tape.size();
     }
 
+    List<TapeNode> tapeNodes() {
+        return tape;
+    }
+
     private boolean needsGrad(Variable left, Variable right) {
         // no-grad scope: outputs of unrecorded ops do not require gradient
         return recording && (left.requiresGradient() || right.requiresGradient());

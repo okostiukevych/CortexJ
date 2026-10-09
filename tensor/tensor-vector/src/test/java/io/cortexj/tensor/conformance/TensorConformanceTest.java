@@ -123,6 +123,53 @@ class TensorConformanceTest {
         assertTrue(((VectorBackend) VECTOR).vectorLength() >= 4);
     }
 
+    @Test
+    void activationsNormalizeGatherScatterParity() {
+        double[] values = {1.0, 2.0, -1.0, -2.0};
+        Tensor a = CPU.create(values, Shape.of(2, 2), DType.F32, Device.CPU);
+        // activations
+        assertParity(CPU.sigmoid(a).toArray(), VECTOR.sigmoid(a).toArray());
+        assertEquals(0.5, CPU.sigmoid(CPU.create(new double[]{0.0}, Shape.of(1), DType.F32, Device.CPU)).get(0), TOLERANCE);
+        assertParity(CPU.tanh(a).toArray(), VECTOR.tanh(a).toArray());
+        assertEquals(0.0, CPU.tanh(CPU.create(new double[]{0.0}, Shape.of(1), DType.F32, Device.CPU)).get(0), TOLERANCE);
+        assertParity(CPU.gelu(a).toArray(), VECTOR.gelu(a).toArray());
+        assertEquals(0.0, CPU.gelu(CPU.create(new double[]{0.0}, Shape.of(1), DType.F32, Device.CPU)).get(0), TOLERANCE);
+        // layerNorm: mean 0, variance 1 per row
+        Tensor normalized = CPU.layerNorm(a, 1e-5);
+        assertParity(normalized.toArray(), VECTOR.layerNorm(a, 1e-5).toArray());
+        double rowMean = 0;
+        for (int c = 0; c < 2; c++) {
+            rowMean += normalized.get(0, c);
+        }
+        assertEquals(0.0, rowMean / 2, TOLERANCE);
+        // gather: rows by index
+        Tensor gathered = CPU.gather(a, new long[]{1, 0});
+        assertEquals(Shape.of(2, 2), gathered.shape());
+        // gathered[0][0] = a[1][0] = -1.0; gathered[1][0] = a[0][0] = 1.0
+        assertEquals(-1.0, gathered.get(0, 0), TOLERANCE);
+        assertEquals(1.0, gathered.get(1, 0), TOLERANCE);
+        assertParity(CPU.gather(a, new long[]{1, 0}).toArray(),
+                VECTOR.gather(a, new long[]{1, 0}).toArray());
+        // scatter-add: repeated indices add
+        Tensor scattered = CPU.scatter(new long[]{0, 0}, CPU.create(
+                new double[]{1.0, 1.0, 2.0, 2.0}, Shape.of(2, 2), DType.F32, Device.CPU),
+                Shape.of(1, 2));
+        assertEquals(3.0, scattered.get(0, 0), TOLERANCE);
+        assertEquals(3.0, scattered.get(0, 1), TOLERANCE);
+        assertParity(scattered.toArray(), VECTOR.scatter(new long[]{0, 0}, CPU.create(
+                new double[]{1.0, 1.0, 2.0, 2.0}, Shape.of(2, 2), DType.F32, Device.CPU),
+                Shape.of(1, 2)).toArray());
+    }
+
+    @Test
+    void gatherScatterRejectsOutOfRange() {
+        Tensor a = CPU.create(matrixA(), Shape.of(2, 3), DType.F32, Device.CPU);
+        assertThrows(IndexOutOfBoundsException.class, () -> CPU.gather(a, new long[]{2}));
+        assertThrows(IndexOutOfBoundsException.class, () -> CPU.scatter(new long[]{5},
+                CPU.create(new double[]{1, 2, 3}, Shape.of(1, 3), DType.F32, Device.CPU),
+                Shape.of(2, 3)));
+    }
+
     private static void assertParity(double[] reference, double[] accelerated) {
         assertEquals(reference.length, accelerated.length);
         for (int i = 0; i < reference.length; i++) {

@@ -122,6 +122,36 @@ public class VectorBackend implements TensorBackend {
     }
 
     @Override
+    public Tensor sigmoid(Tensor tensor) {
+        return reference.sigmoid(tensor);
+    }
+
+    @Override
+    public Tensor tanh(Tensor tensor) {
+        return reference.tanh(tensor);
+    }
+
+    @Override
+    public Tensor gelu(Tensor tensor) {
+        return reference.gelu(tensor);
+    }
+
+    @Override
+    public Tensor layerNorm(Tensor tensor, double epsilon) {
+        return reference.layerNorm(tensor, epsilon);
+    }
+
+    @Override
+    public Tensor gather(Tensor source, long[] indices) {
+        return reference.gather(source, indices);
+    }
+
+    @Override
+    public Tensor scatter(long[] indices, Tensor values, Shape targetShape) {
+        return reference.scatter(indices, values, targetShape);
+    }
+
+    @Override
     public Tensor relu(Tensor tensor) {
         return reference.relu(tensor);
     }
