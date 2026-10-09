@@ -26,5 +26,11 @@
       <artifactId>api</artifactId>
       <version>0.38.0</version>
     </dependency>
+    <!-- adapter export needs the PEFT module (compile, optional for consumers) -->
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-peft</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 </project>

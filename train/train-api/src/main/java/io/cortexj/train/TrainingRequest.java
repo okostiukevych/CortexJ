@@ -19,6 +19,7 @@ public final class TrainingRequest {
     private final double learningRate;
     private final Device device;
     private final Map<String, String> parameters;
+    private final TrainingData data;
 
     private TrainingRequest(Builder builder) {
         this.model = builder.model;
@@ -28,6 +29,7 @@ public final class TrainingRequest {
         this.learningRate = builder.learningRate;
         this.device = builder.device;
         this.parameters = new LinkedHashMap<String, String>(builder.parameters);
+        this.data = builder.data;
     }
 
     public static Builder builder() {
@@ -62,6 +64,13 @@ public final class TrainingRequest {
         return parameters;
     }
 
+    /**
+     * The live training data hand-off (null for the planning-only path).
+     */
+    public TrainingData data() {
+        return data;
+    }
+
     public static final class Builder {
 
         private String model;
@@ -71,6 +80,7 @@ public final class TrainingRequest {
         private double learningRate = 1e-4;
         private Device device = Device.AUTO;
         private final Map<String, String> parameters = new LinkedHashMap<String, String>();
+        private TrainingData data;
 
         public Builder model(String model) {
             if (model == null || model.trim().isEmpty()) {
@@ -124,6 +134,11 @@ public final class TrainingRequest {
             if (key != null && value != null) {
                 parameters.put(key, value);
             }
+            return this;
+        }
+
+        public Builder data(TrainingData data) {
+            this.data = data;
             return this;
         }
 

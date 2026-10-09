@@ -53,9 +53,12 @@
     <module>data/data-api</module>
     <module>data/data-csv</module>
     <module>data/data-parquet</module>
+    <module>data/data-jdbc</module>
+    <module>data/data-tablesaw</module>
     <module>experiments/experiments-api</module>
     <module>experiments/experiments-local</module>
     <module>lab/lab-api</module>
+    <module>lab/notebook</module>
     <module>train/train-api</module>
     <module>train/train-peft</module>
     <module>train/train-djl</module>
@@ -68,6 +71,7 @@
     <module>research/research</module>
     <module>train/train-distributed</module>
     <module>examples/north-star</module>
+    <module>benchmarks</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>

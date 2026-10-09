@@ -61,24 +61,50 @@ public class VectorBackend implements TensorBackend {
         float[] aFloat = toFloat(a.toArray());
         float[] bFloat = toFloat(b.toArray());
         float[] result = new float[rows * columns];
-        // vectorize over columns: b rows are contiguous, a values scalar
-        for (int r = 0; r < rows; r++) {
-            int rowOffset = r * columns;
-            int aOffset = r * inner;
-            for (int k = 0; k < inner; k++) {
-                float aValue = aFloat[aOffset + k];
-                if (aValue == 0.0f) {
-                    continue;
+        int lanes = SPECIES.length();
+        int vectorColumns = (columns / lanes) * lanes;
+        int rowBlock = 4;
+        // register-accumulator micro-kernel: 4 rows x 1 c-block per pass;
+        // b vectors are loaded once per (rowBlock, c-block, k) instead of
+        // once per row
+        for (int rBase = 0; rBase < rows; rBase += rowBlock) {
+            int blockRows = Math.min(rowBlock, rows - rBase);
+            for (int c = 0; c < vectorColumns; c += lanes) {
+                FloatVector acc0 = FloatVector.zero(SPECIES);
+                FloatVector acc1 = FloatVector.zero(SPECIES);
+                FloatVector acc2 = FloatVector.zero(SPECIES);
+                FloatVector acc3 = FloatVector.zero(SPECIES);
+                for (int k = 0; k < inner; k++) {
+                    FloatVector bVector = FloatVector.fromArray(SPECIES, bFloat, k * columns + c);
+                    acc0 = acc0.add(bVector.mul(aFloat[(rBase) * inner + k]));
+                    if (blockRows > 1) {
+                        acc1 = acc1.add(bVector.mul(aFloat[(rBase + 1) * inner + k]));
+                    }
+                    if (blockRows > 2) {
+                        acc2 = acc2.add(bVector.mul(aFloat[(rBase + 2) * inner + k]));
+                    }
+                    if (blockRows > 3) {
+                        acc3 = acc3.add(bVector.mul(aFloat[(rBase + 3) * inner + k]));
+                    }
                 }
-                int bOffset = k * columns;
-                int c = 0;
-                for (; c + SPECIES.length() <= columns; c += SPECIES.length()) {
-                    FloatVector resultVector = FloatVector.fromArray(SPECIES, result, rowOffset + c);
-                    FloatVector bVector = FloatVector.fromArray(SPECIES, bFloat, bOffset + c);
-                    resultVector.add(bVector.mul(aValue)).intoArray(result, rowOffset + c);
+                acc0.intoArray(result, rBase * columns + c);
+                if (blockRows > 1) {
+                    acc1.intoArray(result, (rBase + 1) * columns + c);
                 }
-                for (; c < columns; c++) {
-                    result[rowOffset + c] += aValue * bFloat[bOffset + c];
+                if (blockRows > 2) {
+                    acc2.intoArray(result, (rBase + 2) * columns + c);
+                }
+                if (blockRows > 3) {
+                    acc3.intoArray(result, (rBase + 3) * columns + c);
+                }
+            }
+            for (int r = rBase; r < rBase + blockRows; r++) {
+                for (int c = vectorColumns; c < columns; c++) {
+                    float total = 0;
+                    for (int k = 0; k < inner; k++) {
+                        total += aFloat[r * inner + k] * bFloat[k * columns + c];
+                    }
+                    result[r * columns + c] = total;
                 }
             }
         }

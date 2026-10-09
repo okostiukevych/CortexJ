@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-data-tablesaw</artifactId>
+  <name>CortexJ Data Tablesaw</name>
+  <description>Tablesaw adapter over the Data API (ADR-019): read a Tablesaw table as a CortexJ frame. The library never leaks into data-api signatures.</description>
+  <properties>
+    <cortexj.shared.release>17</cortexj.shared.release>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-data-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- fingerprint cross-adapter consistency check -->
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-data-csv</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>tech.tablesaw</groupId>
+      <artifactId>tablesaw-core</artifactId>
+      <version>0.44.1</version>
+    </dependency>
+  </dependencies>
+</project>
