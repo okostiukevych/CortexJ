@@ -12,10 +12,10 @@ import java.util.Map;
 public final class ModelLockfile {
 
     /**
-     * Lockfile schema version (spec v3.0 §125.8, issue #159): {@code major}
+     * Lockfile schema version (ADR-020, issue #159): {@code major}
      * gates compatibility, {@code minor} is forward-compatible. Readers
      * reject unknown majors with a typed error instead of misreading the
-     * file; cross-track provenance (§148) keys off the same scheme.
+     * file; cross-track provenance (ADR-020) keys off the same scheme.
      */
     public static final int SCHEMA_MAJOR = 1;
     public static final int SCHEMA_MINOR = 0;
