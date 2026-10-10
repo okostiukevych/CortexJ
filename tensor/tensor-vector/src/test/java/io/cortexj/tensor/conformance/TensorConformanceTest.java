@@ -170,6 +170,89 @@ class TensorConformanceTest {
                 Shape.of(2, 3)));
     }
 
+    @Test
+    void broadcastingFollowsNumpySemantics() {
+        Tensor matrix = CPU.create(new double[]{1, 2, 3, 4}, Shape.of(2, 2), DType.F32, Device.CPU);
+        Tensor row = CPU.create(new double[]{10, 20}, Shape.of(2), DType.F32, Device.CPU);
+        Tensor sum = CPU.add(matrix, row);
+        assertEquals(Shape.of(2, 2), sum.shape());
+        assertEquals(11.0, sum.get(0, 0), TOLERANCE);
+        assertEquals(22.0, sum.get(0, 1), TOLERANCE);
+        assertEquals(13.0, sum.get(1, 0), TOLERANCE);
+        assertEquals(24.0, sum.get(1, 1), TOLERANCE);
+        // scalar-shaped broadcast
+        Tensor one = CPU.create(new double[]{5}, Shape.of(1), DType.F32, Device.CPU);
+        assertEquals(6.0, CPU.add(matrix, one).get(0, 0), TOLERANCE);
+        // incompatible shapes fail typed
+        Tensor bad = CPU.create(new double[]{1, 2, 3}, Shape.of(3), DType.F32, Device.CPU);
+        assertThrows(IllegalArgumentException.class, () -> CPU.add(matrix, bad));
+    }
+
+    @Test
+    void creationFamilyIsSeeded() {
+        Tensor zeros = CPU.zeros(Shape.of(2, 2), DType.F32, Device.CPU);
+        assertEquals(0.0, zeros.get(1, 1), TOLERANCE);
+        Tensor filled = CPU.fill(Shape.of(3), 2.5, DType.F32, Device.CPU);
+        assertEquals(2.5, filled.get(2), TOLERANCE);
+        Tensor first = CPU.random(Shape.of(4), DType.F32, Device.CPU, 42L);
+        Tensor second = CPU.random(Shape.of(4), DType.F32, Device.CPU, 42L);
+        assertParity(first.toArray(), second.toArray());
+        Tensor third = CPU.random(Shape.of(4), DType.F32, Device.CPU, 43L);
+        assertTrue(first.get(0) != third.get(0));
+    }
+
+    @Test
+    void batchMatmulParity() {
+        double[] left = {1, 0, 0, 1, 2, 2, 2, 2};
+        double[] right = {1, 2, 3, 4, 0, 1, 1, 0};
+        Tensor a = CPU.create(left, Shape.of(2, 2, 2), DType.F32, Device.CPU);
+        Tensor b = CPU.create(right, Shape.of(2, 2, 2), DType.F32, Device.CPU);
+        Tensor reference = CPU.batchMatmul(a, b);
+        assertEquals(Shape.of(2, 2, 2), reference.shape());
+        // batch 0 is the identity: result equals b[0]
+        assertEquals(1.0, reference.get(0, 0, 0), TOLERANCE);
+        assertEquals(4.0, reference.get(0, 1, 1), TOLERANCE);
+        // batch 1: [[2,2],[2,2]] x [[0,1],[1,0]] = [[2,2],[2,2]]
+        assertEquals(2.0, reference.get(1, 0, 0), TOLERANCE);
+        assertEquals(2.0, reference.get(1, 1, 1), TOLERANCE);
+        assertParity(reference.toArray(), VECTOR.batchMatmul(a, b).toArray());
+    }
+
+    @Test
+    void logSoftmaxSumsToOneInExpSpace() {
+        Tensor a = CPU.create(new double[]{1.0, 2.0, 3.0}, Shape.of(3), DType.F32, Device.CPU);
+        Tensor logged = CPU.logSoftmax(a);
+        double total = 0;
+        for (double value : logged.toArray()) {
+            total += Math.exp(value);
+            assertTrue(value <= 0, "log-probabilities are non-positive");
+        }
+        assertEquals(1.0, total, TOLERANCE);
+        assertParity(logged.toArray(), VECTOR.logSoftmax(a).toArray());
+    }
+
+    @Test
+    void sliceIsAViewSharingStorage() {
+        Tensor a = CPU.create(new double[]{1, 2, 3, 4, 5, 6}, Shape.of(3, 2), DType.F32, Device.CPU);
+        Tensor view = CPU.slice(a, 1, 3);
+        assertTrue(view.isView());
+        assertEquals(Shape.of(2, 2), view.shape());
+        assertEquals(3.0, view.get(0, 0), TOLERANCE);
+        assertEquals(6.0, view.get(1, 1), TOLERANCE);
+        assertThrows(IllegalArgumentException.class, () -> CPU.slice(a, 2, 2));
+        assertThrows(IllegalArgumentException.class, () -> CPU.slice(a, 0, 4));
+    }
+
+    @Test
+    void unwrapIsDocumentedEscapeHatch() {
+        Tensor a = CPU.create(new double[]{1, 2}, Shape.of(2), DType.F32, Device.CPU);
+        Object handle = CPU.unwrap(a);
+        assertTrue(handle instanceof double[]);
+        assertEquals(2, ((double[]) handle).length);
+        Object vectorHandle = VECTOR.unwrap(a);
+        assertTrue(vectorHandle instanceof double[]);
+    }
+
     private static void assertParity(double[] reference, double[] accelerated) {
         assertEquals(reference.length, accelerated.length);
         for (int i = 0; i < reference.length; i++) {

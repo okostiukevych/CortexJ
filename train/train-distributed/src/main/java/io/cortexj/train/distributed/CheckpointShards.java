@@ -30,6 +30,17 @@ public final class CheckpointShards {
      */
     public static List<Path> save(Map<String, double[]> state, Path directory, int shards)
             throws IOException {
+        return saveWithShapes(state, null, directory, shards);
+    }
+
+    /**
+     * Saves with per-parameter shapes recorded in the manifest
+     * ({@code shape.<name>=d0,d1}) so a resume can rebuild tensors.
+     */
+    public static List<Path> saveWithShapes(Map<String, double[]> state,
+                                            Map<String, long[]> shapes,
+                                            Path directory, int shards)
+            throws IOException {
         if (state == null || state.isEmpty()) {
             throw new IllegalArgumentException("state dict must not be empty");
         }
@@ -42,6 +53,19 @@ public final class CheckpointShards {
         List<Path> files = new ArrayList<>(shards);
         StringBuilder manifest = new StringBuilder();
         manifest.append("shards=").append(shards).append('\n');
+        if (shapes != null) {
+            for (Map.Entry<String, long[]> shape : shapes.entrySet()) {
+                manifest.append("shape.").append(shape.getKey()).append('=');
+                long[] dimensions = shape.getValue();
+                for (int i = 0; i < dimensions.length; i++) {
+                    if (i > 0) {
+                        manifest.append(',');
+                    }
+                    manifest.append(dimensions[i]);
+                }
+                manifest.append('\n');
+            }
+        }
         for (int shard = 0; shard < shards; shard++) {
             StringBuilder body = new StringBuilder();
             for (int i = shard; i < names.size(); i += shards) {
@@ -110,6 +134,30 @@ public final class CheckpointShards {
             }
         }
         return state;
+    }
+
+    /**
+     * Reads the recorded shapes ({@code shape.<name>=d0,d1} manifest lines).
+     */
+    public static Map<String, long[]> shapesOf(Path directory) throws IOException {
+        Path manifestFile = directory.resolve("manifest.properties");
+        if (!Files.isRegularFile(manifestFile)) {
+            throw new IOException("checkpoint manifest is missing: " + manifestFile);
+        }
+        Map<String, String> manifest = readProperties(manifestFile);
+        Map<String, long[]> shapes = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : manifest.entrySet()) {
+            if (!entry.getKey().startsWith("shape.")) {
+                continue;
+            }
+            String[] parts = entry.getValue().split(",");
+            long[] shape = new long[parts.length];
+            for (int i = 0; i < parts.length; i++) {
+                shape[i] = Long.parseLong(parts[i].trim());
+            }
+            shapes.put(entry.getKey().substring("shape.".length()), shape);
+        }
+        return shapes;
     }
 
     private static Map<String, String> readProperties(Path file) throws IOException {

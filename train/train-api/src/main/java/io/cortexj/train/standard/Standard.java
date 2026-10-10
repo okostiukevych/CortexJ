@@ -17,8 +17,63 @@ public final class Standard {
         return sgd(learningRate, 0.0);
     }
 
-    public static Optimizer sgd(double learningRate, double momentum) {
+    /**
+     * AdamW: adaptive moments with decoupled weight decay. Pure math,
+     * hand-computed in the test.
+     */
+    public static Optimizer adamW(double learningRate) {
+        return adamW(learningRate, 0.9, 0.999, 1e-8, 0.01);
+    }
+
+    public static Optimizer adamW(double learningRate, double beta1, double beta2,
+                                  double epsilon, double weightDecay) {
         if (learningRate <= 0 || learningRate > 1) {
+            throw new IllegalArgumentException("learning rate must sit in (0, 1]");
+        }
+        if (beta1 < 0 || beta1 >= 1 || beta2 < 0 || beta2 >= 1) {
+            throw new IllegalArgumentException("betas must sit in [0, 1)");
+        }
+        if (epsilon <= 0) {
+            throw new IllegalArgumentException("epsilon must be positive");
+        }
+        return new Optimizer() {
+            private double[] first;
+            private double[] second;
+            private long step;
+
+            @Override
+            public String id() {
+                return "adamw";
+            }
+
+            @Override
+            public double[] step(double[] parameters, double[] gradients) {
+                if (gradients.length != parameters.length) {
+                    throw new IllegalArgumentException("gradient shape mismatch");
+                }
+                if (first == null) {
+                    first = new double[parameters.length];
+                    second = new double[parameters.length];
+                }
+                step++;
+                double[] updated = new double[parameters.length];
+                double bias1 = 1 - Math.pow(beta1, step);
+                double bias2 = 1 - Math.pow(beta2, step);
+                for (int i = 0; i < parameters.length; i++) {
+                    first[i] = beta1 * first[i] + (1 - beta1) * gradients[i];
+                    second[i] = beta2 * second[i] + (1 - beta2) * gradients[i] * gradients[i];
+                    double correctedFirst = first[i] / bias1;
+                    double correctedSecond = second[i] / bias2;
+                    updated[i] = parameters[i]
+                            - learningRate * correctedFirst / (Math.sqrt(correctedSecond) + epsilon)
+                            - learningRate * weightDecay * parameters[i];
+                }
+                return updated;
+            }
+        };
+    }
+
+    public static Optimizer sgd(double learningRate, double momentum) {        if (learningRate <= 0 || learningRate > 1) {
             throw new IllegalArgumentException("learning rate must sit in (0, 1]");
         }
         if (momentum < 0 || momentum >= 1) {

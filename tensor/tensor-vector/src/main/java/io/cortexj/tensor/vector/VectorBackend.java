@@ -183,6 +183,41 @@ public class VectorBackend implements TensorBackend {
     }
 
     @Override
+    public Tensor zeros(Shape shape, DType dtype, Device device) {
+        return reference.zeros(shape, dtype, device);
+    }
+
+    @Override
+    public Tensor fill(Shape shape, double value, DType dtype, Device device) {
+        return reference.fill(shape, value, dtype, device);
+    }
+
+    @Override
+    public Tensor random(Shape shape, DType dtype, Device device, long seed) {
+        return reference.random(shape, dtype, device, seed);
+    }
+
+    @Override
+    public Tensor batchMatmul(Tensor left, Tensor right) {
+        return reference.batchMatmul(left, right);
+    }
+
+    @Override
+    public Tensor logSoftmax(Tensor tensor) {
+        return reference.logSoftmax(tensor);
+    }
+
+    @Override
+    public Tensor slice(Tensor tensor, long from, long to) {
+        return reference.slice(tensor, from, to);
+    }
+
+    @Override
+    public Object unwrap(Tensor tensor) {
+        return reference.unwrap(tensor);
+    }
+
+    @Override
     public Tensor reshape(Tensor tensor, Shape shape) {
         return reference.reshape(tensor, shape);
     }

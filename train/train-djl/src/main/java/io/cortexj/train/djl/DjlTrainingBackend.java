@@ -175,9 +175,15 @@ public class DjlTrainingBackend implements TrainingBackend {
                         .setSampling(data.rows(), false)
                         .build();
                 trainer.initialize(new Shape(data.rows(), 1));
+                // resume: load a previous checkpoint into the block
+                String resumeFrom = request.parameters().get("resumeFrom");
+                if (resumeFrom != null && !resumeFrom.trim().isEmpty()) {
+                    resumeBlock(model, java.nio.file.Paths.get(resumeFrom.trim()));
+                }
                 // capture the initial weights BEFORE training: DJL
                 // initializes randomly, so the LoRA delta is trained-initial
                 Map<String, double[]> initialParameters = blockParameters(model);
+                Map<String, long[]> parameterShapes = blockParameterShapes(model);
                 double finalLoss = 0;
                 for (int epoch = 0; epoch < epochs; epoch++) {
                     for (var batch : trainer.iterateDataset(dataset)) {
@@ -220,6 +226,11 @@ public class DjlTrainingBackend implements TrainingBackend {
                 }
                 LoRAAdapter adapter = new LoRAAdapter(firstWeightKey, weightInputs, weightOutputs,
                         config, deltaA, deltaB);
+
+                // checkpoint the trained block: resume loads it back
+                Path checkpointDirectory = workDirectory.resolve("checkpoint-0");
+                io.cortexj.train.distributed.CheckpointShards.saveWithShapes(
+                        trained, parameterShapes, checkpointDirectory, 2);
 
                 Path adapterFile = workDirectory.resolve("adapter_model.safetensors");
                 LoRASafetensors.write(adapter, adapterFile,
@@ -271,6 +282,30 @@ public class DjlTrainingBackend implements TrainingBackend {
         return parameters;
     }
 
+    private static void resumeBlock(Model model, java.nio.file.Path checkpoint)
+            throws Exception {
+        Map<String, double[]> saved = io.cortexj.train.distributed.CheckpointShards
+                .load(checkpoint);
+        Map<String, long[]> shapes = io.cortexj.train.distributed.CheckpointShards
+                .shapesOf(checkpoint);
+        ai.djl.nn.ParameterList parameterList = model.getBlock().getParameters();
+        for (int i = 0; i < parameterList.keys().size(); i++) {
+            String key = parameterList.keys().get(i);
+            double[] values = saved.get(key);
+            long[] shape = shapes.get(key);
+            if (values == null || shape == null) {
+                throw new IllegalStateException("checkpoint has no parameter: " + key);
+            }
+            float[] floats = new float[values.length];
+            for (int v = 0; v < values.length; v++) {
+                floats[v] = (float) values[v];
+            }
+            // the array already exists after initialize: copy in place
+            // (a second setArray is rejected by DJL)
+            parameterList.values().get(i).getArray().set(floats);
+        }
+    }
+
     private static Map<String, long[]> blockParameterShapes(Model model) {
         Map<String, long[]> shapes = new LinkedHashMap<String, long[]>();
         ai.djl.nn.ParameterList parameterList = model.getBlock().getParameters();
@@ -305,9 +340,24 @@ public class DjlTrainingBackend implements TrainingBackend {
         return "sha256:" + hex;
     }
 
-    private long estimateMemory(TrainingRequest request) {
-        // the tiny-model path is small; the honest estimate is a floor
-        return 64L * 1024 * 1024;
+    /**
+     * Honest memory estimate for the verified tiny path, documented:
+     * data (rows x features x 4B) + parameters (~= data, tiny linear
+     * model) + gradients (params) + optimizer state (2x params, SGD) +
+     * activations (2x data). LLM-scale runs need engine reporting.
+     */
+    static long estimateMemory(TrainingRequest request) {
+        long dataBytes = 0;
+        if (request != null && request.data() != null) {
+            dataBytes = (long) request.data().rows()
+                    * request.data().featureCount() * 4L;
+        }
+        long parametersBytes = Math.max(dataBytes, 1024);
+        return dataBytes            // batch data
+                + parametersBytes   // weights
+                + parametersBytes   // gradients
+                + 2 * parametersBytes // optimizer state (SGD)
+                + 2 * dataBytes;     // activations
     }
 
     static List<String> remediation() {
