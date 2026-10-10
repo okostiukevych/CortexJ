@@ -27,7 +27,7 @@ import java.util.logging.Logger;
 
 /**
  * Parent-side runtime provider that hosts a target runtime inside an
- * isolated worker child JVM (spec section 127, GitHub issue #88).
+ * isolated worker child JVM (ADR-028, GitHub issue #88).
  *
  * <p>Opt-in only - it is never registered via META-INF/services. Wire it
  * programmatically per target runtime:</p>
