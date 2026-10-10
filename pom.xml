@@ -67,6 +67,7 @@
     <module>worker</module>
     <module>converters/gguf</module>
     <module>converters/safetensors</module>
+    <module>converters/lora</module>
     <module>server</module>
     <module>maven-plugin</module>
     <module>examples</module>
