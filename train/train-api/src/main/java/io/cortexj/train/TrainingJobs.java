@@ -50,9 +50,9 @@ public final class TrainingJobs {
     }
 
     /**
-     * Runs a composed plan through the same selection (the §141.2
-     * example shape, minus the Runtime facade the dependency law
-     * forbids in the stable api).
+     * Runs a composed plan through the same selection (the
+     * high-level example shape, minus the Runtime facade the
+     * dependency law forbids in the stable api).
      */
     public TrainingResult start(TrainingPlan plan) {
         if (plan == null || plan.request() == null) {

@@ -146,7 +146,7 @@ class TrainingPolicyContractsTest {
 
     @Test
     void highLevelExampleShapeWorks() {
-        // the §141.2 example shape, minus the Runtime facade the
+        // the high-level example shape, minus the Runtime facade the
         // dependency law forbids in the stable api
         TrainingPlan plan = Trainers.trainer()
                 .model("m")
