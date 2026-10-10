@@ -32,6 +32,23 @@ because none ship a writer + adapter naming contract; minimal
 solution = items 1–2; acceptance = round-trip test; Runtime impact =
 none; native/support cost = zero (pure Java).
 
+## Spike result (2026-10-10): the native path is proven
+
+A throwaway spike (kept outside the repo) verified the mechanics:
+libtorch 2.7.1 for macOS arm64 + a 60-line `extern "C"` shim
+(create/add/read/destroy over ATen F32 tensors) + Java FFM
+(`Linker`/`SymbolLookup`, `--enable-native-access`) computes
+`[1,2,3,4]+[5,6,7,8] = [6,8,10,12]` exactly. Two toolchain notes:
+Apple clang needs `-Wno-invalid-specialization` for the libtorch
+headers; the shim's `@rpath` deps need `DYLD_FALLBACK_LIBRARY_PATH`
+at load time.
+
+The spike proves the mechanics, not the product: the four
+conditions above still gate any production bridge (the shim pins
+2.7.1 symbols, one op is proven — full op coverage is the real
+work, ~200MB native per platform needs a distribution story).
+The bridge stays out of scope until they hold.
+
 ## Consequences
 
 - The safetensors module owns the container format; the PEFT module
