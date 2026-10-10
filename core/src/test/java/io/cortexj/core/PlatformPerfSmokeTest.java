@@ -12,9 +12,9 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Platform-layer performance smoke (spec 71/72): planner overhead, cache hit/miss.
+ * Platform-layer performance smoke: planner overhead, cache hit/miss.
  * Raw backend performance is intentionally NOT measured here - only the overhead
- * the platform itself adds (spec 71).
+ * the platform itself adds.
  */
 @Tag("perf")
 class PlatformPerfSmokeTest {
@@ -43,7 +43,7 @@ class PlatformPerfSmokeTest {
             double bestMillis = best / 1_000_000.0;
             System.out.printf(java.util.Locale.ROOT,
                     "planner overhead (best of 20): %.2f ms%n", bestMillis);
-            // spec 72: planner overhead must be negligible relative to model load
+            // planner overhead must be negligible relative to model load
             // (model loads take seconds+); keep a generous ceiling for CI noise.
             assertTrue(bestMillis < 500.0,
                     "planner overhead must stay negligible, was " + bestMillis + " ms");
@@ -74,9 +74,9 @@ class PlatformPerfSmokeTest {
                 "cache miss (64 KiB write): %.3f ms, cache hit: %.6f ms (hit/miss ratio %.3f)%n",
                 missNanos / 1_000_000.0, hitNanos / 1_000_000.0,
                 hitNanos / (double) Math.max(missNanos, 1L));
-        // spec 72: budgets are qualitative on shared CI hardware - single-operation
+        // budgets are qualitative on shared CI hardware - single-operation
         // timings are noisy (page cache, JIT), so assert coarse ceilings only and
-        // print the comparison for observation (spec 71: measurement, not gating).
+        // print the comparison for observation (measurement, not gating).
         assertTrue(hitNanos < 1_000_000_000L,
                 "a 64 KiB cache hit taking more than 1 s indicates a real problem");
     }

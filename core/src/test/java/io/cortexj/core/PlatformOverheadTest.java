@@ -17,7 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spec v3.0 §124.2 (issue #158): platform dispatch overhead harness. The
+ * Platform dispatch overhead harness (issue #158). The
  * fake runtime answers instantly, so measured time is pure platform
  * overhead (handle dispatch, events, metrics) - it must stay flat and
  * far below any real inference cost.
