@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-tensor-libtorch</artifactId>
+  <name>CortexJ Tensor LibTorch</name>
+  <description>LibTorch tensor backend over a versioned C ABI shim (ADR-023): explicit op allowlist, differential tests, typed failures. Optional; core never depends on it. Java 25 (FFM).</description>
+  <properties>
+    <cortexj.shared.release>25</cortexj.shared.release>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-tensor-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-tensor-cpu</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

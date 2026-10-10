@@ -49,6 +49,17 @@ conditions above still gate any production bridge (the shim pins
 work, ~200MB native per platform needs a distribution story).
 The bridge stays out of scope until they hold.
 
+## Production path status (2026-10-10, issue #181)
+
+`cortexj-tensor-libtorch` implements the path: versioned C ABI
+(`spike_abi_version`, Java refuses mismatches typed), explicit op
+allowlist (add/mul/matmul/relu, F32 CPU), differential tests vs the
+CPU reference, live lane green through the real shim + libtorch.
+Measured (`-Pperf`, Apple arm64): 128x128 parity (0.7 vs 0.8 ms),
+512x512 libtorch 25x faster (2.0 vs 49.4 ms). Remaining before a
+1.0 bridge: wider op coverage, per-OS/arch native distribution with
+checksums, CI-built shim lane.
+
 ## Consequences
 
 - The safetensors module owns the container format; the PEFT module
