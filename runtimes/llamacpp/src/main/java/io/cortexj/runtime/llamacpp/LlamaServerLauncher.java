@@ -10,6 +10,17 @@ interface LlamaServerLauncher {
 
     LlamaServerEndpoint launch(Path artifactPath) throws IOException;
 
+    /**
+     * Launch with server arguments. The only supported argument is
+     * {@code gpuLayers} (offload that many layers to the GPU backend,
+     * Metal/CUDA where the binary supports it). Unknown arguments must
+     * be rejected, never silently ignored.
+     */
+    default LlamaServerEndpoint launch(Path artifactPath, java.util.Map<String, Object> serverArgs)
+            throws IOException {
+        return launch(artifactPath);
+    }
+
     static int findFreePort() throws IOException {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();

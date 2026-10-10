@@ -23,6 +23,13 @@ final class SharedEndpointRegistry {
 
     SharedEndpoint acquire(String key, LlamaServerLauncher launcher, Path artifactPath)
             throws IOException {
+        return acquire(key, launcher, artifactPath,
+                java.util.Collections.<String, Object>emptyMap());
+    }
+
+    SharedEndpoint acquire(String key, LlamaServerLauncher launcher, Path artifactPath,
+                           java.util.Map<String, Object> serverArgs)
+            throws IOException {
         Object lock = keyLocks.computeIfAbsent(key, new java.util.function.Function<String, Object>() {
             @Override
             public Object apply(String ignored) {
@@ -39,7 +46,7 @@ final class SharedEndpointRegistry {
                 if (existing != null && existing.tryRetain()) {
                     return existing;
                 }
-                LlamaServerEndpoint fresh = launcher.launch(artifactPath);
+                LlamaServerEndpoint fresh = launcher.launch(artifactPath, serverArgs);
                 SharedEndpoint shared = new SharedEndpoint(fresh, key, endpoints, keyLocks, lock);
                 endpoints.put(key, shared);
                 return shared;

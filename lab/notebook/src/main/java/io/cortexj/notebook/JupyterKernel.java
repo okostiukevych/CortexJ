@@ -24,18 +24,25 @@ public final class JupyterKernel implements AutoCloseable {
     private final ZMQ.Socket heartbeat;
     private final ZMQ.Socket shell;
     private final ZMQ.Socket iopub;
+    private final ZMQ.Socket stdin;
     private final AtomicBoolean running = new AtomicBoolean();
     private final List<Thread> workers = new ArrayList<>();
     private final String sessionId = java.util.UUID.randomUUID().toString();
 
     public JupyterKernel(LabSession session, byte[] key,
                          int heartbeatPort, int shellPort, int iopubPort) {
+        this(session, key, heartbeatPort, shellPort, iopubPort, -1);
+    }
+
+    public JupyterKernel(LabSession session, byte[] key,
+                         int heartbeatPort, int shellPort, int iopubPort, int stdinPort) {
         this.session = session;
         this.key = key;
         this.context = new ZContext();
         this.heartbeat = context.createSocket(SocketType.REP);
         this.shell = context.createSocket(SocketType.ROUTER);
         this.iopub = context.createSocket(SocketType.PUB);
+        this.stdin = context.createSocket(SocketType.ROUTER);
         // port < 0 binds an ephemeral port; bindToRandomPort returns it
         this.heartbeatPort = heartbeatPort < 0
                 ? this.heartbeat.bindToRandomPort("tcp://127.0.0.1")
@@ -46,6 +53,9 @@ public final class JupyterKernel implements AutoCloseable {
         this.iopubPort = iopubPort < 0
                 ? this.iopub.bindToRandomPort("tcp://127.0.0.1")
                 : bindFixed(this.iopub, iopubPort);
+        this.stdinPort = stdinPort < 0
+                ? this.stdin.bindToRandomPort("tcp://127.0.0.1")
+                : bindFixed(this.stdin, stdinPort);
     }
 
     private static int bindFixed(ZMQ.Socket socket, int port) {
@@ -56,6 +66,7 @@ public final class JupyterKernel implements AutoCloseable {
     private final int heartbeatPort;
     private final int shellPort;
     private final int iopubPort;
+    private final int stdinPort;
 
     public int heartbeatPort() {
         return heartbeatPort;
@@ -67,6 +78,98 @@ public final class JupyterKernel implements AutoCloseable {
 
     public int iopubPort() {
         return iopubPort;
+    }
+
+    public int stdinPort() {
+        return stdinPort;
+    }
+
+    /**
+     * Writes the Jupyter connection file (kernel.json) for this kernel:
+     * transport, ip, the five ports, signature scheme and key.
+     */
+    public java.nio.file.Path writeConnectionFile(java.nio.file.Path directory) throws java.io.IOException {
+        if (directory == null) {
+            throw new IllegalArgumentException("directory must not be null");
+        }
+        java.nio.file.Files.createDirectories(directory);
+        String json = "{"
+                + "\"transport\":\"tcp\","
+                + "\"ip\":\"127.0.0.1\","
+                + "\"shell_port\":" + shellPort + ","
+                + "\"iopub_port\":" + iopubPort + ","
+                + "\"stdin_port\":" + stdinPort + ","
+                + "\"control_port\":" + shellPort + ","
+                + "\"hb_port\":" + heartbeatPort + ","
+                + "\"signature_scheme\":\"hmac-sha256\","
+                + "\"key\":" + WireMessage.quoteValue(new String(key, java.nio.charset.StandardCharsets.US_ASCII))
+                + "}";
+        java.nio.file.Path file = directory.resolve("kernel.json");
+        java.nio.file.Files.writeString(file, json, java.nio.charset.StandardCharsets.UTF_8);
+        return file;
+    }
+
+    /**
+     * Code completeness for is_complete_request: balanced brackets and
+     * quotes means complete; anything else is incomplete (the frontend
+     * keeps the cell open). A heuristic, documented as such.
+     */
+    static String completenessOf(String code) {
+        if (code == null || code.trim().isEmpty()) {
+            return "complete";
+        }
+        int round = 0;
+        int square = 0;
+        int curly = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < code.length(); i++) {
+            char ch = code.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            switch (ch) {
+                case '(':
+                    round++;
+                    break;
+                case ')':
+                    round--;
+                    break;
+                case '[':
+                    square++;
+                    break;
+                case ']':
+                    square--;
+                    break;
+                case '{':
+                    curly++;
+                    break;
+                case '}':
+                    curly--;
+                    break;
+                default:
+                    break;
+            }
+            if (round < 0 || square < 0 || curly < 0) {
+                return "invalid";
+            }
+        }
+        if (inString || round > 0 || square > 0 || curly > 0) {
+            return "incomplete";
+        }
+        return "complete";
     }
 
     /**
@@ -167,6 +270,12 @@ public final class JupyterKernel implements AutoCloseable {
             case "execute_request":
                 executeAndPublish(routing, message);
                 break;
+            case "is_complete_request": {
+                String code = stringValue(message.content(), "code", "");
+                send(routing, WireMessage.reply(message, "is_complete_reply",
+                        "{\"status\":\"" + completenessOf(code) + "\"}"));
+                break;
+            }
             default:
                 send(routing, WireMessage.reply(message, "error_reply",
                         "{\"status\":\"error\",\"ename\":\"NotImplemented\","
@@ -267,6 +376,7 @@ public final class JupyterKernel implements AutoCloseable {
         heartbeat.close();
         shell.close();
         iopub.close();
+        stdin.close();
         context.close();
         session.close();
     }

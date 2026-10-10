@@ -51,6 +51,29 @@ class JupyterKernelLiveTest {
             assertEquals(request.messageId(), reply.parentMessageId());
             assertTrue(reply.content().contains("\"cortexj\""), reply.content());
 
+            // is_complete: balanced code is complete, open bracket incomplete
+            WireMessage complete = WireMessage.reply(null, "is_complete_request",
+                    "{\"code\":\"1 + 2\"}");
+            send(shell, complete);
+            WireMessage completeReply = receive(shell);
+            assertEquals("is_complete_reply", completeReply.messageType());
+            assertTrue(completeReply.content().contains("complete")
+                            && !completeReply.content().contains("incomplete"),
+                    completeReply.content());
+            WireMessage open = WireMessage.reply(null, "is_complete_request",
+                    "{\"code\":\"foo(\"}");
+            send(shell, open);
+            WireMessage openReply = receive(shell);
+            assertTrue(openReply.content().contains("incomplete"), openReply.content());
+
+            // connection file round-trip
+            java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("kernel-conn");
+            java.nio.file.Path connectionFile = kernel.writeConnectionFile(dir);
+            String connection = java.nio.file.Files.readString(connectionFile);
+            assertTrue(connection.contains("\"shell_port\":" + kernel.shellPort()), connection);
+            assertTrue(connection.contains("\"stdin_port\":" + kernel.stdinPort()), connection);
+            assertTrue(connection.contains("hmac-sha256"), connection);
+
             // execute 1 + 2
             WireMessage execute = WireMessage.reply(null, "execute_request",
                     "{\"code\":\"1 + 2\",\"silent\":false}");
