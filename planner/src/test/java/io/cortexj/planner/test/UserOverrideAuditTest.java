@@ -115,7 +115,7 @@ class UserOverrideAuditTest {
                 .build();
         String firstDigest = first.plan(request).inputsDigest();
         String secondDigest = second.plan(request).inputsDigest();
-        assertEquals(firstDigest, secondDigest, "digest must be reproducible (G-008, §67.4)");
+        assertEquals(firstDigest, secondDigest, "digest must be reproducible (deterministic planning)");
         assertTrue(firstDigest.startsWith("sha256:"));
         assertEquals(71, firstDigest.length());
         assertNotEquals("", first.plan(request).explanation());

@@ -32,11 +32,11 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Deterministic Safetensors -> GGUF container conversion (spec 31 Level C, 32):
+ * Deterministic Safetensors -> GGUF container conversion:
  * F32/F16/BF16 and integer tensors are re-containerized byte-for-byte into a valid
  * GGUF layout; model metadata is derived from an adjacent config.json when present.
  *
- * <p>Honesty note (spec 30.3 / 32): the output is a structurally valid GGUF file.
+ * <p>Honesty note: the output is a structurally valid GGUF file.
  * Whether a concrete runtime (llama.cpp) accepts the model additionally depends on
  * architecture-specific metadata that safetensors alone does not carry - the
  * provenance manifest records exactly which keys were derived and which were not.</p>

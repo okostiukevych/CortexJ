@@ -1066,7 +1066,7 @@ public final class DefaultModels implements io.cortexj.Models {
                     directory.resolve(sanitizePathSegment(candidate.artifact().id())
                             + ".provenance.properties"));
             try {
-                manifest.store(out, "CortexJ deterministic conversion provenance (spec 32.4)");
+                manifest.store(out, "CortexJ deterministic conversion provenance");
             } finally {
                 out.close();
             }

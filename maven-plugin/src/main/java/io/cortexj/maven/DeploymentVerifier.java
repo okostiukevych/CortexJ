@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Build-time deployment verification (spec 93/94), decoupled from the Mojo so the
+ * Build-time deployment verification, decoupled from the Mojo so the
  * checks are unit-testable without a Maven runtime.
  */
 public final class DeploymentVerifier {
@@ -26,7 +26,7 @@ public final class DeploymentVerifier {
 
     /**
      * Checks that the project declares the starter matching its bytecode target
-     * (spec 94: "correct starter").
+     * ("correct starter").
      */
     public static Result checkStarter(List<String> dependencyKeys, String compilerTarget) {
         List<String> issues = new ArrayList<String>();
@@ -69,7 +69,7 @@ public final class DeploymentVerifier {
     }
 
     /**
-     * Checks a lockfile is parseable and structurally complete (spec 94: "pinned
+     * Checks a lockfile is parseable and structurally complete ("pinned
      * model bundle / checksum manifest").
      */
     public static Result checkLockfile(File lockfile) {
@@ -100,7 +100,7 @@ public final class DeploymentVerifier {
 
     /**
      * Cross-checks a lockfile against an air-gap bundle when both are configured
-     * (spec 94 + audit #60): the lockfile sha256 pin must match the sha recorded
+     * (audit #60): the lockfile sha256 pin must match the sha recorded
      * in the bundle manifest for the pinned artifact.
      */
     public static Result checkLockfileAgainstBundle(File lockfile, File bundle) {
@@ -177,7 +177,7 @@ public final class DeploymentVerifier {
     }
 
     /**
-     * Verifies an air-gap bundle before deployment (spec 62.3/94).
+     * Verifies an air-gap bundle before deployment.
      */
     public static Result checkBundle(File bundle) {
         List<String> issues = new ArrayList<String>();
@@ -203,7 +203,7 @@ public final class DeploymentVerifier {
 
     /**
      * Checks runtime health and (optionally) a required runtime, plus model
-     * plannability when a model reference is given (spec 94: "native runtime
+     * plannability when a model reference is given ("native runtime
      * availability").
      */
     public static Result checkRuntimes(String model, String requiredRuntime) {

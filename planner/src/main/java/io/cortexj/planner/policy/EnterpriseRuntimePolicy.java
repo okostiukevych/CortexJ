@@ -17,7 +17,7 @@ import java.util.Properties;
 import java.util.Set;
 
 /**
- * Centrally supplied enterprise runtime policy (spec 128). Ops drops a
+ * Centrally supplied enterprise runtime policy. Ops drops a
  * properties file into the platform working directory (or points
  * {@code cortexj.enterprise.policy} at one) and the planner enforces it on
  * every plan without code changes.

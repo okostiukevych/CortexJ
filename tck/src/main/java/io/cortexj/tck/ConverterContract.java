@@ -86,7 +86,7 @@ public abstract class ConverterContract {
         assertNotNull(result.outputPath(), "conversion must produce an output path");
         assertNotNull(result.outputArtifact(), "conversion must describe the output artifact");
         assertTrue(result.provenance() != null && !result.provenance().isEmpty(),
-                "conversion must record provenance (§32.4)");
+                "conversion must record provenance");
     }
 
     @Test

@@ -37,7 +37,7 @@ public final class ModelBundler {
     public static final String MANIFEST_FILE = "cortexj-model.json";
 
     /**
-     * Bundle manifest schema version (spec v3.0 §125.8, issue #159): major
+     * Bundle manifest schema version (ADR-020, issue #159): major
      * gates compatibility, minor is forward-compatible. Absent version
      * means a pre-1.0 legacy bundle and is accepted as 1.x.
      */
@@ -150,7 +150,7 @@ public final class ModelBundler {
             if (modelId == null || modelId.isEmpty()) {
                 issues.add("manifest is missing the model id");
             }
-            // audit v3.0 §125.8 (issue #159): unknown majors fail, newer
+            // audit (issue #159): unknown majors fail, newer
             // minors pass, absent version is a legacy 1.x bundle
             String manifestVersion = manifest.path("manifestVersion").asText(null);
             if (manifestVersion != null && !manifestVersion.trim().isEmpty()) {

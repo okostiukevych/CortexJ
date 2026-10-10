@@ -50,7 +50,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Child-JVM host for isolated native execution (spec section 127, issue #88).
+ * Child-JVM host for isolated native execution (ADR-028, issue #88).
  *
  * <p>Hosts exactly one {@link RuntimeProvider} (selected by runtime id, loaded
  * via {@link ServiceLoader}) and serves a newline-delimited JSON protocol on

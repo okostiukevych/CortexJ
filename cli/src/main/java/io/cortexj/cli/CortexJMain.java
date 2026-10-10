@@ -84,7 +84,7 @@ public final class CortexJMain {
     }
 
     private static void usage() {
-        // spec v3.0 §123.1: Runtime-level messaging
+        // Runtime-level messaging
         System.out.println("cortexj - portable AI execution for the JVM");
         System.out.println("One JVM API. Compatible models. The best available runtime.");
         System.out.println();
@@ -101,7 +101,7 @@ public final class CortexJMain {
         System.out.println("  cortexj cache list                    list cached artifacts");
         System.out.println("  cortexj cache clean                   remove all cached artifacts");
         System.out.println();
-        System.out.println("Server mode (spec 60):");
+        System.out.println("Server mode:");
         System.out.println("  cortexj server <model> [--port <n>] [--bind <addr>] [--auth <token>]");
         System.out.println();
         System.out.println("Conversion:");

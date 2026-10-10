@@ -11,7 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Declarative Java API (spec 49): turns an annotated interface into model calls.
+ * Declarative Java API: turns an annotated interface into model calls.
  *
  * <pre>{@code
  * public interface InvoiceExtractor {
@@ -24,8 +24,8 @@ import java.util.regex.Pattern;
  * InvoiceTotal total = extractor.extract(invoiceText);
  * }</pre>
  *
- * <p>This is a separate artifact on purpose (spec 49): the runtime platform must not
- * turn into an application framework. Extraction is prompt + validation (spec 48),
+ * <p>This is a separate artifact on purpose: the runtime platform must not
+ * turn into an application framework. Extraction is prompt + validation,
  * not guaranteed structured decoding.</p>
  */
 public final class ModelInterfaces {

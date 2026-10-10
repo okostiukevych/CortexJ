@@ -13,7 +13,7 @@ class CustomRuntimeDiscoveryTest {
 
     @Test
     void thirdPartyRuntimeIsDiscoveredWithoutCoreChanges() {
-        // spec 84 / AC-RUNTIME-004: a new runtime joins the platform through ServiceLoader
+        // AC-RUNTIME-004: a new runtime joins the platform through ServiceLoader
         // alone; the planner sees it via descriptor/SPI (AC-RUNTIME-005)
         AtomicBoolean found = new AtomicBoolean(false);
         for (io.cortexj.spi.runtime.RuntimeProvider provider
@@ -35,7 +35,7 @@ class CustomRuntimeDiscoveryTest {
                 }
             }
             assertTrue(listed, "platform.runtimes() must expose the custom provider");
-            // and the support report is inspectable without loading a model (spec 92)
+            // and the support report is inspectable without loading a model
             try {
                 platform.support().inspect(ModelReference.of("Qwen/Qwen3-8B"));
             } catch (RuntimeException expectedOnOfflineMachine) {

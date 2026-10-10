@@ -27,7 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Deterministic GGUF float-width converter (spec 31 Level C, 32):
+ * Deterministic GGUF float-width converter:
  * F32 tensors -> F16 (MEMORY_FIRST) and F16 tensors -> F32, everything else
  * passed through byte-for-byte. Original artifacts are never modified.
  */

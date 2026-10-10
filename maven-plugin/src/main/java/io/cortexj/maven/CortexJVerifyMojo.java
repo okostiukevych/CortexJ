@@ -12,7 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * cortexj:verify — build-time deployment verification (spec 93/94):
+ * cortexj:verify — build-time deployment verification:
  * correct starter, native runtime availability, pinned model bundle,
  * checksum manifest/lockfile.
  *
