@@ -47,10 +47,14 @@ class BundleDownloadTempCleanupTest {
         server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(2));
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
+        // the bundler enforces the SSRF guard like the core download
+        // manager - loopback test traffic opts in explicitly
+        System.setProperty("cortexj.http.allowPrivateHosts", "true");
     }
 
     @AfterEach
     void stopServer() {
+        System.clearProperty("cortexj.http.allowPrivateHosts");
         server.stop(0);
     }
 
@@ -144,8 +148,28 @@ class BundleDownloadTempCleanupTest {
     }
 
     private static boolean anyTempLeft(Path bundleDirectory) throws IOException {
+        // audit 2026-10-10: create is atomic now - a failed create leaves no
+        // bundle directory at all (which is clean); a surviving directory
+        // must contain no staging temps, and neither may its parent
+        if (!Files.isDirectory(bundleDirectory)) {
+            return stagingLeftovers(bundleDirectory.getParent(),
+                    bundleDirectory.getFileName().toString());
+        }
         try (java.util.stream.Stream<Path> files = Files.list(bundleDirectory)) {
-            return files.anyMatch(p -> p.getFileName().toString().contains(".part-"));
+            if (files.anyMatch(p -> p.getFileName().toString().contains(".part-"))) {
+                return true;
+            }
+        }
+        return stagingLeftovers(bundleDirectory.getParent(),
+                bundleDirectory.getFileName().toString());
+    }
+
+    private static boolean stagingLeftovers(Path parent, String baseName) throws IOException {
+        if (parent == null || !Files.isDirectory(parent)) {
+            return false;
+        }
+        try (java.util.stream.Stream<Path> files = Files.list(parent)) {
+            return files.anyMatch(p -> p.getFileName().toString().startsWith(baseName + ".part-"));
         }
     }
 

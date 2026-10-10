@@ -32,6 +32,17 @@ class HfTokenizerTest {
     }
 
     @Test
+    void wordPieceUsesJsonIdValuesNotDocumentOrder() throws Exception {
+        // real-model verification 2026-10-10: vocab entries serialized out
+        // of id order must still resolve to their JSON values
+        String json = "{\"model\":{\"type\":\"WordPiece\",\"vocab\":{\"hello\":300,\"[CLS]\":101,\"##s\":400,\"[SEP]\":102}}}";
+        HfTokenizer.TokenEncoder encoder = HfTokenizer.load(tokenizerJson(json));
+        int[] ids = encoder.encode("hellos");
+        assertArrayEquals(new int[]{101, 300, 400, 102}, ids,
+                "WordPiece must use the vocab id values, not positional indices");
+    }
+
+    @Test
     void bpeEncodesWithMergesAndVocab() throws Exception {
         String json = "{\"model\":{\"type\":\"BPE\",\"vocab\":{\"l\":0,\"o\":1,\"lo\":2,\"w\":3,\"low\":4,\"<unk>\":5},"
                 + "\"merges\":[\"l o\",\"lo w\"]}}";

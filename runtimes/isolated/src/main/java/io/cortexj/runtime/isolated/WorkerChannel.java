@@ -381,6 +381,11 @@ final class WorkerChannel {
         if (dead.get()) {
             return;
         }
+        // audit 2026-10-10: remove the registration BEFORE writing the
+        // cancel, so a complete event dispatched concurrently for the same
+        // stream can never reach the subscriber after it observed
+        // cancellation (the terminal races the remove, and the remove must win)
+        activeStreams.remove(Long.valueOf(streamId));
         ObjectNode payload = WorkerCodec.object();
         payload.put("id", nextId());
         payload.put("op", "cancelStream");
@@ -391,9 +396,7 @@ final class WorkerChannel {
             // audit 2026-10-08: dying between the check and the write is a
             // benign race - the stream is dead either way, stay silent so
             // cancel keeps its idempotent contract
-            return;
         }
-        activeStreams.remove(Long.valueOf(streamId));
     }
 
     // ------------------------------------------------------------------

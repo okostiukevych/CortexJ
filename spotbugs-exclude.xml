@@ -40,6 +40,36 @@
     </Or>
   </Match>
 
+  <!-- audit 2026-10-10: full-reactor spotbugs surfaced pre-existing findings
+       in the incubating modules (research/nn/autograd/tensor - the release
+       train lists them as 0.x incubating). The exposure findings there are
+       INTENTIONAL aliasing, not encapsulation bugs:
+       - nn.Linear/ShardedLinear weight/bias and autograd Variable/TapeNode
+         data alias live storage shared with optimizers and the tape graph
+         (in-place updates are the semantics; a defensive copy would fork
+         state and break training).
+       - tensor.cpu CpuTensor storage aliases the parent array for views
+         (ADR-024: isView(), closing a view never frees parent data).
+       - research Cards value holders expose list/map snapshots the same way
+         as the already-excluded API value types above.
+       Each class below is listed explicitly; the encapsulation checks stay
+       active everywhere else. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    <Or>
+      <Class name="io.cortexj.autograd.Autograd"/>
+      <Class name="io.cortexj.autograd.GradientHooks$Hook"/>
+      <Class name="io.cortexj.autograd.TapeNode"/>
+      <Class name="io.cortexj.autograd.Variable"/>
+      <Class name="io.cortexj.nn.Linear"/>
+      <Class name="io.cortexj.nn.ShardedLinear"/>
+      <Class name="io.cortexj.research.Cards$Citation"/>
+      <Class name="io.cortexj.research.Cards$ExperimentBundle"/>
+      <Class name="io.cortexj.tensor.cpu.CpuBackend$CpuTensor"/>
+      <Class name="io.cortexj.tensor.libtorch.LibTorchBackend"/>
+    </Or>
+  </Match>
+
   <!-- Quantization implements Comparable for deterministic ordering of
        quantization variants; equals() is deliberately not overridden
        (identity semantics for an enum-like value type). -->

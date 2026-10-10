@@ -41,6 +41,12 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
 
     private static final int MAX_REDIRECTS = 5;
     private static final int METADATA_CACHE_MAX_ENTRIES = 256;
+    private static final int METADATA_FETCH_STRIPES = 16;
+    // audit 2026-10-10: thundering-herd guard - N concurrent plan()/load()
+    // calls after the TTL expiry all used to miss the cache and hit the HF
+    // API simultaneously; a per-stripe lock re-checks the cache inside the
+    // critical section so only one caller per slug ever fetches
+    private final Object[] metadataFetchLocks = metadataFetchStripes();
     private static final long DEFAULT_METADATA_TTL_MILLIS = 60_000L;
     private static final String METADATA_TTL_PROPERTY = "cortexj.hf.metadata.ttlMillis";
 
@@ -59,6 +65,18 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                     return size() > METADATA_CACHE_MAX_ENTRIES;
                 }
             });
+
+    private static Object[] metadataFetchStripes() {
+        Object[] stripes = new Object[METADATA_FETCH_STRIPES];
+        for (int i = 0; i < stripes.length; i++) {
+            stripes[i] = new Object();
+        }
+        return stripes;
+    }
+
+    private Object metadataFetchLock(String slug) {
+        return metadataFetchLocks[(slug.hashCode() & 0x7fffffff) % METADATA_FETCH_STRIPES];
+    }
 
     private static final class CachedMetadata {
         final JsonNode node;
@@ -248,11 +266,23 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                 metadataCache.remove(slug);
             }
         }
-        JsonNode response = fetchModelInfoFromApi(slug, token);
-        if (ttl > 0) {
-            metadataCache.put(slug, new CachedMetadata(response, System.currentTimeMillis()));
+        // audit 2026-10-10: singleflight per stripe - concurrent misses of
+        // the same slug serialize here; the winner fetches, the losers find
+        // the fresh entry in the re-check below
+        synchronized (metadataFetchLock(slug)) {
+            if (ttl > 0) {
+                CachedMetadata cached = metadataCache.get(slug);
+                if (cached != null
+                        && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
+                    return cached.node;
+                }
+            }
+            JsonNode response = fetchModelInfoFromApi(slug, token);
+            if (ttl > 0) {
+                metadataCache.put(slug, new CachedMetadata(response, System.currentTimeMillis()));
+            }
+            return response;
         }
-        return response;
     }
 
     private JsonNode fetchModelInfoFromApi(String slug, String token) {

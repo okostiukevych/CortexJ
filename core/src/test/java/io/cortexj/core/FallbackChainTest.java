@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FallbackChainTest {
@@ -118,6 +119,78 @@ class FallbackChainTest {
             } finally {
                 handle.close();
             }
+        } finally {
+            platform.close();
+        }
+    }
+
+    static final class NamedFailingRuntimeProvider implements RuntimeProvider {
+
+        private final RuntimeId id;
+        private final String boom;
+
+        NamedFailingRuntimeProvider(String id, String boom) {
+            this.id = RuntimeId.of(id);
+            this.boom = boom;
+        }
+
+        @Override
+        public RuntimeId id() {
+            return id;
+        }
+
+        @Override
+        public RuntimeDescriptor descriptor() {
+            return RuntimeDescriptor.builder(id)
+                    .version("1.0")
+                    .format(ArtifactFormat.GGUF)
+                    .device(DeviceType.CPU)
+                    .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
+                    .maturity(RuntimeDescriptor.Maturity.STABLE)
+                    .build();
+        }
+
+        @Override
+        public RuntimeProbeResult probe(RuntimeProbeContext context) {
+            return RuntimeProbeResult.available("ready");
+        }
+
+        @Override
+        public RuntimeSupport evaluate(io.cortexj.spi.runtime.RuntimeEvaluationRequest request) {
+            return RuntimeSupport.full(DeviceType.CPU);
+        }
+
+        @Override
+        public ModelRuntime open(RuntimeOpenRequest request) {
+            throw new NativeRuntimeException("CORTEXJ-RUNTIME-0001", boom);
+        }
+    }
+
+    @Test
+    void allCandidatesFailingSurfacesEveryError() {
+        // audit 2026-10-10: the chain surfaced only the LAST error, masking
+        // the root cause (a dead local hid behind a remote 404)
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new NamedFailingRuntimeProvider("aaa-first-fail", "first-boom"))
+                .runtimeProvider(new NamedFailingRuntimeProvider("zzz-second-fail", "second-boom"))
+                .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                .workingDirectory(workDir)
+                .build();
+        try {
+            io.cortexj.error.ModelLoadException failure = assertThrows(
+                    io.cortexj.error.ModelLoadException.class,
+                    new org.junit.jupiter.api.function.Executable() {
+                        @Override
+                        public void execute() {
+                            platform.models().load(ModelReference.of("e2e/test-model"));
+                        }
+                    });
+            assertTrue(failure.getMessage().contains("first-boom"),
+                    "the first (root-cause) failure must stay primary, got: " + failure.getMessage());
+            assertEquals(1, failure.getSuppressed().length,
+                    "the second candidate failure must be attached, not swallowed");
+            assertTrue(failure.getSuppressed()[0].getMessage().contains("second-boom"),
+                    "suppressed failure must name the second candidate's error");
         } finally {
             platform.close();
         }

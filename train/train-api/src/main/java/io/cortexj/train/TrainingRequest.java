@@ -61,7 +61,9 @@ public final class TrainingRequest {
     }
 
     public Map<String, String> parameters() {
-        return parameters;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): return an owned copy -
+        // the stored map must not be mutable through the getter
+        return new LinkedHashMap<String, String>(parameters);
     }
 
     /**

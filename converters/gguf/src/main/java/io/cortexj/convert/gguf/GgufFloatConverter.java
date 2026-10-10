@@ -96,11 +96,32 @@ public final class GgufFloatConverter implements ModelConverter {
                     f16Tensors++;
                 }
             }
-            if (direction == Direction.TO_F16 && f32Tensors == 0) {
-                throw new IOException("source contains no F32 tensors to convert");
+            if (direction == Direction.TO_F16 && convertibleTensors(document, direction) == 0) {
+                // real-model verification 2026-10-10: narrowing 1-D F32
+                // tensors (norms, rope factors, biases) produces files real
+                // llama.cpp refuses at inference (f32/f16 binary-op mix), so
+                // only 2-D+ weight matrices are narrowed - like
+                // llama-quantize F16. A Q4_K_M model has no convertible
+                // tensors at all: refuse honestly instead of writing a
+                // file that crashes the runtime.
+                throw new io.cortexj.error.ConversionException(
+                        io.cortexj.ErrorCode.CONVERSION_FAILED,
+                        f32Tensors == 0
+                                ? "GGUF f16 conversion failed: source contains no F32 tensors to convert"
+                                : "GGUF f16 conversion failed: source contains no convertible F32 weight "
+                                + "tensors (all " + f32Tensors + " F32 tensors are 1-D)",
+                        "Narrowing applies to 2-D+ weight matrices; 1-D tensors such as norms stay F32 "
+                                + "(that is also what real F16 checkpoints look like). Convert a full-precision "
+                                + "checkpoint instead, or run the quantized model as is.");
             }
             if (direction == Direction.TO_F32 && f16Tensors == 0) {
-                throw new IOException("source contains no F16 tensors to convert");
+                // audit 2026-10-10: same failure class as the TO_F16 path -
+                // unify the taxonomy (was a bare IOException)
+                throw new io.cortexj.error.ConversionException(
+                        io.cortexj.ErrorCode.CONVERSION_FAILED,
+                        "GGUF f32 conversion failed: source contains no F16 tensors to convert",
+                        "Widening applies to F16 tensors; convert a real F16 checkpoint, "
+                                + "or run the source as is.");
             }
 
             Path output = request.outputDirectory().resolve(outputName(source, direction));
@@ -119,8 +140,12 @@ public final class GgufFloatConverter implements ModelConverter {
 
                 document.upsert("cortexj.converted_by", GgufBinaryReader.Types.STRING,
                         "cortexj-convert-gguf/" + direction.label);
-                document.upsert("general.file_type", GgufBinaryReader.Types.INT32,
-                        direction == Direction.TO_F16 ? Integer.valueOf(1) : Integer.valueOf(0));
+                // real-model verification 2026-10-10: general.file_type is
+                // UINT32 per the spec and llama.cpp rejects anything else -
+                // stamping INT32 produced files no runtime would load.
+                // Preserve the source declaration, defaulting to UINT32.
+                document.upsert("general.file_type", fileTypeTypeOf(document),
+                        Long.valueOf(direction == Direction.TO_F16 ? 1L : 0L));
 
                 // temporarily swap tensor types to the converted ones so the shared
                 // header writer computes the new offsets/sizes
@@ -128,24 +153,30 @@ public final class GgufFloatConverter implements ModelConverter {
                 for (int i = 0; i < document.tensors.size(); i++) {
                     GgufDocument.TensorInfo tensor = document.tensors.get(i);
                     originalTypes[i] = tensor.type;
-                    int targetType = targetType(tensor.type, direction);
+                    int targetType = targetType(tensor, direction);
                     if (targetType != originalTypes[i]) {
                         converted++;
                     }
+                    // a changed type is always float<->float (derive the new
+                    // size); an unchanged quantized tensor keeps its exact
+                    // parsed byte size, otherwise the sequential copy below
+                    // desyncs mid-file on ordinary Q4_K_M models
+                    long explicit = targetType == tensor.type ? tensor.explicitByteSize : -1L;
                     document.tensors.set(i, new GgufDocument.TensorInfo(
-                            tensor.name, tensor.dimensions, targetType, tensor.offset));
+                            tensor.name, tensor.dimensions, targetType, tensor.offset, explicit));
                 }
                 document.writeHeader(writer);
                 for (int i = 0; i < document.tensors.size(); i++) {
                     GgufDocument.TensorInfo tensor = document.tensors.get(i);
                     document.tensors.set(i, new GgufDocument.TensorInfo(
-                            tensor.name, tensor.dimensions, originalTypes[i], tensor.offset));
+                            tensor.name, tensor.dimensions, originalTypes[i], tensor.offset,
+                            tensor.explicitByteSize));
                 }
 
                 byte[] buffer = new byte[1 << 16];
                 for (int i = 0; i < document.tensors.size(); i++) {
                     GgufDocument.TensorInfo tensor = document.tensors.get(i);
-                    int targetType = targetType(tensor.type, direction);
+                    int targetType = targetType(tensor, direction);
                     long declaredSize = tensor.byteSize();
                     if (targetType == tensor.type) {
                         copyExactly(reader, writer, declaredSize, buffer);
@@ -201,14 +232,47 @@ public final class GgufFloatConverter implements ModelConverter {
         }
     }
 
-    private static int targetType(int sourceType, Direction direction) {
-        if (direction == Direction.TO_F16 && sourceType == GgufDocument.TENSOR_F32) {
+    private static int targetType(GgufDocument.TensorInfo tensor, Direction direction) {
+        if (direction == Direction.TO_F16
+                && tensor.type == GgufDocument.TENSOR_F32
+                && tensor.dimensions != null
+                && tensor.dimensions.length >= 2) {
             return GgufDocument.TENSOR_F16;
         }
-        if (direction == Direction.TO_F32 && sourceType == GgufDocument.TENSOR_F16) {
+        if (direction == Direction.TO_F32 && tensor.type == GgufDocument.TENSOR_F16) {
             return GgufDocument.TENSOR_F32;
         }
-        return sourceType;
+        return tensor.type;
+    }
+
+    private static long convertibleTensors(GgufDocument document, Direction direction) {
+        long convertible = 0L;
+        for (GgufDocument.TensorInfo tensor : document.tensors) {
+            if (targetType(tensor, direction) != tensor.type) {
+                convertible++;
+            }
+        }
+        return convertible;
+    }
+
+    private static int fileTypeTypeOf(GgufDocument document) {
+        GgufDocument.KeyValue existing = document.find("general.file_type");
+        if (existing != null) {
+            switch (existing.type) {
+                case GgufBinaryReader.Types.UINT8:
+                case GgufBinaryReader.Types.INT8:
+                case GgufBinaryReader.Types.UINT16:
+                case GgufBinaryReader.Types.INT16:
+                case GgufBinaryReader.Types.UINT32:
+                case GgufBinaryReader.Types.INT32:
+                case GgufBinaryReader.Types.UINT64:
+                case GgufBinaryReader.Types.INT64:
+                    return existing.type;
+                default:
+                    break;
+            }
+        }
+        return GgufBinaryReader.Types.UINT32;
     }
 
     private static long alignedByteSize(GgufDocument.TensorInfo tensor, int targetType) {

@@ -94,6 +94,7 @@ public final class DefaultExecutionPlanner implements Planner {
                 for (SupportReport.RejectedCandidate rejected : outcome.rejected) {
                     impossible.detail("rejected:" + rejected.candidate().stableKey(), rejected.reason().message());
                 }
+                attachRuntimeHealth(impossible, outcome);
                 throw impossible;
             }
             PlanningException noCandidate = new PlanningException(ErrorCode.PLAN_NO_CANDIDATE,
@@ -103,6 +104,7 @@ public final class DefaultExecutionPlanner implements Planner {
             for (SupportReport.RejectedCandidate rejected : outcome.rejected) {
                 noCandidate.detail("rejected:" + rejected.candidate().stableKey(), rejected.reason().message());
             }
+            attachRuntimeHealth(noCandidate, outcome);
             throw noCandidate;
         }
 
@@ -332,6 +334,7 @@ public final class DefaultExecutionPlanner implements Planner {
         applyPolicies(outcome, request);
         scoreAndSort(outcome, request);
         warnOnTrustBlock(outcome);
+        warnOnDegradedWinner(outcome);
         return outcome;
     }
 
@@ -372,6 +375,33 @@ public final class DefaultExecutionPlanner implements Planner {
                             + "' carries no trust note and no artifact checksum and will be "
                             + "refused at load under TRUSTED_ONLY."));
         }
+    }
+
+    /**
+     * Audit 2026-10-10: without this the only trace of running on a
+     * degraded runtime is a notes entry - warn explicitly so the user is
+     * prompted to investigate the endpoint/native setup.
+     */
+    private void warnOnDegradedWinner(Outcome outcome) {
+        if (outcome.viable.isEmpty()) {
+            return;
+        }
+        ExecutionCandidate winner = outcome.viable.get(0);
+        if (winner.notes() == null || !"true".equals(winner.notes().get("degradedRuntime"))) {
+            return;
+        }
+        String health = null;
+        for (String line : outcome.runtimeHealthLines) {
+            if (line != null && line.startsWith(winner.runtimeId() + ":")) {
+                health = line;
+                break;
+            }
+        }
+        outcome.warnings.add(PlanReason.warning(ReasonCode.PLANNER_NOTE,
+                "selected runtime '" + winner.runtimeId() + "' reports DEGRADED health"
+                        + (health == null ? "" : " (" + health + ")")
+                        + "; investigate the endpoint or native setup, or pin a healthy runtime "
+                        + "with --runtime/--prefer-runtime."));
     }
 
     private void generateConversionCandidates(Outcome outcome,
@@ -480,6 +510,7 @@ public final class DefaultExecutionPlanner implements Planner {
         int contextLength = resolved.descriptor().contextLength();
         builder.memoryEstimate(memoryEstimator.estimate(converted, contextLength));
         builder.note("supportLevel", support.level().name());
+        builder.note("probeHealth", probeHealthOf(probe));
 
         outcome.candidates.add(new CandidateHolder(descriptor, probe, builder));
     }
@@ -772,6 +803,7 @@ public final class DefaultExecutionPlanner implements Planner {
                             + "cortexj.planner.blockUnknownMemory=true"));
         }
         builder.note("supportLevel", support.level().name());
+        builder.note("probeHealth", probeHealthOf(probe));
 
         outcome.builderByCandidateKey.put(candidateKey(descriptor.id().value(), artifact.id()), builder);
         outcome.candidates.add(new CandidateHolder(descriptor, probe, builder));
@@ -1033,11 +1065,46 @@ public final class DefaultExecutionPlanner implements Planner {
         return runtimeId + "|" + artifactId;
     }
 
+    private static String probeHealthOf(RuntimeProbeResult probe) {
+        if (probe == null || probe.health() == null) {
+            return "UNKNOWN";
+        }
+        return probe.health().name();
+    }
+
     private static String mostUsefulRemediation(Outcome outcome) {
         if (!outcome.rejected.isEmpty()) {
+            // audit 2026-10-10: the old code returned whichever rejection
+            // sorted first (usually a format mismatch) instead of the
+            // actionable infrastructure cause - prefer those explicitly
+            for (SupportReport.RejectedCandidate rejected : outcome.rejected) {
+                ReasonCode code = rejected.reason().code();
+                if (code == ReasonCode.RUNTIME_UNAVAILABLE
+                        || code == ReasonCode.RUNTIME_MISCONFIGURED
+                        || code == ReasonCode.MEMORY_LIMIT_EXCEEDED
+                        || code == ReasonCode.MEMORY_INSUFFICIENT) {
+                    return rejected.reason().message();
+                }
+            }
             return outcome.rejected.get(0).reason().message();
         }
         return "Install a runtime provider, configure a remote runtime, or check the model reference.";
+    }
+
+    private static void attachRuntimeHealth(PlanningException exception, Outcome outcome) {
+        StringBuilder health = new StringBuilder();
+        for (String line : outcome.runtimeHealthLines) {
+            if (line == null || line.isEmpty()) {
+                continue;
+            }
+            if (health.length() > 0) {
+                health.append("; ");
+            }
+            health.append(line);
+        }
+        if (health.length() > 0) {
+            exception.detail("runtimeHealth", health.toString());
+        }
     }
 
     private List<Recommendation> recommendations(Outcome outcome) {

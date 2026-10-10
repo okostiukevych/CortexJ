@@ -349,7 +349,22 @@ public final class HfTokenizer {
                 if (index >= MAX_VOCAB_ENTRIES) {
                     throw new IOException("tokenizer vocab exceeds " + MAX_VOCAB_ENTRIES + " entries");
                 }
-                vocab.put(fields.next(), Integer.valueOf(index++));
+                // real-model verification 2026-10-10: the JSON values are the
+                // token ids - the document order is NOT guaranteed to match
+                // them. Assigning positional indices silently mis-tokenizes
+                // any vocab serialized out of id order.
+                String name = fields.next();
+                JsonNode idNode = vocabNode.get(name);
+                int id = idNode != null && idNode.isInt() ? idNode.asInt() : index;
+                // audit 2026-10-10: ids flow straight into ORT Gather - a
+                // negative or absurd id must fail the tokenizer load, not
+                // every inference (DoS) with an ORT error
+                if (id < 0 || id > MAX_VOCAB_ENTRIES) {
+                    throw new IOException("tokenizer vocab id out of range for '" + name
+                            + "': " + id + " (allowed 0.." + MAX_VOCAB_ENTRIES + ")");
+                }
+                vocab.put(name, Integer.valueOf(id));
+                index++;
             }
         } else {
             int index = 0;

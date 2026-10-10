@@ -44,7 +44,10 @@ public final class JupyterKernel implements AutoCloseable {
                          int heartbeatPort, int shellPort, int iopubPort, int stdinPort,
                          int controlPort) {
         this.session = session;
-        this.key = key;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP2): own a private copy of
+        // the HMAC key - the caller's array must not alias kernel state
+        this.key = key == null ? new byte[0]
+                : java.util.Arrays.copyOf(key, key.length);
         this.context = new ZContext();
         this.heartbeat = context.createSocket(SocketType.REP);
         this.shell = context.createSocket(SocketType.ROUTER);
@@ -226,7 +229,7 @@ public final class JupyterKernel implements AutoCloseable {
     private void handleControl(List<byte[]> frames) {
         int delimiterAt = -1;
         for (int i = 0; i < frames.size(); i++) {
-            if (java.util.Arrays.equals(frames.get(i), WireMessage.DELIMITER)) {
+            if (java.util.Arrays.equals(frames.get(i), WireMessage.delimiter())) {
                 delimiterAt = i;
                 break;
             }
@@ -268,7 +271,7 @@ public final class JupyterKernel implements AutoCloseable {
         for (byte[] routingFrame : routing) {
             socket.send(routingFrame, ZMQ.SNDMORE);
         }
-        socket.send(WireMessage.DELIMITER, ZMQ.SNDMORE);
+        socket.send(WireMessage.delimiter(), ZMQ.SNDMORE);
         socket.send(message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII), ZMQ.SNDMORE);
         socket.send(message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
         socket.send(message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
@@ -312,7 +315,7 @@ public final class JupyterKernel implements AutoCloseable {
             if (frame == null) {
                 return null;
             }
-            if (java.util.Arrays.equals(frame, WireMessage.DELIMITER)) {
+            if (java.util.Arrays.equals(frame, WireMessage.delimiter())) {
                 frames.add(frame);
                 // signature + 4 JSON parts
                 for (int i = 0; i < 5; i++) {
@@ -330,7 +333,7 @@ public final class JupyterKernel implements AutoCloseable {
         // (the DEALER prefix plus the client's own routing frames)
         int delimiterAt = -1;
         for (int i = 0; i < frames.size(); i++) {
-            if (java.util.Arrays.equals(frames.get(i), WireMessage.DELIMITER)) {
+            if (java.util.Arrays.equals(frames.get(i), WireMessage.delimiter())) {
                 delimiterAt = i;
                 break;
             }
@@ -395,7 +398,7 @@ public final class JupyterKernel implements AutoCloseable {
         WireMessage status = WireMessage.reply(request, "status",
                 "{\"execution_state\":\"" + state + "\"}");
         byte[][] statusFrames = {
-                topic("status"), WireMessage.DELIMITER,
+                topic("status"), WireMessage.delimiter(),
                 status.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                 status.header().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 status.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -406,7 +409,7 @@ public final class JupyterKernel implements AutoCloseable {
 
     private void publish(List<byte[]> routing, WireMessage message) {
         byte[][] resultFrames = {
-                topic(message.messageType()), WireMessage.DELIMITER,
+                topic(message.messageType()), WireMessage.delimiter(),
                 message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                 message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8),

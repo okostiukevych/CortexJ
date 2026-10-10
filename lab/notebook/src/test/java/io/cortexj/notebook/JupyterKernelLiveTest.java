@@ -120,7 +120,7 @@ class JupyterKernelLiveTest {
 
     private static void send(ZMQ.Socket shell, WireMessage message) {
         shell.send(new byte[0], ZMQ.SNDMORE);
-        shell.send(WireMessage.DELIMITER, ZMQ.SNDMORE);
+        shell.send(WireMessage.delimiter(), ZMQ.SNDMORE);
         shell.send(message.signature("live-key".getBytes(StandardCharsets.US_ASCII))
                 .getBytes(StandardCharsets.US_ASCII), ZMQ.SNDMORE);
         shell.send(message.header().getBytes(StandardCharsets.UTF_8), ZMQ.SNDMORE);
@@ -151,7 +151,7 @@ class JupyterKernelLiveTest {
             if (frame == null) {
                 return null;
             }
-            if (java.util.Arrays.equals(frame, WireMessage.DELIMITER)) {
+            if (java.util.Arrays.equals(frame, WireMessage.delimiter())) {
                 frames.add(frame);
                 for (int i = 0; i < 5; i++) {
                     frames.add(socket.recv());

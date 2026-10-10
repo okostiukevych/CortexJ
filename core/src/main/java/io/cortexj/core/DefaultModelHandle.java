@@ -41,6 +41,7 @@ public final class DefaultModelHandle implements ModelHandle {
     private final java.util.concurrent.atomic.AtomicReference<ModelLifecycleState> state =
             new java.util.concurrent.atomic.AtomicReference<ModelLifecycleState>(ModelLifecycleState.DISCOVERED);
     private volatile String fallbackNote;
+    private volatile String degradedTokenizerNote;
 
     DefaultModelHandle(ModelDescriptor descriptor,
                        ExecutionPlan plan,
@@ -80,6 +81,16 @@ public final class DefaultModelHandle implements ModelHandle {
         this.fallbackNote = "load fell back from " + fromRuntime + " to " + toRuntime;
     }
 
+    /**
+     * Audit 2026-10-10: a missing/unfetchable tokenizer.json used to
+     * surface only as a load-time event while inference failed later with
+     * an unrelated error. The note travels on the handle so the cause is
+     * visible where the failure happens.
+     */
+    void markDegradedTokenizer(String note) {
+        this.degradedTokenizerNote = note;
+    }
+
     void onClose(java.util.function.Consumer<DefaultModelHandle> callback) {
         this.closeCallback = callback;
     }
@@ -96,6 +107,10 @@ public final class DefaultModelHandle implements ModelHandle {
 
     public String fallbackNote() {
         return fallbackNote;
+    }
+
+    public String degradedTokenizerNote() {
+        return degradedTokenizerNote;
     }
 
     @Override

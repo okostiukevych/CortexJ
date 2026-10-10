@@ -217,6 +217,25 @@ class CortexJServerBindAuthTest {
     }
 
     @Test
+    void customPoolWidthsAreHonored() throws Exception {
+        // audit 2026-10-10: pool ceilings and the queue bound are tunable
+        System.setProperty("cortexj.server.workers", "4");
+        System.setProperty("cortexj.server.maxQueuedRequests", "16");
+        try {
+            CortexJServer server = new CortexJServer(new EchoPlatform(), "server/test-model");
+            try {
+                int port = server.start(0);
+                assertEquals(200, get(new URL("http://127.0.0.1:" + port + "/v1/models"), null));
+            } finally {
+                server.stop();
+            }
+        } finally {
+            System.clearProperty("cortexj.server.workers");
+            System.clearProperty("cortexj.server.maxQueuedRequests");
+        }
+    }
+
+    @Test
     void wildcardBindRequiresExplicitOptIn() throws Exception {
         System.setProperty("cortexj.server.bind", "0.0.0.0");
         try {

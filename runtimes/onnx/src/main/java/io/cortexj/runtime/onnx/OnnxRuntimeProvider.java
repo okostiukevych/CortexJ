@@ -315,12 +315,22 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
             if (executor == null) {
                 return CompletableFuture.completedFuture(execute(request));
             }
-            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
-                @Override
-                public InferenceResponse get() {
-                    return execute(request);
-                }
-            }, executor);
+            try {
+                return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, executor);
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                // audit 2026-10-10: after platform.close() (or queue
+                // saturation) the supplyAsync used to throw synchronously,
+                // violating the async contract - return a failed future like
+                // the llama.cpp path
+                CompletableFuture<InferenceResponse> rejected = new CompletableFuture<InferenceResponse>();
+                rejected.completeExceptionally(saturated);
+                return rejected;
+            }
         }
 
         @Override
@@ -328,9 +338,11 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
             if (closed.get()) {
                 throw new InferenceException(ErrorCode.INFERENCE_FAILED, "model is closed", "Reopen the model handle.");
             }
+            List<String> texts = request.texts();
+            io.cortexj.spi.support.EmbeddingLimits.checkEmbedLimits(texts);
             List<float[]> vectors = new ArrayList<float[]>();
             long totalTokens = 0;
-            for (String text : request.texts()) {
+            for (String text : texts) {
                 int[] ids = tokenizer.encode(text);
                 totalTokens += ids.length;
                 float[] vector = runSession(ids);

@@ -16,7 +16,12 @@ import java.util.UUID;
  */
 public final class WireMessage {
 
-    public static final byte[] DELIMITER = "<IDS|MSG>".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] DELIMITER = "<IDS|MSG>".getBytes(StandardCharsets.US_ASCII);
+
+    /** audit 2026-10-10: DELIMITER is private; the wire layer reads it via this accessor. */
+    static byte[] delimiter() {
+        return DELIMITER;
+    }
 
     private final String header;
     private final String parentHeader;
@@ -50,7 +55,8 @@ public final class WireMessage {
     }
 
     public List<byte[]> buffers() {
-        return buffers;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+        return new ArrayList<>(buffers);
     }
 
     public String messageType() {

@@ -46,7 +46,8 @@ public final class TrainingResult {
     }
 
     public Map<String, Double> metrics() {
-        return metrics;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+        return new LinkedHashMap<String, Double>(metrics);
     }
 
     public ProvenanceHolder provenance() {
@@ -84,7 +85,8 @@ public final class TrainingResult {
         }
 
         public List<Long> seeds() {
-            return seeds;
+            // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+            return new java.util.ArrayList<Long>(seeds);
         }
 
         public String backend() {
@@ -96,7 +98,8 @@ public final class TrainingResult {
         }
 
         public Map<String, String> checksums() {
-            return checksums;
+            // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+            return new LinkedHashMap<String, String>(checksums);
         }
     }
 }

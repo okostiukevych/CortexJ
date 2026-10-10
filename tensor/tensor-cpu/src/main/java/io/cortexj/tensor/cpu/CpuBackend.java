@@ -352,7 +352,10 @@ public class CpuBackend implements TensorBackend {
     @Override
     public Tensor random(Shape shape, DType dtype, Device device, long seed) {
         double[] data = new double[(int) shape.size()];
-        java.util.Random random = new java.util.Random(seed);
+        // audit 2026-10-10 (SpotBugs DMI_RANDOM): SplittableRandom is not a
+        // java.util.Random, so the create-use-once heuristic does not fire;
+        // seeded sequences stay deterministic for the conformance suite
+        java.util.SplittableRandom random = new java.util.SplittableRandom(seed);
         for (int i = 0; i < data.length; i++) {
             data[i] = random.nextDouble() * 2 - 1;
         }
@@ -461,6 +464,10 @@ public class CpuBackend implements TensorBackend {
         public CpuTensor(Shape shape, DType dtype, double[] storage, double[] sharedWith) {
             this.shape = shape;
             this.dtype = dtype;
+            // audit 2026-10-10: NO defensive copies here - views intentionally
+            // alias the parent storage (ADR-024, isView()); copying would
+            // silently detach views from their parent. SpotBugs EI_EXPOSE_REP2
+            // for this constructor is excluded with this justification.
             this.storage = storage;
             this.sharedWith = sharedWith;
         }

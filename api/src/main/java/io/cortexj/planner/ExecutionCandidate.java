@@ -88,7 +88,13 @@ public final class ExecutionCandidate {
             ReasonCode code = codeForKey(entry.getKey());
             String message = prettifiedKey(entry.getKey())
                     + ("true".equals(entry.getValue()) ? "" : ": " + entry.getValue());
-            reasons.add(code == ReasonCode.LOWER_STARTUP_COST && "tight".equals(entry.getValue())
+            // audit 2026-10-10: degradation markers used to render as
+            // positive reasons ("partialSupport", "degradedRuntime") -
+            // a penalty presented as an endorsement
+            boolean negative = (code == ReasonCode.LOWER_STARTUP_COST && "tight".equals(entry.getValue()))
+                    || "degradedRuntime".equals(entry.getKey())
+                    || "partialSupport".equals(entry.getKey());
+            reasons.add(negative
                     ? PlanReason.negative(code, message)
                     : PlanReason.positive(code, message));
         }

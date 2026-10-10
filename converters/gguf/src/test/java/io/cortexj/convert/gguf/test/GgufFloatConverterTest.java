@@ -274,4 +274,178 @@ class GgufFloatConverterTest {
         }
         return hex.toString();
     }
+
+    @Test
+    void quantizedTensorsPassThroughByteForByte() throws IOException {
+        // real-model verification 2026-10-10: a Q4_K tensor between two F32
+        // tensors desynced the sequential copy (elementCount() is not the
+        // block size) and killed conversion of ordinary Q4_K_M models with
+        // "unexpected end of GGUF data"
+        float[] first = {1.0f, 2.0f};
+        float[] last = {3.0f, 4.0f, 5.0f};
+        float[] norm = {0.5f, 0.25f};
+        byte[] q4k = new byte[144];
+        for (int i = 0; i < q4k.length; i++) {
+            q4k[i] = (byte) (i * 7 + 1);
+        }
+
+        GgufDocument document = new GgufDocument();
+        document.version = 3;
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "a.weight", new long[]{first.length, 1L}, GgufDocument.TENSOR_F32, 0L));
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "b.weight", new long[]{256L}, 12, 0L));
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "c.weight", new long[]{last.length, 1L}, GgufDocument.TENSOR_F32, 0L));
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "d.norm", new long[]{norm.length}, GgufDocument.TENSOR_F32, 0L));
+        Path source = tempDir.resolve("mixed.gguf");
+        try (OutputStream raw = Files.newOutputStream(source);
+             OutputStream buffered = new BufferedOutputStream(raw, 1 << 16)) {
+            GgufBinaryWriter writer = new GgufBinaryWriter(buffered);
+            document.writeHeader(writer);
+            for (float value : first) {
+                writer.writeFloat32(value);
+            }
+            writer.write(q4k);
+            for (float value : last) {
+                writer.writeFloat32(value);
+            }
+            for (float value : norm) {
+                writer.writeFloat32(value);
+            }
+            writer.flush();
+        }
+
+        GgufDocument parsed = GgufDocument.read(source);
+        assertEquals(144L, parsed.tensors.get(1).byteSize(),
+                "a 256-element Q4_K tensor occupies 144 bytes, not 256");
+
+        ConversionResult result = new GgufFloatConverter().convert(request(source, "f16"));
+        assertEquals("2", result.provenance().get("tensorsConverted"));
+        GgufDocument converted = GgufDocument.read(result.outputPath());
+        assertEquals(4, converted.tensors.size());
+        assertEquals(GgufDocument.TENSOR_F16, converted.tensors.get(0).type);
+        assertEquals(12, converted.tensors.get(1).type);
+        assertEquals(GgufDocument.TENSOR_F16, converted.tensors.get(2).type);
+        assertEquals(GgufDocument.TENSOR_F32, converted.tensors.get(3).type,
+                "1-D F32 tensors (norms) must stay F32 or runtimes refuse the file");
+
+        assertArrayEquals(q4k, readRawBytes(result.outputPath(), converted, 1, q4k.length),
+                "quantized bytes must pass through untouched");
+
+        // the trailing F32 tensor converts exactly: proves the stream never
+        // desynced (readTensor seeks via the output offsets, so this also
+        // pins correct output header offsets for quantized tensors)
+        float[] narrowed = readTensor(result.outputPath(), converted, 2, last.length, true);
+        for (int i = 0; i < last.length; i++) {
+            float expected = Float16.fromHalf(Float16.toHalf(last[i]));
+            assertEquals(expected, narrowed[i], 0.0f);
+        }
+
+        float[] keptNorm = readTensor(result.outputPath(), converted, 3, norm.length, false);
+        for (int i = 0; i < norm.length; i++) {
+            assertEquals(norm[i], keptNorm[i], 0.0f);
+        }
+    }
+
+    @Test
+    void all1dFloatSourceRefusesHonestlyInsteadOfWritingABrokenFile() throws IOException {
+        // real-model verification 2026-10-10: Q4_K_M models carry F32 only
+        // in 1-D norm tensors - narrowing them writes a file llama.cpp
+        // aborts on, so the converter must refuse with a typed reason
+        GgufDocument document = new GgufDocument();
+        document.version = 3;
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "output_norm.weight", new long[]{4L}, GgufDocument.TENSOR_F32, 0L));
+        Path source = tempDir.resolve("norms-only.gguf");
+        try (OutputStream raw = Files.newOutputStream(source);
+             OutputStream buffered = new BufferedOutputStream(raw, 1 << 16)) {
+            GgufBinaryWriter writer = new GgufBinaryWriter(buffered);
+            document.writeHeader(writer);
+            for (int i = 0; i < 4; i++) {
+                writer.writeFloat32(1.0f);
+            }
+            writer.flush();
+        }
+        io.cortexj.error.ConversionException refused =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        io.cortexj.error.ConversionException.class,
+                        new org.junit.jupiter.api.function.Executable() {
+                            @Override
+                            public void execute() {
+                                new GgufFloatConverter().convert(request(source, "f16"));
+                            }
+                        });
+        assertTrue(refused.getMessage().contains("no convertible"),
+                "refusal must explain why, got: " + refused.getMessage());
+    }
+
+    private static byte[] readRawBytes(Path file, GgufDocument document, int index,
+                                       int count) throws IOException {
+        try (java.io.InputStream input = Files.newInputStream(file)) {
+            GgufBinaryReader reader = new GgufBinaryReader(input);
+            long consumed = 4 + 4 + 8 + 8;
+            reader.readInt32();
+            reader.readInt32();
+            reader.readInt64();
+            reader.readInt64();
+            for (GgufDocument.KeyValue kv : document.metadata) {
+                consumed += 8 + kv.key.getBytes(StandardCharsets.UTF_8).length + 4;
+                consumed += valueSizeOf(kv.type, kv.value);
+                reader.readString();
+                reader.readValue(reader.readInt32());
+            }
+            for (int i = 0; i < document.tensors.size(); i++) {
+                GgufDocument.TensorInfo tensor = document.tensors.get(i);
+                consumed += 8 + tensor.name.getBytes(StandardCharsets.UTF_8).length
+                        + 4 + 8L * tensor.dimensions.length + 4 + 8;
+                reader.readString();
+                int dims = reader.readInt32();
+                for (int d = 0; d < dims; d++) {
+                    reader.readInt64();
+                }
+                reader.readInt32();
+                reader.readInt64();
+            }
+            reader.skip(document.dataStartOffset - consumed);
+            GgufDocument.TensorInfo tensor = document.tensors.get(index);
+            reader.skip(tensor.offset);
+            byte[] bytes = new byte[count];
+            reader.readFully(bytes, 0, count);
+            return bytes;
+        }
+    }
+
+    @Test
+    void convertedFileDeclaresFileTypeAsUint32() throws IOException {
+        // real-model verification 2026-10-10: stamping general.file_type as
+        // INT32 produced files real llama.cpp refuses ("wrong type i32 but
+        // expected type u32") - the source declaration must be preserved
+        GgufDocument document = new GgufDocument();
+        document.version = 3;
+        document.metadata.add(new GgufDocument.KeyValue(
+                "general.architecture", GgufBinaryReader.Types.STRING, "llama"));
+        document.metadata.add(new GgufDocument.KeyValue(
+                "general.file_type", GgufBinaryReader.Types.UINT32, Long.valueOf(2)));
+        document.tensors.add(new GgufDocument.TensorInfo(
+                "a.weight", new long[]{2L, 1L}, GgufDocument.TENSOR_F32, 0L));
+        Path source = tempDir.resolve("typed.gguf");
+        try (OutputStream raw = Files.newOutputStream(source);
+             OutputStream buffered = new BufferedOutputStream(raw, 1 << 16)) {
+            GgufBinaryWriter writer = new GgufBinaryWriter(buffered);
+            document.writeHeader(writer);
+            writer.writeFloat32(1.0f);
+            writer.writeFloat32(-1.0f);
+            writer.flush();
+        }
+
+        ConversionResult result = new GgufFloatConverter().convert(request(source, "f16"));
+        GgufDocument converted = GgufDocument.read(result.outputPath());
+        GgufDocument.KeyValue fileType = converted.find("general.file_type");
+        assertTrue(fileType != null, "converted file must declare general.file_type");
+        assertEquals(GgufBinaryReader.Types.UINT32, fileType.type,
+                "file_type must stay UINT32 or llama.cpp refuses the file");
+        assertEquals(1L, ((Number) fileType.value).longValue());
+    }
 }

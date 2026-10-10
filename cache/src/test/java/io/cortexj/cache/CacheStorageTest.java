@@ -53,6 +53,40 @@ class CacheStorageTest {
     }
 
     @Test
+    void adoptMovesFileIntoCacheWithoutCopying() throws IOException {
+        // audit 2026-10-10: peak disk must stay ~1x the artifact, not ~2x
+        CacheStorage storage = new CacheStorage(tempDir);
+        String checksum = Checksums.sha256Hex("hello".getBytes(StandardCharsets.UTF_8));
+        Path source = tempDir.resolve("download.part");
+        Files.write(source, "hello".getBytes(StandardCharsets.UTF_8));
+
+        Path cached = storage.adopt(source, "hf", "rev1", "model.gguf",
+                io.cortexj.model.Checksum.sha256(checksum));
+        assertFalse(Files.exists(source), "adopt must consume (move) the source file");
+        assertEquals("hello", new String(Files.readAllBytes(cached), StandardCharsets.UTF_8));
+        assertNotNull(storage.get("hf", "rev1", "model.gguf",
+                io.cortexj.model.Checksum.sha256(checksum)));
+    }
+
+    @Test
+    void adoptRejectsChecksumMismatchAndDeletesSource() throws IOException {
+        CacheStorage storage = new CacheStorage(tempDir);
+        Path source = tempDir.resolve("tampered.part");
+        Files.write(source, "tampered".getBytes(StandardCharsets.UTF_8));
+
+        try {
+            storage.adopt(source, "hf", "rev1", "model.gguf",
+                    io.cortexj.model.Checksum.sha256(
+                            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+            assertTrue(false, "checksum mismatch must fail the adopt");
+        } catch (io.cortexj.error.ArtifactIntegrityException expected) {
+            assertTrue(expected.getMessage().contains("checksum validation"));
+        }
+        assertFalse(Files.exists(source), "a corrupt source must not be kept for resume");
+        assertFalse(storage.contains("hf", "rev1", "model.gguf"));
+    }
+
+    @Test
     void artifactsDifferingOnlyInCaseCoexist() throws IOException {
         // audit #123: sanitize lowercases, so Model/model used to map to one
         // file and evict each other through verify-delete; the path now carries

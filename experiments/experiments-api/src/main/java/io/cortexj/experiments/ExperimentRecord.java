@@ -65,15 +65,18 @@ public final class ExperimentRecord {
     }
 
     public Map<String, String> parameters() {
-        return parameters;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+        return new LinkedHashMap<String, String>(parameters);
     }
 
     public Map<String, String> metrics() {
-        return metrics;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+        return new LinkedHashMap<String, String>(metrics);
     }
 
     public List<String> artifacts() {
-        return artifacts;
+        // audit 2026-10-10 (SpotBugs EI_EXPOSE_REP): owned copy per call
+        return new java.util.ArrayList<String>(artifacts);
     }
 
     public String datasetFingerprint() {

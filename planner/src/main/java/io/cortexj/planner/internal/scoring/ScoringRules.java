@@ -38,6 +38,7 @@ public final class ScoringRules {
         rules.add(new UserPreferenceRule());
         rules.add(new DevicePreferenceRule());
         rules.add(new MaturityRule());
+        rules.add(new ProbeHealthRule());
         rules.add(new QualityProfileRule());
         rules.add(new LocalityRule());
         rules.add(new SupportLevelRule());
@@ -188,8 +189,30 @@ public final class ScoringRules {
         }
     }
 
-    public static final class QualityProfileRule implements ScoringRule {
+    /**
+     * Real-model verification 2026-10-10: a DEGRADED runtime (dead remote
+     * endpoint, thinning native lib) must lose to a healthy one - but stays
+     * a fallback when nothing else is viable. An explicit user requirement
+     * (--runtime) still wins because other candidates are hard-rejected,
+     * and --prefer-runtime (+3.0) still overrides this penalty.
+     */
+    public static final class ProbeHealthRule implements ScoringRule {
 
+        @Override
+        public String name() {
+            return "probe-health";
+        }
+
+        @Override
+        public void apply(ExecutionCandidate.Builder candidate, ExecutionCandidate snapshot, RuntimeDescriptor runtime, ExecutionRequest request, PlannerInputs inputs) {
+            if ("DEGRADED".equals(snapshot.notes().get("probeHealth"))) {
+                candidate.addScore(-2.0d);
+                candidate.note("degradedRuntime", "true");
+            }
+        }
+    }
+
+    public static final class QualityProfileRule implements ScoringRule {
         @Override
         public String name() {
             return "quality-profile";

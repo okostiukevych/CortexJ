@@ -65,7 +65,10 @@ public final class TribuoFrame {
             }
             for (int i = 0; i < featureNames.size(); i++) {
                 Double value = values.get(featureNames.get(i));
-                featureColumns.get(i).add(value == null ? 0.0 : value);
+                // audit 2026-10-10 (SpotBugs BX_UNBOXING_IMMEDIATELY_REBOXED):
+                // both branches stay Double - the primitive 0.0 forced an
+                // unbox-rebox of every present value
+                featureColumns.get(i).add(value != null ? value : Double.valueOf(0.0));
             }
             outputs.add(String.valueOf(example.getOutput()));
         }

@@ -19,6 +19,26 @@ public final class GgufDocument {
     public static final int TENSOR_F16 = 1;
     public static final int TENSOR_BF16 = 30;
 
+    // ggml block-quantized type ids (llama.cpp ggml.h). Element counts
+    // below are per block, sizes are exact on-disk bytes per block.
+    private static final int TENSOR_Q4_0 = 2;
+    private static final int TENSOR_Q4_1 = 3;
+    private static final int TENSOR_Q5_0 = 6;
+    private static final int TENSOR_Q5_1 = 7;
+    private static final int TENSOR_Q8_0 = 8;
+    private static final int TENSOR_Q8_1 = 9;
+    private static final int TENSOR_Q2_K = 10;
+    private static final int TENSOR_Q3_K = 11;
+    private static final int TENSOR_Q4_K = 12;
+    private static final int TENSOR_Q5_K = 13;
+    private static final int TENSOR_Q6_K = 14;
+    private static final int TENSOR_Q8_K = 15;
+    private static final int TENSOR_I8 = 24;
+    private static final int TENSOR_I16 = 25;
+    private static final int TENSOR_I32 = 26;
+    private static final int TENSOR_I64 = 27;
+    private static final int TENSOR_F64 = 28;
+
     private static final int MAX_TENSOR_DIMENSIONS = 63;
     // audit 2026-10-08: unbounded int64 counts allocate without bound below
     private static final long MAX_TENSOR_COUNT = 10_000_000L;
@@ -179,7 +199,8 @@ public final class GgufDocument {
             }
             int type = reader.readInt32();
             long offset = reader.readInt64();
-            document.tensors.add(new TensorInfo(name, shape, type, offset));
+            document.tensors.add(new TensorInfo(name, shape, type, offset,
+                    quantizedByteSize(type, shape)));
         }
         long alignment = dataAlignment(document);
         long consumed = headerSize(document);
@@ -187,6 +208,120 @@ public final class GgufDocument {
         reader.skip(padding);
         document.dataStartOffset = consumed + padding;
         return document;
+    }
+
+    /**
+     * Real-model verification 2026-10-10: block-quantized tensors do NOT
+     * occupy {@code elementCount()} bytes (Q4_K: 144 bytes per 256
+     * elements, not 256). Without exact sizes every sequential tensor
+     * reader desyncs mid-file and dies with a misleading "unexpected end
+     * of GGUF data" on ordinary Q4_K_M models. Validated byte-exact
+     * against Qwen2.5-0.5B-Q4_K_M (computed data section == file size).
+     *
+     * <p>Returns -1 (derive from the type) for F32/F16/BF16 and for
+     * unknown/future types (IQ quants, TerraQuant, MXFP4, ...), preserving
+     * the legacy guess there: silent corruption of an unknown layout is
+     * worse than the loud failure the guess produces.
+     */
+    static long quantizedByteSize(int type, long[] shape) throws IOException {
+        int blockElements;
+        long blockBytes;
+        switch (type) {
+            case TENSOR_Q4_0:
+                blockElements = 32;
+                blockBytes = 18L;
+                break;
+            case TENSOR_Q4_1:
+                blockElements = 32;
+                blockBytes = 20L;
+                break;
+            case TENSOR_Q5_0:
+                blockElements = 32;
+                blockBytes = 22L;
+                break;
+            case TENSOR_Q5_1:
+                blockElements = 32;
+                blockBytes = 24L;
+                break;
+            case TENSOR_Q8_0:
+                blockElements = 32;
+                blockBytes = 34L;
+                break;
+            case TENSOR_Q8_1:
+                blockElements = 32;
+                blockBytes = 40L;
+                break;
+            case TENSOR_Q2_K:
+                blockElements = 256;
+                blockBytes = 84L;
+                break;
+            case TENSOR_Q3_K:
+                blockElements = 256;
+                blockBytes = 110L;
+                break;
+            case TENSOR_Q4_K:
+                blockElements = 256;
+                blockBytes = 144L;
+                break;
+            case TENSOR_Q5_K:
+                blockElements = 256;
+                blockBytes = 176L;
+                break;
+            case TENSOR_Q6_K:
+                blockElements = 256;
+                blockBytes = 210L;
+                break;
+            case TENSOR_Q8_K:
+                blockElements = 256;
+                blockBytes = 292L;
+                break;
+            case TENSOR_I8:
+                return byteSizeOf(shape, 1L);
+            case TENSOR_I16:
+                return byteSizeOf(shape, 2L);
+            case TENSOR_I32:
+                return byteSizeOf(shape, 4L);
+            case TENSOR_I64:
+            case TENSOR_F64:
+                return byteSizeOf(shape, 8L);
+            default:
+                return -1L;
+        }
+        long elements = 1L;
+        for (long dimension : shape) {
+            if (dimension < 0) {
+                throw new GgufFormatException("negative GGUF tensor dimension: " + dimension);
+            }
+            elements = Math.multiplyExact(elements, dimension);
+        }
+        if (elements % blockElements != 0) {
+            throw new GgufFormatException("GGUF tensor of type " + type + " has " + elements
+                    + " elements, not a multiple of the block size " + blockElements);
+        }
+        try {
+            return Math.multiplyExact(elements / blockElements, blockBytes);
+        } catch (ArithmeticException overflow) {
+            // audit 2026-10-10: the unchecked exception bypassed the
+            // GgufFormatException handlers and surfaced untyped
+            throw new GgufFormatException("GGUF tensor size overflow for type " + type);
+        }
+    }
+
+    private static long byteSizeOf(long[] shape, long bytesPerElement) throws IOException {
+        long elements = 1L;
+        for (long dimension : shape) {
+            if (dimension < 0) {
+                throw new GgufFormatException("negative GGUF tensor dimension: " + dimension);
+            }
+            elements = Math.multiplyExact(elements, dimension);
+        }
+        try {
+            return Math.multiplyExact(elements, bytesPerElement);
+        } catch (ArithmeticException overflow) {
+            // audit 2026-10-10: see quantizedByteSize - typed, not unchecked
+            throw new GgufFormatException("GGUF tensor size overflow (" + elements
+                    + " elements at " + bytesPerElement + " bytes)");
+        }
     }
 
     /**

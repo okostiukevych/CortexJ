@@ -338,4 +338,30 @@ class OtelEventListenerTest {
         }
         return total;
     }
+
+    @Test
+    void metricAttributesStayLowCardinality() {
+        // audit 2026-10-10: model/artifact/exact-bytes must not ride metric
+        // points - every distinct value used to open a new series
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        SdkMeterProvider provider = SdkMeterProvider.builder()
+                .registerMetricReader(reader)
+                .build();
+        OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setMeterProvider(provider).build());
+
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
+                "d1", "m1", "a1.gguf", "100"));
+        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_COMPLETED, PlatformEvent.Level.INFO,
+                "d2", "m2", "a2.gguf", "200"));
+
+        MetricData bytes = metric(reader, "cortexj.artifact.downloaded.bytes");
+        assertEquals(300L, sum(bytes));
+        assertEquals(1, bytes.getLongSumData().getPoints().size(),
+                "distinct models and sizes must share one series");
+        MetricData downloads = metric(reader, "cortexj.artifact.downloads");
+        assertEquals(2L, sum(downloads));
+        assertEquals(1, downloads.getLongSumData().getPoints().size(),
+                "distinct artifacts must share one series");
+    }
 }

@@ -196,11 +196,18 @@ public final class CortexJServer {
         // ~50) bursts were dropped by the kernel before the semaphore could
         // answer 503 with Retry-After
         httpServer = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress(bindHost, port), 128);
-        int workers = Math.max(8, 2 * Runtime.getRuntime().availableProcessors());
+        // audit 2026-10-10: fixed ceilings (16 unary / 8 streams on 8-core)
+        // 503'd under modest concurrency with no tuning knob - all widths
+        // and the queue bound are now configurable; admission semaphores
+        // stay in lockstep with the pools they guard
+        int workers = Math.max(8, (int) positiveLongProperty("cortexj.server.workers",
+                2L * Runtime.getRuntime().availableProcessors()));
+        int queued = Math.max(MIN_QUEUED_REQUESTS, (int) positiveLongProperty(
+                "cortexj.server.maxQueuedRequests", workers));
         requestExecutor = new ThreadPoolExecutor(
                 workers + SATURATION_HEADROOM_THREADS, workers + SATURATION_HEADROOM_THREADS,
                 60L, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<Runnable>(Math.max(MIN_QUEUED_REQUESTS, workers)),
+                new LinkedBlockingQueue<Runnable>(queued),
                 io.cortexj.spi.platform.PlatformModule.daemonThreadFactory("cortexj-server"),
                 new ThreadPoolExecutor.AbortPolicy());
         httpServer.setExecutor(requestExecutor);
@@ -253,20 +260,37 @@ public final class CortexJServer {
     }
 
     public synchronized void stop() {
+        // audit 2026-10-10: stop(0) + shutdownNow() killed generations
+        // mid-token and severed SSE streams on every restart - drain first
+        // (http stop with grace, then orderly executor shutdown), matching
+        // the DefaultCortexJ shutdown ladder
         if (running.compareAndSet(true, false) && httpServer != null) {
-            httpServer.stop(0);
+            httpServer.stop((int) Math.max(1L, positiveLongProperty(
+                    "cortexj.server.stopGraceSeconds", 5L)));
         }
-        if (requestExecutor != null) {
-            requestExecutor.shutdownNow();
-            requestExecutor = null;
+        shutdownGracefully(requestExecutor, "cortexj-server");
+        requestExecutor = null;
+        shutdownGracefully(streamExecutor, "cortexj-server-stream");
+        streamExecutor = null;
+        shutdownGracefully(generateExecutor, "cortexj-server-generate");
+        generateExecutor = null;
+    }
+
+    private static void shutdownGracefully(ThreadPoolExecutor executor, String name) {
+        if (executor == null) {
+            return;
         }
-        if (streamExecutor != null) {
-            streamExecutor.shutdownNow();
-            streamExecutor = null;
-        }
-        if (generateExecutor != null) {
-            generateExecutor.shutdownNow();
-            generateExecutor = null;
+        executor.shutdown();
+        try {
+            long graceMillis = Math.max(1000L, positiveLongProperty(
+                    "cortexj.server.stopGraceSeconds", 5L) * 1000L);
+            if (!executor.awaitTermination(graceMillis, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+                executor.awaitTermination(5L, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException interrupted) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 

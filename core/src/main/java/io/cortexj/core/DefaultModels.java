@@ -301,6 +301,7 @@ public final class DefaultModels implements io.cortexj.Models {
         chain.addAll(plan.fallbacks());
 
         ModelLoadException last = null;
+        List<ModelLoadException> failures = new ArrayList<ModelLoadException>();
         for (int index = 0; index < chain.size(); index++) {
             if (cancelFlag != null && cancelFlag.get()) {
                 throw new java.util.concurrent.CancellationException(
@@ -333,6 +334,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         // runtime after an open-phase crash
                         || e instanceof io.cortexj.error.InferenceException) {
                     last = asLoadFailure(e, candidate);
+                    failures.add(last);
                     if (index < chain.size() - 1) {
                         java.util.Map<String, String> fallbackAttributes =
                                 new java.util.LinkedHashMap<String, String>();
@@ -348,9 +350,20 @@ public final class DefaultModels implements io.cortexj.Models {
                 throw e;
             }
         }
-        throw last != null ? last : new ModelLoadException(ErrorCode.LOAD_FAILED,
-                "No runtime could load model " + request.model().value(),
-                "Inspect the diagnostics with support().inspect() and verify runtimes.");
+        if (failures.isEmpty()) {
+            throw last != null ? last : new ModelLoadException(ErrorCode.LOAD_FAILED,
+                    "No runtime could load model " + request.model().value(),
+                    "Inspect the diagnostics with support().inspect() and verify runtimes.");
+        }
+        // audit 2026-10-10: the chain used to surface only the LAST error,
+        // masking the root cause (a failed healthy local runtime hid behind
+        // a degraded remote's 404). The first failure stays primary, every
+        // later one is attached as suppressed so no candidate's error is lost.
+        ModelLoadException primary = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            primary.addSuppressed(failures.get(i));
+        }
+        throw primary;
     }
 
     /**
@@ -627,6 +640,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 cached = null;
             }
             if (cached != null) {
+                ensureTokenizerSidecars(resolved, cached, handle, cancelFlag);
                 return cached;
             }
             if (platform.config().offline) {
@@ -635,13 +649,162 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Pre-download the artifact with 'cortexj pull' or disable offline mode.")
                         .detail("artifact", artifact.id());
             }
-            return downloadOnce(resolvedArtifact, resolved.repository().value(),
+            Path downloaded = downloadOnce(resolvedArtifact, resolved.repository().value(),
                     resolved.revision(), cache, handle, cancelFlag);
+            ensureTokenizerSidecars(resolved, downloaded, handle, cancelFlag);
+            return downloaded;
         }
         throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
                 "Resolved model does not contain artifact " + artifact.id(),
                 "The selected artifact vanished during resolution; re-run the plan.")
                 .detail("artifact", artifact.id());
+    }
+
+    /**
+     * Real-model verification 2026-10-10 (prod gap): runtimes that need a
+     * tokenizer (ONNX/DJL via HfTokenizer) look for {@code tokenizer.json}
+     * next to the weight file, but a remote resolution only ever downloads
+     * the planned weight - the resolved TOKENIZER sidecar stays on the
+     * server. Without it the provider silently falls back to a hash
+     * tokenizer whose ids fail inference (ORT Gather out-of-bounds on a
+     * real MiniLM). After the weight is materialized inside the platform
+     * cache, fetch the resolved {@code tokenizer.json} sidecar (cache hit,
+     * download, or local file) and place it next to the weight.
+     *
+     * <p>Best-effort by design: a missing or unfetchable sidecar keeps the
+     * previous fallback behavior (warn, continue) - models whose runtime
+     * never reads a tokenizer (llamacpp, remote) must not fail because of
+     * it. Never writes outside the platform cache directory, so
+     * user-owned local files are left untouched (their siblings are
+     * already on disk). Presence is re-checked on every load, so an
+     * evicted sidecar self-heals on the next load.
+     */
+    private void ensureTokenizerSidecars(ResolvedModel resolved, Path artifactPath,
+                                         DefaultModelHandle handle,
+                                         java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+        if (resolved == null || resolved.artifacts() == null || artifactPath == null) {
+            return;
+        }
+        io.cortexj.cache.CacheStorage cache = platform.cache();
+        Path cacheRoot = cache == null ? null : cache.root();
+        if (cacheRoot == null || !artifactPath.startsWith(cacheRoot)) {
+            return;
+        }
+        Path parent = artifactPath.getParent();
+        if (parent == null) {
+            return;
+        }
+        Path target = parent.resolve("tokenizer.json");
+        if (java.nio.file.Files.isRegularFile(target)) {
+            return;
+        }
+        for (ResolvedArtifact sidecar : resolved.artifacts()) {
+            if (sidecar == null || sidecar.artifact() == null
+                    || sidecar.artifact().format() != io.cortexj.model.ArtifactFormat.TOKENIZER) {
+                continue;
+            }
+            if (!"tokenizer.json".equals(sidecarFileName(sidecar.artifact().id()))) {
+                continue;
+            }
+            Path source = resolveSidecarSource(sidecar, resolved, cache, handle, cancelFlag);
+            if (source == null) {
+                String note = "tokenizer.json for " + sidecar.artifact().id()
+                        + " is not available; the runtime falls back to its built-in tokenizer";
+                platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED, note);
+                handle.markDegradedTokenizer(note);
+                return;
+            }
+            if (source.equals(target)) {
+                return;
+            }
+            Path temp = parent.resolve("tokenizer.json.part-" + System.nanoTime()
+                    + "-" + SIDECAR_TEMP_SEQUENCE.incrementAndGet());
+            try {
+                java.nio.file.Files.copy(source, temp,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    java.nio.file.Files.move(temp, target,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.io.IOException atomicUnsupported) {
+                    java.nio.file.Files.move(temp, target,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (java.io.IOException copyFailed) {
+                try {
+                    java.nio.file.Files.deleteIfExists(temp);
+                } catch (java.io.IOException ignored) {
+                    // best-effort cleanup of the staging temp
+                }
+                String note = "cannot stage tokenizer.json next to " + artifactPath.getFileName()
+                        + ": " + copyFailed.getMessage()
+                        + "; the runtime falls back to its built-in tokenizer";
+                platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED, note);
+                handle.markDegradedTokenizer(note);
+            }
+            return;
+        }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicLong SIDECAR_TEMP_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private Path resolveSidecarSource(ResolvedArtifact sidecar, ResolvedModel resolved,
+                                      io.cortexj.cache.CacheStorage cache,
+                                      DefaultModelHandle handle,
+                                      java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+        if (sidecar.location() == null) {
+            return null;
+        }
+        String scheme = sidecar.location().getScheme();
+        if (scheme != null && scheme.equals("file")) {
+            Path file = Paths.get(sidecar.location());
+            return java.nio.file.Files.isRegularFile(file) ? file : null;
+        }
+        if (scheme == null || (!scheme.equals("http") && !scheme.equals("https"))) {
+            return null;
+        }
+        String repositoryId = resolved.repository().value();
+        String revision = resolved.revision();
+        Path cached;
+        try {
+            cached = cache.get(repositoryId, revision, sidecar.artifact().id(),
+                    sidecar.artifact().checksum());
+        } catch (ArtifactIntegrityException corrupted) {
+            cached = null;
+        }
+        if (cached != null) {
+            return cached;
+        }
+        if (platform.config().offline) {
+            return null;
+        }
+        // audit 2026-10-10: a checksum-declared sidecar that fails
+        // verification must fail the load, not degrade silently into a
+        // mis-tokenizing fallback (even under TRUSTED_ONLY, which never
+        // inspects sidecars). Checksum-less sidecars keep warn-and-continue.
+        // Cancellation is rethrown so a cancelled load stays cancelled.
+        try {
+            return downloadOnce(sidecar, repositoryId, revision, cache, handle, cancelFlag);
+        } catch (ArtifactIntegrityException integrity) {
+            if (sidecar.artifact().checksum() != null) {
+                throw integrity;
+            }
+            return null;
+        } catch (RuntimeException downloadFailed) {
+            if (cancelFlag != null && cancelFlag.get()) {
+                throw downloadFailed;
+            }
+            return null;
+        }
+    }
+
+    private static String sidecarFileName(String artifactId) {
+        if (artifactId == null) {
+            return "";
+        }
+        int slash = artifactId.lastIndexOf('/');
+        return slash < 0 ? artifactId : artifactId.substring(slash + 1);
     }
 
     Path oncePerKey(String key, java.util.function.Supplier<Path> work) {

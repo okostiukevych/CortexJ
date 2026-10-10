@@ -72,7 +72,13 @@ public final class LocalExperimentStore implements ExperimentStore {
         List<ExperimentRecord> records = new ArrayList<ExperimentRecord>();
         try (var stream = Files.list(root)) {
             for (Path child : stream.filter(Files::isDirectory).sorted().toList()) {
-                ExperimentRecord record = read(child.getFileName().toString());
+                // audit 2026-10-10 (SpotBugs NP): getFileName() is null for
+                // root paths - skip rather than dereference
+                java.nio.file.Path name = child.getFileName();
+                if (name == null) {
+                    continue;
+                }
+                ExperimentRecord record = read(name.toString());
                 if (record != null) {
                     records.add(record);
                 }
@@ -169,7 +175,7 @@ public final class LocalExperimentStore implements ExperimentStore {
         return root.resolve(id);
     }
 
-    private final class LocalExperiment implements Experiment {
+    private static final class LocalExperiment implements Experiment {
 
         private final String id;
         private final String name;
@@ -218,7 +224,11 @@ public final class LocalExperimentStore implements ExperimentStore {
             if (artifact == null || !Files.isRegularFile(artifact)) {
                 throw new IllegalArgumentException("artifact must be an existing file: " + artifact);
             }
-            Path target = runDirectory.resolve("artifacts").resolve(artifact.getFileName().toString());
+            java.nio.file.Path artifactName = artifact.getFileName();
+            if (artifactName == null) {
+                throw new IllegalArgumentException("artifact path has no file name: " + artifact);
+            }
+            Path target = runDirectory.resolve("artifacts").resolve(artifactName.toString());
             try {
                 Files.copy(artifact, target, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {

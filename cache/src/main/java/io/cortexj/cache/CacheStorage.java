@@ -233,6 +233,118 @@ public final class CacheStorage {
         }
     }
 
+    /**
+     * Audit 2026-10-10: takes ownership of an already-downloaded file
+     * (typically the download manager's resume partial) by moving it into
+     * the cache instead of copying it. A 70 GB artifact used to occupy
+     * ~140 GB transiently (partial + copy); the move keeps peak disk at
+     * ~1x. Same barriers as {@link #put}: size caps, checksum verification
+     * before commit, eviction, usable-space check, atomic replace, manifest
+     * and size-index credit. The source file is consumed (moved or, on
+     * checksum mismatch, deleted).
+     */
+    public Path adopt(Path sourceFile, String repositoryId, String revision,
+                      String artifactId, Checksum expectedChecksum) throws IOException {
+        if (sourceFile == null || !Files.isRegularFile(sourceFile)) {
+            throw new IOException("Cannot adopt a missing download file for " + artifactId);
+        }
+        long bytesCopied = Files.size(sourceFile);
+        if (maxSizeBytes > 0 && trackedInitialized && trackedBytes.get() > maxSizeBytes) {
+            evictToFit(0L);
+        }
+        Path target = artifactPath(repositoryId, revision, artifactId);
+        Path parentDirectory = target.getParent();
+        if (parentDirectory != null) {
+            Files.createDirectories(parentDirectory);
+        }
+        try {
+            if (maxSizeBytes > 0 && bytesCopied > maxSizeBytes) {
+                throw new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                        "Artifact " + artifactId + " is " + bytesCopied
+                                + " bytes, exceeding the cache cap of " + maxSizeBytes + " bytes.",
+                        "Raise the cache cap or choose a smaller variant.")
+                        .detail("artifact", artifactId)
+                        .detail("artifactBytes", String.valueOf(bytesCopied))
+                        .detail("capBytes", String.valueOf(maxSizeBytes));
+            }
+            if (expectedChecksum != null) {
+                if (!Checksums.verify(sourceFile, expectedChecksum.algorithm(), expectedChecksum.value())) {
+                    Files.deleteIfExists(sourceFile);
+                    throw new ArtifactIntegrityException(ErrorCode.ARTIFACT_CHECKSUM_MISMATCH,
+                            "Downloaded artifact failed checksum validation: " + artifactId,
+                            "The source artifact is corrupted or was tampered with; verify the model repository.")
+                            .detail("artifact", artifactId)
+                            .detail("expected", expectedChecksum.value());
+                }
+            }
+
+            if (maxSizeBytes > 0) {
+                evictToFit(bytesCopied);
+            }
+            if (bytesCopied > LARGE_WRITE_USABLE_SPACE_THRESHOLD_BYTES) {
+                long usableSpace = usableSpaceProbe.getAsLong();
+                if (usableSpace < bytesCopied + LARGE_WRITE_USABLE_SPACE_MARGIN_BYTES) {
+                    throw new ArtifactResolutionException(ErrorCode.ARTIFACT_TOO_LARGE,
+                            "Not enough usable disk space to store artifact " + artifactId
+                                    + ": " + usableSpace + " bytes free, need "
+                                    + (bytesCopied + LARGE_WRITE_USABLE_SPACE_MARGIN_BYTES) + " bytes.",
+                            "Free disk space or raise the cache cap.")
+                            .detail("artifact", artifactId)
+                            .detail("artifactBytes", String.valueOf(bytesCopied))
+                            .detail("usableBytes", String.valueOf(usableSpace));
+                }
+            }
+            synchronized (evictionLock) {
+                synchronized (keyLock(target)) {
+                    boolean moved = false;
+                    try {
+                        Files.move(sourceFile, target, StandardCopyOption.ATOMIC_MOVE,
+                                StandardCopyOption.REPLACE_EXISTING);
+                        moved = true;
+                    } catch (IOException atomicReplaceUnsupported) {
+                        // fall through to the fallback ladder
+                    }
+                    if (!moved) {
+                        for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
+                            try {
+                                Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                            try {
+                                Files.move(sourceFile, target, StandardCopyOption.ATOMIC_MOVE,
+                                        StandardCopyOption.REPLACE_EXISTING);
+                                moved = true;
+                            } catch (IOException retryFailed) {
+                                // scanner still holding the file; keep backing off
+                            }
+                        }
+                    }
+                    if (!moved) {
+                        try {
+                            Files.move(sourceFile, target, StandardCopyOption.ATOMIC_MOVE);
+                            moved = true;
+                        } catch (IOException atomicFailed) {
+                            Files.move(sourceFile, target, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                    }
+                    writeManifest(target, repositoryId, revision, artifactId, expectedChecksum, bytesCopied);
+                }
+                trackedBytes.addAndGet(bytesCopied);
+            }
+            eventListener.onEvent(new PlatformEvent(PlatformEvent.Type.DOWNLOAD_COMPLETED,
+                        PlatformEvent.Level.INFO,
+                        "artifact stored: " + artifactId,
+                        null, System.currentTimeMillis()));
+            return target;
+        } catch (IOException | RuntimeException failure) {
+            // the source partial stays for resume unless it failed checksum
+            // (deleted above); never strand it on eviction/move failures
+            throw failure;
+        }
+    }
+
     public Path put(String repositoryId, String revision, String artifactId, Checksum expectedChecksum, InputStream content) throws IOException {
         // audit GitHub #72: when the incremental index already says over-limit,
         // evict BEFORE the temp copy instead of doubling peak disk usage
@@ -419,19 +531,24 @@ public final class CacheStorage {
 
     public void pin(String repositoryId, String revision, String artifactId) throws IOException {
         Path artifact = artifactPath(repositoryId, revision, artifactId);
-        if (!Files.isRegularFile(artifact)) {
-            throw new IOException("cannot pin a missing artifact: " + artifactId);
-        }
         Path parentDirectory = artifact.getParent();
         if (parentDirectory != null) {
             Files.createDirectories(parentDirectory);
         }
-        Path marker = artifact.resolveSibling(fileNameOf(artifact) + ".pinned");
-        try {
-            Files.createFile(marker);
-        } catch (FileAlreadyExistsException alreadyPinned) {
-            // audit #94: two concurrent pins of one artifact - the marker
-            // already being present is the success case, not a failure
+        // audit 2026-10-10: the marker lands under the same per-key stripe
+        // lock that eviction deletes under, so a pin can never slip between
+        // the eviction scan and the delete (see deleteUnderKeyLock)
+        synchronized (keyLock(artifact)) {
+            if (!Files.isRegularFile(artifact)) {
+                throw new IOException("cannot pin a missing artifact: " + artifactId);
+            }
+            Path marker = artifact.resolveSibling(fileNameOf(artifact) + ".pinned");
+            try {
+                Files.createFile(marker);
+            } catch (FileAlreadyExistsException alreadyPinned) {
+                // audit #94: two concurrent pins of one artifact - the marker
+                // already being present is the success case, not a failure
+            }
         }
     }
 
@@ -448,6 +565,13 @@ public final class CacheStorage {
      */
     private boolean deleteUnderKeyLock(CacheEntry entry) throws IOException {
         synchronized (keyLock(entry.path())) {
+            // audit 2026-10-10: re-check the pin marker under the keyLock -
+            // a concurrent pin() may have landed between the entry scan and
+            // this delete, unlinking a live handle's artifact from under it
+            if (Files.isRegularFile(entry.path().resolveSibling(
+                    fileNameOf(entry.path()) + ".pinned"))) {
+                return false;
+            }
             if (!Files.deleteIfExists(entry.path())) {
                 return false;
             }

@@ -57,6 +57,15 @@ class LlamaCppProviderTckTest extends RuntimeProviderContract {
     @Test
     void loadWithoutBridgeThrowsActionableNativeError() throws Exception {
         System.clearProperty(LlamaCppProvider.LIB_PROPERTY);
+        // real-model verification 2026-10-10: this path only exists where
+        // no bridge is discoverable (dev machines with llama-server from
+        // brew/prefix installs open fine) - skip loudly there, like the
+        // gated lanes, instead of failing on healthy machines
+        RuntimeProbeResult bridgeProbe = provider.probe(probeContext());
+        org.junit.jupiter.api.Assumptions.assumeTrue(!bridgeProbe.isUsable(),
+                "a llama-server/JNI bridge is installed on this machine ("
+                        + bridgeProbe.message() + ") - the no-bridge error path is covered "
+                        + "on bridge-less lanes instead (never silently)");
         Path gguf = Files.createTempFile("model", ".gguf");
         try {
             NativeRuntimeException expected = assertThrows(NativeRuntimeException.class,

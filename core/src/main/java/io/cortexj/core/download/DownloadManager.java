@@ -227,6 +227,13 @@ public final class DownloadManager {
                     if (isTerminal(e)) {
                         break;
                     }
+                    if (isStalePartial(e)) {
+                        // audit 2026-10-10: HTTP 416 means the saved partial is
+                        // not usable; it was already discarded above - retry
+                        // transparently within MAX_ATTEMPTS instead of
+                        // surfacing a user-visible failure
+                        continue;
+                    }
                 }
                 if (attempt < MAX_ATTEMPTS) {
                     long backoff = backoffMillis(attempt, retryAfterMillisOf(lastError));
@@ -475,12 +482,12 @@ public final class DownloadManager {
                 throw new IOException("truncated download: " + written + " of " + declaredSize
                         + " bytes (partial progress is kept for resume)");
             }
-            try (java.io.InputStream content = new java.io.FileInputStream(resumeFile.toFile())) {
-                return cache.put(repositoryId, revision, artifact.artifact().id(),
-                        artifact.artifact().checksum(), content);
-            }
+            // audit 2026-10-10: adopt (move) the resume partial into the
+            // cache instead of copying it - peak disk stays ~1x the
+            // artifact instead of ~2x
+            return cache.adopt(resumeFile, repositoryId, revision,
+                    artifact.artifact().id(), artifact.artifact().checksum());
         } catch (java.io.IOException downloadFailure) {
-            connection.disconnect();
             if (downloadFailure instanceof DownloadStatusException
                     && ((DownloadStatusException) downloadFailure).deletePartial) {
                 try {
@@ -492,13 +499,17 @@ public final class DownloadManager {
             // keep the partial file for the next resume attempt
             throw downloadFailure;
         } catch (RuntimeException downloadFailure) {
-            connection.disconnect();
             try {
                 java.nio.file.Files.deleteIfExists(resumeFile);
             } catch (IOException ignored) {
                 // best effort cleanup
             }
             throw downloadFailure;
+        } finally {
+            // audit 2026-10-10: disconnect on EVERY exit path - an Error
+            // mid-copy (OOM on a multi-GB stream) used to leak the socket
+            // into the keep-alive pool
+            connection.disconnect();
         }
     }
 
@@ -575,13 +586,19 @@ public final class DownloadManager {
 
     private static boolean isTerminal(IOException e) {
         if (e instanceof DownloadStatusException) {
-            return !((DownloadStatusException) e).retryable;
+            return !((DownloadStatusException) e).retryable
+                    && ((DownloadStatusException) e).status != 416;
         }
         if (isDiskFull(e)) {
             return true;
         }
         String message = e.getMessage();
         return message != null && message.contains("cancelled");
+    }
+
+    private static boolean isStalePartial(IOException e) {
+        return e instanceof DownloadStatusException
+                && ((DownloadStatusException) e).status == 416;
     }
 
     private static long retryAfterMillisOf(IOException e) {

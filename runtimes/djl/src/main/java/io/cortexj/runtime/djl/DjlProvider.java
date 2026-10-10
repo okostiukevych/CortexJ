@@ -320,6 +320,7 @@ public class DjlProvider implements RuntimeProvider {
                 throw new InferenceException(ErrorCode.INFERENCE_FAILED,
                         "model is closed", "Reopen the model handle.");
             }
+            io.cortexj.spi.support.EmbeddingLimits.checkEmbedLimits(request.texts());
             List<float[]> vectors = new ArrayList<float[]>();
             for (String text : request.texts()) {
                 int[] ids = tokenizer.encode(text);
