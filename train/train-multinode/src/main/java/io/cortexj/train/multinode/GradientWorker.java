@@ -52,6 +52,12 @@ public final class GradientWorker implements AutoCloseable {
     }
 
     private static String serve(String request) {
+        String op = stringField(request, "op", "gradient");
+        if ("gather".equals(op) || "scatter".equals(op)) {
+            // collective echo: the driver already holds the values;
+            // the worker acknowledges receipt (wire parity contract)
+            return "{\"values\":" + array(doubles(request, "values")) + "}";
+        }
         double[] weights = doubles(request, "weights");
         double[] shard = doubles(request, "shard");
         double rows = shard.length;
@@ -94,6 +100,30 @@ public final class GradientWorker implements AutoCloseable {
 
     private static String quote(String value) {
         return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private static String stringField(String json, String field, String fallback) {
+        int at = json.indexOf("\"" + field + "\"");
+        if (at < 0) {
+            return fallback;
+        }
+        int colon = json.indexOf(':', at);
+        int open = json.indexOf('"', colon);
+        int close = json.indexOf('"', open + 1);
+        return json.substring(open + 1, close);
+    }
+
+    private static String array(double[] values) {
+        StringBuilder text = new StringBuilder();
+        text.append('[');
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            text.append(Double.toString(values[i]));
+        }
+        text.append(']');
+        return text.toString();
     }
 
     @Override

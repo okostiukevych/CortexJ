@@ -167,6 +167,7 @@
         <module>platform/java25</module>
         <module>starters/java25</module>
         <module>runtimes/jinfer</module>
+        <module>tensor/tensor-libtorch</module>
         <module>cli</module>
       </modules>
     </profile>
