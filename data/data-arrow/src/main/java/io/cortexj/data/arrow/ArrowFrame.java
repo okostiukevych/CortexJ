@@ -15,6 +15,8 @@ import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowFileReader;
 import org.apache.arrow.vector.ipc.ArrowFileWriter;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 import org.apache.arrow.vector.ipc.SeekableReadChannel;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -45,46 +47,66 @@ public final class ArrowFrame {
              FileInputStream input = new FileInputStream(path.toFile());
              ArrowFileReader reader = new ArrowFileReader(
                      new SeekableReadChannel(input.getChannel()), allocator)) {
-            List<String> names = new ArrayList<String>();
-            List<ColType> types = new ArrayList<ColType>();
-            for (Field field : reader.getVectorSchemaRoot().getSchema().getFields()) {
-                names.add(field.getName());
-                types.add(columnType(field));
-            }
-            List<List<Object>> columns = new ArrayList<List<Object>>();
-            for (int i = 0; i < names.size(); i++) {
-                columns.add(new ArrayList<Object>());
-            }
-            while (reader.loadNextBatch()) {
-                VectorSchemaRoot root = reader.getVectorSchemaRoot();
-                for (int c = 0; c < names.size(); c++) {
-                    readColumn(root, c, types.get(c), columns.get(c));
-                }
-            }
-            List<Column<?>> frameColumns = new ArrayList<Column<?>>(names.size());
-            for (int c = 0; c < names.size(); c++) {
-                frameColumns.add(typedColumn(names.get(c), types.get(c), columns.get(c)));
-            }
-            return new SimpleFrame(new Schema(names, types), frameColumns);
+            return readBatches(reader);
         }
     }
 
-    public static void write(Frame frame, Path path) throws IOException {
-        List<String> names = frame.schema().names();
-        List<ColType> types = frame.schema().types();
-        List<Field> fields = new ArrayList<Field>(names.size());
-        for (int c = 0; c < names.size(); c++) {
-            fields.add(new Field(names.get(c),
-                    new FieldType(true, arrowType(types.get(c)), null), null));
-        }
-        org.apache.arrow.vector.types.pojo.Schema schema =
-                new org.apache.arrow.vector.types.pojo.Schema(fields, null);
+    /**
+     * Writes the Arrow streaming format (record-batch stream): same
+     * content contract as the file format, streamable framing.
+     */
+    public static void writeStream(Frame frame, java.io.OutputStream output) throws IOException {
         try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
-             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
-            for (int c = 0; c < names.size(); c++) {
-                writeColumn(root, c, types.get(c), frame.column(names.get(c)));
+             VectorSchemaRoot root = VectorSchemaRoot.create(schemaFor(frame), allocator)) {
+            fillRoot(frame, root);
+            try (ArrowStreamWriter writer = new ArrowStreamWriter(
+                    root, null, Channels.newChannel(output))) {
+                writer.start();
+                writer.writeBatch();
+                writer.end();
             }
-            root.setRowCount(frame.rowCount());
+        }
+    }
+
+    /**
+     * Reads the Arrow streaming format.
+     */
+    public static Frame readStream(java.io.InputStream input) throws IOException {
+        try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+             ArrowStreamReader reader = new ArrowStreamReader(input, allocator)) {
+            return readBatches(reader);
+        }
+    }
+
+    private static Frame readBatches(org.apache.arrow.vector.ipc.ArrowReader reader)
+            throws IOException {
+        List<String> names = new ArrayList<String>();
+        List<ColType> types = new ArrayList<ColType>();
+        for (Field field : reader.getVectorSchemaRoot().getSchema().getFields()) {
+            names.add(field.getName());
+            types.add(columnType(field));
+        }
+        List<List<Object>> columns = new ArrayList<List<Object>>();
+        for (int i = 0; i < names.size(); i++) {
+            columns.add(new ArrayList<Object>());
+        }
+        while (reader.loadNextBatch()) {
+            VectorSchemaRoot root = reader.getVectorSchemaRoot();
+            for (int c = 0; c < names.size(); c++) {
+                readColumn(root, c, types.get(c), columns.get(c));
+            }
+        }
+        List<Column<?>> frameColumns = new ArrayList<Column<?>>(names.size());
+        for (int c = 0; c < names.size(); c++) {
+            frameColumns.add(typedColumn(names.get(c), types.get(c), columns.get(c)));
+        }
+        return new SimpleFrame(new Schema(names, types), frameColumns);
+    }
+
+    public static void write(Frame frame, Path path) throws IOException {
+        try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+             VectorSchemaRoot root = VectorSchemaRoot.create(schemaFor(frame), allocator)) {
+            fillRoot(frame, root);
             try (FileOutputStream output = new FileOutputStream(path.toFile());
                  ArrowFileWriter writer = new ArrowFileWriter(
                          root, null, Channels.newChannel(output))) {
@@ -93,6 +115,27 @@ public final class ArrowFrame {
                 writer.end();
             }
         }
+    }
+
+
+    private static org.apache.arrow.vector.types.pojo.Schema schemaFor(Frame frame) {
+        List<String> names = frame.schema().names();
+        List<ColType> types = frame.schema().types();
+        List<Field> fields = new ArrayList<Field>(names.size());
+        for (int c = 0; c < names.size(); c++) {
+            fields.add(new Field(names.get(c),
+                    new FieldType(true, arrowType(types.get(c)), null), null));
+        }
+        return new org.apache.arrow.vector.types.pojo.Schema(fields, null);
+    }
+
+    private static void fillRoot(Frame frame, VectorSchemaRoot root) {
+        List<String> names = frame.schema().names();
+        List<ColType> types = frame.schema().types();
+        for (int c = 0; c < names.size(); c++) {
+            writeColumn(root, c, types.get(c), frame.column(names.get(c)));
+        }
+        root.setRowCount(frame.rowCount());
     }
 
     private static ArrowType arrowType(ColType type) {

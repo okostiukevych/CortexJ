@@ -25,6 +25,7 @@ public final class JupyterKernel implements AutoCloseable {
     private final ZMQ.Socket shell;
     private final ZMQ.Socket iopub;
     private final ZMQ.Socket stdin;
+    private final ZMQ.Socket control;
     private final AtomicBoolean running = new AtomicBoolean();
     private final List<Thread> workers = new ArrayList<>();
     private final String sessionId = java.util.UUID.randomUUID().toString();
@@ -36,6 +37,12 @@ public final class JupyterKernel implements AutoCloseable {
 
     public JupyterKernel(LabSession session, byte[] key,
                          int heartbeatPort, int shellPort, int iopubPort, int stdinPort) {
+        this(session, key, heartbeatPort, shellPort, iopubPort, stdinPort, -1);
+    }
+
+    public JupyterKernel(LabSession session, byte[] key,
+                         int heartbeatPort, int shellPort, int iopubPort, int stdinPort,
+                         int controlPort) {
         this.session = session;
         this.key = key;
         this.context = new ZContext();
@@ -43,6 +50,7 @@ public final class JupyterKernel implements AutoCloseable {
         this.shell = context.createSocket(SocketType.ROUTER);
         this.iopub = context.createSocket(SocketType.PUB);
         this.stdin = context.createSocket(SocketType.ROUTER);
+        this.control = context.createSocket(SocketType.ROUTER);
         // port < 0 binds an ephemeral port; bindToRandomPort returns it
         this.heartbeatPort = heartbeatPort < 0
                 ? this.heartbeat.bindToRandomPort("tcp://127.0.0.1")
@@ -56,6 +64,9 @@ public final class JupyterKernel implements AutoCloseable {
         this.stdinPort = stdinPort < 0
                 ? this.stdin.bindToRandomPort("tcp://127.0.0.1")
                 : bindFixed(this.stdin, stdinPort);
+        this.controlPort = controlPort < 0
+                ? this.control.bindToRandomPort("tcp://127.0.0.1")
+                : bindFixed(this.control, controlPort);
     }
 
     private static int bindFixed(ZMQ.Socket socket, int port) {
@@ -67,6 +78,7 @@ public final class JupyterKernel implements AutoCloseable {
     private final int shellPort;
     private final int iopubPort;
     private final int stdinPort;
+    private final int controlPort;
 
     public int heartbeatPort() {
         return heartbeatPort;
@@ -84,6 +96,10 @@ public final class JupyterKernel implements AutoCloseable {
         return stdinPort;
     }
 
+    public int controlPort() {
+        return controlPort;
+    }
+
     /**
      * Writes the Jupyter connection file (kernel.json) for this kernel:
      * transport, ip, the five ports, signature scheme and key.
@@ -99,7 +115,7 @@ public final class JupyterKernel implements AutoCloseable {
                 + "\"shell_port\":" + shellPort + ","
                 + "\"iopub_port\":" + iopubPort + ","
                 + "\"stdin_port\":" + stdinPort + ","
-                + "\"control_port\":" + shellPort + ","
+                + "\"control_port\":" + controlPort + ","
                 + "\"hb_port\":" + heartbeatPort + ","
                 + "\"signature_scheme\":\"hmac-sha256\","
                 + "\"key\":" + WireMessage.quoteValue(new String(key, java.nio.charset.StandardCharsets.US_ASCII))
@@ -187,6 +203,77 @@ public final class JupyterKernel implements AutoCloseable {
         shellWorker.setDaemon(true);
         workers.add(shellWorker);
         shellWorker.start();
+        Thread controlWorker = new Thread(this::controlLoop, "cortexj-kernel-control");
+        controlWorker.setDaemon(true);
+        workers.add(controlWorker);
+        controlWorker.start();
+    }
+
+    private void controlLoop() {
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            List<byte[]> frames = receiveRouted(control);
+            if (frames == null) {
+                break;
+            }
+            try {
+                handleControl(frames);
+            } catch (Throwable e) {
+                // a handler failure must not kill the control worker
+            }
+        }
+    }
+
+    private void handleControl(List<byte[]> frames) {
+        int delimiterAt = -1;
+        for (int i = 0; i < frames.size(); i++) {
+            if (java.util.Arrays.equals(frames.get(i), WireMessage.DELIMITER)) {
+                delimiterAt = i;
+                break;
+            }
+        }
+        if (delimiterAt < 0 || frames.size() < delimiterAt + 6) {
+            return;
+        }
+        WireMessage message = new WireMessage(
+                new String(frames.get(delimiterAt + 2), java.nio.charset.StandardCharsets.UTF_8),
+                new String(frames.get(delimiterAt + 3), java.nio.charset.StandardCharsets.UTF_8),
+                new String(frames.get(delimiterAt + 4), java.nio.charset.StandardCharsets.UTF_8),
+                new String(frames.get(delimiterAt + 5), java.nio.charset.StandardCharsets.UTF_8),
+                List.of());
+        List<byte[]> routing = new ArrayList<>(frames.subList(0, delimiterAt));
+        switch (message.messageType()) {
+            case "shutdown_request": {
+                boolean restart = message.content().contains("\"restart\":true");
+                sendFrames(control, routing, WireMessage.reply(message, "shutdown_reply",
+                        "{\"status\":\"ok\",\"restart\":" + restart + "}"));
+                if (!restart) {
+                    close();
+                }
+                break;
+            }
+            case "interrupt_request":
+                sendFrames(control, routing, WireMessage.reply(message, "interrupt_reply",
+                        "{\"status\":\"ok\"}"));
+                break;
+            default:
+                sendFrames(control, routing, WireMessage.reply(message, "error_reply",
+                        "{\"status\":\"error\",\"ename\":\"NotImplemented\","
+                                + "\"evalue\":\"" + message.messageType() + "\"}"));
+        }
+    }
+
+    private void sendFrames(ZMQ.Socket socket, List<byte[]> routing, WireMessage message) {
+        // the ROUTER routes by the leading identity frames: echo them back
+        // in the received order
+        for (byte[] routingFrame : routing) {
+            socket.send(routingFrame, ZMQ.SNDMORE);
+        }
+        socket.send(WireMessage.DELIMITER, ZMQ.SNDMORE);
+        socket.send(message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII), ZMQ.SNDMORE);
+        socket.send(message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+        socket.send(message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+        socket.send(message.metadata().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+        socket.send(message.content().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private void heartbeatLoop() {
@@ -335,17 +422,7 @@ public final class JupyterKernel implements AutoCloseable {
     }
 
     private void send(List<byte[]> routing, WireMessage message) {
-        // the ROUTER routes by the leading identity frames: echo them back
-        // in the received order
-        for (byte[] routingFrame : routing) {
-            shell.send(routingFrame, ZMQ.SNDMORE);
-        }
-        shell.send(WireMessage.DELIMITER, ZMQ.SNDMORE);
-        shell.send(message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII), ZMQ.SNDMORE);
-        shell.send(message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        shell.send(message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        shell.send(message.metadata().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        shell.send(message.content().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        sendFrames(shell, routing, message);
     }
 
     private static byte[] topic(String messageType) {
@@ -377,6 +454,7 @@ public final class JupyterKernel implements AutoCloseable {
         shell.close();
         iopub.close();
         stdin.close();
+        control.close();
         context.close();
         session.close();
     }
