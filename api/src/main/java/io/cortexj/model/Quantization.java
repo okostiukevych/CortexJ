@@ -77,6 +77,26 @@ public final class Quantization implements Comparable<Quantization> {
         return Integer.compare(bitsPerWeight, other.bitsPerWeight);
     }
 
+    // audit 2026-10-10 (SpotBugs EQ_COMPARETO_USE_OBJECT_EQUALS): compareTo
+    // compares bits only, so identity equality (label+bits) must stay the
+    // equals contract - documented, not derived from compareTo
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof Quantization)) {
+            return false;
+        }
+        Quantization that = (Quantization) other;
+        return bitsPerWeight == that.bitsPerWeight && label.equals(that.label);
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * bitsPerWeight + label.hashCode();
+    }
+
     @Override
     public String toString() {
         return label;

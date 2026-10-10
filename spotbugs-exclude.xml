@@ -54,6 +54,34 @@
          as the already-excluded API value types above.
        Each class below is listed explicitly; the encapsulation checks stay
        active everywhere else. -->
+  <!-- GgufDocument is an internal parsed-DTO: read() fills version and
+       dataStartOffset mutably and the converter/tests read them directly -
+       restructuring into a builder would churn six test files for zero
+       behavioral gain. -->
+  <Match>
+    <Bug pattern="PA_PUBLIC_PRIMITIVE_ATTRIBUTE"/>
+    <Class name="io.cortexj.convert.gguf.internal.GgufDocument"/>
+  </Match>
+
+  <!-- HardwareProbe checks for the Metal framework at its fixed macOS
+       system location - the absolute path IS the probe. -->
+  <Match>
+    <Bug pattern="DMI_HARDCODED_ABSOLUTE_FILENAME"/>
+    <Class name="io.cortexj.hardware.internal.HardwareProbe"/>
+  </Match>
+
+  <!-- Value-type constructors that validate and throw (ModelArtifact.Abstract
+       rejects negative sizes; LibTorchBackend rejects a missing native
+       engine at construction) - a half-constructed instance never escapes
+       because the exception aborts the assignment. -->
+  <Match>
+    <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+    <Or>
+      <Class name="io.cortexj.model.ModelArtifact$Abstract"/>
+      <Class name="io.cortexj.tensor.libtorch.LibTorchBackend"/>
+    </Or>
+  </Match>
+
   <Match>
     <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
     <Or>
@@ -113,6 +141,25 @@
     <Class name="io.cortexj.convert.gguf.internal.GgufDocument"/>
   </Match>
 
+  <!-- HardwareProbe checks for the Metal framework at its fixed macOS
+       system location - the absolute path IS the probe. -->
+  <Match>
+    <Bug pattern="DMI_HARDCODED_ABSOLUTE_FILENAME"/>
+    <Class name="io.cortexj.hardware.internal.HardwareProbe"/>
+  </Match>
+
+  <!-- Value-type constructors that validate and throw (ModelArtifact.Abstract
+       rejects negative sizes; LibTorchBackend rejects a missing native
+       engine at construction) - a half-constructed instance never escapes
+       because the exception aborts the assignment. -->
+  <Match>
+    <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+    <Or>
+      <Class name="io.cortexj.model.ModelArtifact$Abstract"/>
+      <Class name="io.cortexj.tensor.libtorch.LibTorchBackend"/>
+    </Or>
+  </Match>
+
   <!-- HardwareProbe.detectMetal checks the macOS system framework path by
        design: /System/Library/Frameworks/Metal.framework is the documented
        probe location for Metal detection. -->
@@ -158,7 +205,9 @@
        proven by LoadAsyncCloseBarrierTest and PlatformCloseBarrierTest. -->
   <Match>
     <Bug pattern="UL_UNRELEASED_LOCK_EXCEPTION_PATH"/>
-    <Class name="io.cortexj.core.DefaultModels$3"/>
+    <!-- regex: anonymous-class numbering shifts whenever DefaultModels
+         gains/loses an anonymous class (audit 2026-10-10: pinLocks stripes) -->
+    <Class name="~io\.cortexj\.core\.DefaultModels\$[0-9]+"/>
   </Match>
 
   <!-- ModelBundler's constructor stores the shared CacheStorage reference:

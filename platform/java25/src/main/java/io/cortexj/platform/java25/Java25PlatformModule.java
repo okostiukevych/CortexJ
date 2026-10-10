@@ -21,6 +21,8 @@ public final class Java25PlatformModule implements PlatformModule {
 
     @Override
     public java.util.concurrent.ExecutorService createIoExecutor() {
-        return java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
+        // audit 2026-10-10: bounded admission instead of an unbounded
+        // virtual-thread stampede (see BoundedVirtualThreadExecutor)
+        return new BoundedVirtualThreadExecutor(BoundedVirtualThreadExecutor.configuredWidth());
     }
 }

@@ -52,8 +52,20 @@ public final class DefaultModels implements io.cortexj.Models {
             new java.util.concurrent.ConcurrentHashMap<DefaultModelHandle, ArtifactPin>();
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> pinCounts =
             new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>();
-    private final java.util.concurrent.ConcurrentHashMap<String, Object> pinLocks =
-            new java.util.concurrent.ConcurrentHashMap<String, Object>();
+    // audit 2026-10-10: fixed stripe locks instead of a per-identity lock
+    // map - the map used to grow without bound over a long-lived process
+    // (one Object per unique model path ever pinned) while a striped array
+    // keeps the #94 acquire/release serialization with O(1) memory
+    private static final int PIN_LOCK_STRIPES = 16;
+    private final Object[] pinLocks = pinLockStripes();
+
+    private static Object[] pinLockStripes() {
+        Object[] stripes = new Object[PIN_LOCK_STRIPES];
+        for (int i = 0; i < stripes.length; i++) {
+            stripes[i] = new Object();
+        }
+        return stripes;
+    }
     private final java.util.concurrent.CopyOnWriteArrayList<java.util.concurrent.CompletableFuture<ModelHandle>> asyncLoads =
             new java.util.concurrent.CopyOnWriteArrayList<java.util.concurrent.CompletableFuture<ModelHandle>>();
     private volatile boolean closed;
@@ -115,12 +127,7 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     private Object pinLockFor(String identity) {
-        return pinLocks.computeIfAbsent(identity, new java.util.function.Function<String, Object>() {
-            @Override
-            public Object apply(String key) {
-                return new Object();
-            }
-        });
+        return pinLocks[(identity.hashCode() & 0x7fffffff) % PIN_LOCK_STRIPES];
     }
 
     private void releasePin(DefaultModelHandle handle) {
@@ -678,6 +685,14 @@ public final class DefaultModels implements io.cortexj.Models {
      * user-owned local files are left untouched (their siblings are
      * already on disk). Presence is re-checked on every load, so an
      * evicted sidecar self-heals on the next load.
+     *
+     * <p>Deliberate tradeoff (audit 2026-10-10): the staged sibling copy
+     * is NOT credited to the cache size index (trackedBytes) - the source
+     * sidecar is already accounted as a cache artifact, the copy is a
+     * derivative bounded by the tokenizer size (~0.5 MB), and routing it
+     * through cache accounting would double-count or require a new public
+     * CacheStorage API. If the cache cap is hit, the copy is evictable
+     * like any unlisted file and the next load re-stages it.
      */
     private void ensureTokenizerSidecars(ResolvedModel resolved, Path artifactPath,
                                          DefaultModelHandle handle,

@@ -327,7 +327,9 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                     return;
                 }
                 consumer.onComplete(new StreamCompletion(finishReason, usage));
-            } catch (Exception e) {
+            } catch (java.io.IOException | RuntimeException e) {
+                // audit 2026-10-10 (SpotBugs REC): catch the concrete failure
+                // classes; Errors propagate untouched
                 if (e instanceof java.io.IOException && isConnectionRefused((java.io.IOException) e)) {
                     // audit #110: a dead llama-server fails the model fast and
                     // releases the endpoint (the next load respawns it) instead

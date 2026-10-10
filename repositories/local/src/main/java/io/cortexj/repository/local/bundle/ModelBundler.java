@@ -476,7 +476,7 @@ public final class ModelBundler {
         RedirectTarget redirect = resolveRedirectTarget(artifact);
         URL url = redirect.url;
         Map<String, String> effectiveHeaders = redirect.headers;
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        HttpURLConnection connection = open(url);
         boolean moved = false;
         try {
             connection.setConnectTimeout(CONNECT_TIMEOUT);
@@ -563,6 +563,39 @@ public final class ModelBundler {
      * the SSRF guard and credentials are stripped cross-origin - the JDK
      * auto-follow it replaces would have carried the request headers.
      */
+    /**
+     * Audit 2026-10-10: honor the platform egress proxy
+     * ({@code cortexj.proxy.host}/{@code CORTEXJ_PROXY_HOST} + port) so
+     * proxy-enforced audit/containment covers {@code bundle create} too -
+     * previously the bundler connected directly, bypassing it.
+     */
+    static java.net.Proxy egressProxy() {
+        String host = System.getProperty("cortexj.proxy.host");
+        if (host == null || host.trim().isEmpty()) {
+            host = System.getenv("CORTEXJ_PROXY_HOST");
+        }
+        String port = System.getProperty("cortexj.proxy.port");
+        if (port == null || port.trim().isEmpty()) {
+            port = System.getenv("CORTEXJ_PROXY_PORT");
+        }
+        if (host == null || host.trim().isEmpty() || port == null || port.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return new java.net.Proxy(java.net.Proxy.Type.HTTP,
+                    new java.net.InetSocketAddress(host.trim(), Integer.parseInt(port.trim())));
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+    }
+
+    private static HttpURLConnection open(URL url) throws IOException {
+        java.net.Proxy proxy = egressProxy();
+        return proxy == null
+                ? (HttpURLConnection) url.openConnection()
+                : (HttpURLConnection) url.openConnection(proxy);
+    }
+
     private RedirectTarget resolveRedirectTarget(ResolvedArtifact artifact) throws IOException {
         String raw = artifact.location() == null ? null : artifact.location().toString();
         if (raw == null || raw.isEmpty()) {
@@ -586,7 +619,7 @@ public final class ModelBundler {
                 throw new IOException("Redirect target uses a non-http(s) scheme: "
                         + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(current.toString()));
             }
-            HttpURLConnection probe = (HttpURLConnection) current.toURL().openConnection();
+            HttpURLConnection probe = open(current.toURL());
             try {
                 probe.setConnectTimeout(CONNECT_TIMEOUT);
                 probe.setReadTimeout(READ_TIMEOUT);

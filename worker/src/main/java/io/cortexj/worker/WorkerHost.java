@@ -88,10 +88,13 @@ public final class WorkerHost {
     WorkerHost(RuntimeProvider provider, PrintSink out) {
         this.provider = provider;
         this.out = out;
-        int width = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        // audit 2026-10-10: 2-4 threads serialized every blocking
+        // open/load/execute/generate/embed/stream of the child JVM - widen
+        // to the CPU and make it tunable (cortexj.worker.opThreads)
+        int width = configuredWidth();
         this.opExecutor = new java.util.concurrent.ThreadPoolExecutor(
                 width, width, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
-                new java.util.concurrent.LinkedBlockingQueue<Runnable>(64),
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(256),
                 new java.util.concurrent.ThreadFactory() {
                     private final java.util.concurrent.atomic.AtomicInteger integerSeq =
                             new java.util.concurrent.atomic.AtomicInteger();
@@ -104,6 +107,21 @@ public final class WorkerHost {
                         return thread;
                     }
                 });
+    }
+
+    static int configuredWidth() {
+        int cores = Runtime.getRuntime().availableProcessors();
+        int def = Math.max(4, Math.min(16, cores));
+        String property = System.getProperty("cortexj.worker.opThreads");
+        if (property == null || property.trim().isEmpty()) {
+            return def;
+        }
+        try {
+            long parsed = Long.parseLong(property.trim());
+            return parsed > 0 && parsed <= 256 ? (int) parsed : def;
+        } catch (NumberFormatException invalid) {
+            return def;
+        }
     }
 
     public static void main(String[] args) {

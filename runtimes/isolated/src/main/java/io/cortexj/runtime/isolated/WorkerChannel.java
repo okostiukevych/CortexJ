@@ -571,7 +571,7 @@ final class WorkerChannel {
         return child;
     }
 
-    private static final String CAPPED_LINE_MARKER = new String("capped");
+    private static final String CAPPED_LINE_MARKER = "capped";
 
     /**
      * audit #99: readLine() buffers a line of unbounded length - a broken or

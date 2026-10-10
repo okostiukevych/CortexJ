@@ -409,43 +409,42 @@ public final class CacheStorage {
                             .detail("usableBytes", String.valueOf(usableSpace));
                 }
             }
-            synchronized (evictionLock) {
-                synchronized (keyLock(target)) {
-                    // atomic replace first: no delete->move window where concurrent
-                    // get()/contains() would report "not cached" (audit M-5b); the
-                    // manifest write happens under the same lock so a concurrent
-                    // get() can never pair the new artifact with the stale manifest
-                    // and verify-and-delete it
-                    boolean moved = false;
+            // audit 2026-10-10 (SpotBugs SWL): the scanner-contention retry
+            // ladder (with sleeps) runs under the per-key lock only, NOT
+            // under the global evictionLock - a 5x20ms backoff must not
+            // stall every other put/clear in the cache. A pre-move outside
+            // the critical section keeps the no-missing-window guarantee
+            // (atomic replace); the manifest pairing below still happens
+            // atomically with the (possible) final move under both locks.
+            boolean moved = false;
+            synchronized (keyLock(target)) {
+                try {
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    moved = true;
+                } catch (IOException atomicReplaceUnsupported) {
+                    // fall through to the retry ladder
+                }
+                for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
+                    try {
+                        Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                     try {
                         Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                         moved = true;
-                    } catch (IOException atomicReplaceUnsupported) {
-                        // fall through to the fallback ladder
+                    } catch (IOException retryFailed) {
+                        // scanner still holding the file; keep backing off
                     }
-                    if (!moved) {
-                        // the atomic replace can fail transiently - a scanner
-                        // (Windows Defender on CI runners) holds the freshly written
-                        // temp file open without share-delete - without actually
-                        // rejecting the replace. Retry with a short backoff BEFORE
-                        // any delete: failed attempts never touch the target, so it
-                        // stays present the whole time and concurrent get() and
-                        // contains() never observe a missing-artifact window.
-                        for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
-                            try {
-                                Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
-                            } catch (InterruptedException interrupted) {
-                                Thread.currentThread().interrupt();
-                                break;
-                            }
-                            try {
-                                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                                moved = true;
-                            } catch (IOException retryFailed) {
-                                // scanner still holding the file; keep backing off
-                            }
-                        }
-                    }
+                }
+            }
+            synchronized (evictionLock) {
+                synchronized (keyLock(target)) {
+                    // final attempt (no sleep) when the pre-ladder did not land;
+                    // move + manifest stay adjacent under the key lock so a
+                    // concurrent get() can never pair the new artifact with the
+                    // stale manifest and verify-and-delete it (audit M-5b)
                     if (!moved) {
                         // replace-on-rename without an explicit delete: rename(2)
                         // atomically replaces an existing target on POSIX, and the
