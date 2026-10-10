@@ -65,8 +65,8 @@ public interface ModelHandle extends AutoCloseable {
     }
 
     /**
-     * Convenience shortcut (spec 12.2): delegates to the text generation capability.
-     * The domain capability API remains the primary interface (spec 43).
+     * Convenience shortcut: delegates to the text generation capability.
+     * The domain capability API remains the primary interface.
      */
     default io.cortexj.inference.GenerationResponse generate(
             io.cortexj.inference.GenerationRequest request) {
@@ -74,7 +74,7 @@ public interface ModelHandle extends AutoCloseable {
     }
 
     /**
-     * Convenience shortcut for embeddings (spec 45): delegates to the embedding capability.
+     * Convenience shortcut for embeddings: delegates to the embedding capability.
      */
     default io.cortexj.inference.EmbeddingResponse embed(
             io.cortexj.inference.EmbeddingRequest request) {

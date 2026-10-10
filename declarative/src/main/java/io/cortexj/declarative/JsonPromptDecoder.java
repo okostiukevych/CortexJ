@@ -8,7 +8,7 @@ import io.cortexj.error.CortexJException;
 /**
  * Jackson-backed decoder: extracts the first JSON object/array from the response
  * and maps it to the target type, failing with a typed error when the model
- * output is not valid JSON (spec 48: validation must not be silently skipped).
+ * output is not valid JSON (validation must not be silently skipped).
  */
 public final class JsonPromptDecoder<T> implements PromptDecoder<T> {
 

@@ -212,7 +212,7 @@ class ModelInterfacesTest {
 
     @Test
     void declarativeWorksWithThePlatformFacade() {
-        // spec 49 example shape: interface + platform, proxy is separate from core
+        // example shape: interface + platform, proxy is separate from core
         Echo echo = ModelInterfaces.of(
                 fakePlatform().models().load(ModelReference.of("e2e/model")),
                 Echo.class, null);

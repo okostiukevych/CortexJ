@@ -124,7 +124,7 @@ class ModelBundlerTest {
 
     @Test
     void manifestVersionIsWrittenAndUnknownMajorFails() throws Exception {
-        // audit v3.0 §125.8 (issue #159)
+        // audit (issue #159)
         Path source = tempDir.resolve("vmodel.gguf");
         Files.write(source, new byte[]{1, 2, 3, 4});
         CacheStorage cache = new CacheStorage(tempDir.resolve("cache"));

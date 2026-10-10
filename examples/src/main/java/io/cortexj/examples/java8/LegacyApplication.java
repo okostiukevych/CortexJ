@@ -21,7 +21,7 @@ public final class LegacyApplication {
             try (ModelHandle model = platform.models()
                     .load(ModelReference.of("company/document-model"))) {
 
-                // domain capability API (primary, spec 43)
+                // domain capability API (primary)
                 TextGenerationCapability generator = model
                         .capability(TextGenerationCapability.class);
                 GenerationResponse response = generator.generate(GenerationRequest.builder()
@@ -29,7 +29,7 @@ public final class LegacyApplication {
                         .build());
                 System.out.println(response.text());
 
-                // convenience shortcut (spec 12.2) — same capability under the hood
+                // convenience shortcut — same capability under the hood
                 GenerationResponse shortcut = model.generate(
                         GenerationRequest.prompt("Summarize in one sentence"));
                 System.out.println(shortcut.text());

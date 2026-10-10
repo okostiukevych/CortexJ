@@ -7,7 +7,7 @@ import io.cortexj.model.ModelReference;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Entrypoint for the optional embedded server mode (spec 60):
+ * Entrypoint for the optional embedded server mode:
  *
  * <pre>
  *   java -Dcortexj.server.port=8080 -jar ... Qwen/Qwen3-8B

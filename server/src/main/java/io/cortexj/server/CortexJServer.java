@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Optional embedded server mode (spec 60): exposes an OpenAI-compatible local
+ * Optional embedded server mode: exposes an OpenAI-compatible local
  * endpoint on top of a selected runtime.
  *
  * <p>Capacity model (audit 2026-10-08, #153), stated explicitly: one server

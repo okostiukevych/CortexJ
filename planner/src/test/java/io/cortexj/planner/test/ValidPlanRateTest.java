@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spec v3.0 §124.3 (issue #158): valid-plan rate over a compatibility
+ * Valid-plan rate over a compatibility
  * matrix - every compatible combination must produce an explained plan.
  */
 class ValidPlanRateTest {

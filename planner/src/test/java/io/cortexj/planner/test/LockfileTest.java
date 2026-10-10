@@ -228,7 +228,7 @@ class LockfileTest {
 
     @Test
     void schemaVersionRoundTripsAndGatesMajors() {
-        // audit v3.0 §125.8 (issue #159)
+        // audit (issue #159)
         ModelLockfile lockfile = ModelLockfile.builder("org/model")
                 .revision("r1")
                 .build();

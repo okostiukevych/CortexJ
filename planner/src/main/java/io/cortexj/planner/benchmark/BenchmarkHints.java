@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Properties;
 
 /**
- * Locally supplied benchmark hints for the planner (spec 126). No learning:
+ * Locally supplied benchmark hints for the planner. No learning:
  * the file is static, and the scoring derived from it is a deterministic
  * function of the file content alone.
  *
