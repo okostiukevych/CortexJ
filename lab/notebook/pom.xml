@@ -13,7 +13,7 @@
   <name>CortexJ Notebook</name>
   <description>Jupyter kernel adapter over ZeroMQ (ADR-018): the wire protocol with the lab session behind execute_request. Java 21.</description>
   <properties>
-    <cortexj.shared.release>21</cortexj.shared.release>
+    <cortexj.shared.release>17</cortexj.shared.release>
   </properties>
   <dependencies>
     <dependency>

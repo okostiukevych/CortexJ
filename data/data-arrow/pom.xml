@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.cortexj</groupId>
+    <artifactId>cortexj-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+  <artifactId>cortexj-data-arrow</artifactId>
+  <name>CortexJ Data Arrow</name>
+  <description>Arrow IPC adapter over the Data API (ADR-019): file/streaming format round-trip. The library never leaks into data-api signatures.</description>
+  <properties>
+    <cortexj.shared.release>17</cortexj.shared.release>
+    <arrow.version>18.1.0</arrow.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-data-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+      <version>${arrow.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-netty</artifactId>
+      <version>${arrow.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- Arrow schema serialization needs annotations at runtime -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
+      <version>2.21</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Arrow memory requires reflective access to java.nio buffers -->
+          <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -213,6 +213,25 @@ public final class LlamaCppProvider implements RuntimeProvider {
             this.executor = executor;
         }
 
+        /**
+         * Server arguments for one load: the flat per-runtime options
+         * (for example {@code gpuLayers}); anything else is rejected by
+         * the launcher, never silently ignored.
+         */
+        private java.util.Map<String, Object> serverArgs(
+                io.cortexj.spi.runtime.RuntimeModelRequest request) {
+            if (request == null || request.runtimeOptions() == null) {
+                return java.util.Collections.<String, Object>emptyMap();
+            }
+            return request.runtimeOptions();
+        }
+
+        private String cacheKey(Path artifactPath, java.util.Map<String, Object> serverArgs) {
+            Object gpuLayers = serverArgs.get("gpuLayers");
+            return artifactPath.toAbsolutePath().toString()
+                    + "#ngl=" + (gpuLayers == null ? "auto" : String.valueOf(gpuLayers));
+        }
+
         @Override
         public RuntimeId runtimeId() {
             return id;
@@ -231,9 +250,13 @@ public final class LlamaCppProvider implements RuntimeProvider {
                 throw failure;
             }
             try {
+                // GPU offload is part of the cache key: a CPU server and a
+                // Metal/CUDA server for the same artifact are different
+                // processes, never a shared accident
+                java.util.Map<String, Object> serverArgs = serverArgs(request);
                 SharedEndpointRegistry.SharedEndpoint endpoint =
-                        sharedEndpoints.acquire(artifactPath.toAbsolutePath().toString(),
-                                launcher, artifactPath);
+                        sharedEndpoints.acquire(cacheKey(artifactPath, serverArgs),
+                                launcher, artifactPath, serverArgs);
                 return new LlamaServerModel(endpoint, executor);
             } catch (java.io.IOException e) {
                 io.cortexj.error.ModelLoadException failure = new io.cortexj.error.ModelLoadException(

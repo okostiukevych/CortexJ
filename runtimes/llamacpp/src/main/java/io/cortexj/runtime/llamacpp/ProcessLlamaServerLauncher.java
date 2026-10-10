@@ -47,18 +47,69 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
         return launchWithHealthUrl(artifactPath, null);
     }
 
+    @Override
+    public LlamaServerEndpoint launch(Path artifactPath, java.util.Map<String, Object> serverArgs)
+            throws IOException {
+        return launchWithHealthUrl(artifactPath, null, gpuLayers(serverArgs));
+    }
+
+    /**
+     * The only supported server argument: {@code gpuLayers} offloads that
+     * many layers to the GPU backend (Metal/CUDA where the binary
+     * supports it). Absent means the binary default (CPU unless the
+     * binary offloads by default). Anything else fails typed.
+     */
+    static long gpuLayers(java.util.Map<String, Object> serverArgs) throws IOException {
+        if (serverArgs == null) {
+            return -1;
+        }
+        Object value = serverArgs.get("gpuLayers");
+        if (value == null) {
+            return -1;
+        }
+        long layers;
+        if (value instanceof Number) {
+            layers = ((Number) value).longValue();
+        } else {
+            try {
+                layers = Long.parseLong(String.valueOf(value).trim());
+            } catch (NumberFormatException notANumber) {
+                throw new IOException("llama.cpp option 'gpuLayers' must be a non-negative integer,"
+                        + " got: " + value);
+            }
+        }
+        if (layers < 0) {
+            throw new IOException("llama.cpp option 'gpuLayers' must be a non-negative integer,"
+                    + " got: " + value);
+        }
+        return layers;
+    }
+
     LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl) throws IOException {
+        return launchWithHealthUrl(artifactPath, healthBaseUrl, -1);
+    }
+
+    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl, long gpuLayers)
+            throws IOException {
         if (artifactPath == null || !Files.isRegularFile(artifactPath)) {
             throw new IOException("GGUF artifact does not exist: " + artifactPath);
         }
         int port = LlamaServerLauncher.findFreePort();
         final String effectiveHealthUrl = healthBaseUrl == null
                 ? "http://127.0.0.1:" + port : healthBaseUrl;
-        ProcessBuilder builder = new ProcessBuilder(
-                serverBinary,
-                "-m", artifactPath.toAbsolutePath().toString(),
-                "--host", "127.0.0.1",
-                "--port", String.valueOf(port));
+        java.util.List<String> command = new java.util.ArrayList<String>();
+        command.add(serverBinary);
+        command.add("-m");
+        command.add(artifactPath.toAbsolutePath().toString());
+        command.add("--host");
+        command.add("127.0.0.1");
+        command.add("--port");
+        command.add(String.valueOf(port));
+        if (gpuLayers >= 0) {
+            command.add("--n-gpu-layers");
+            command.add(String.valueOf(gpuLayers));
+        }
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.environment().clear();
         builder.environment().putAll(allowlistedEnvironment(System.getenv()));
         builder.directory(workingDirectory(artifactPath).toFile());

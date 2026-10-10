@@ -50,28 +50,6 @@
     <module>model</module>
     <module>model-metadata</module>
     <module>provenance</module>
-    <module>data/data-api</module>
-    <module>data/data-csv</module>
-    <module>data/data-parquet</module>
-    <module>data/data-jdbc</module>
-    <module>data/data-tablesaw</module>
-    <module>experiments/experiments-api</module>
-    <module>experiments/experiments-local</module>
-    <module>lab/lab-api</module>
-    <module>lab/notebook</module>
-    <module>train/train-api</module>
-    <module>train/train-peft</module>
-    <module>train/train-djl</module>
-    <module>train/train-remote</module>
-    <module>tensor/tensor-api</module>
-    <module>tensor/tensor-cpu</module>
-    <module>tensor/tensor-vector</module>
-    <module>tensor/autograd</module>
-    <module>research/nn</module>
-    <module>research/research</module>
-    <module>train/train-distributed</module>
-    <module>examples/north-star</module>
-    <module>benchmarks</module>
     <module>hardware</module>
     <module>cache</module>
     <module>streaming</module>
@@ -140,6 +118,22 @@
         <module>integrations/spring-ai</module>
         <module>integrations/langchain4j</module>
         <module>examples/spring-ai</module>
+        <module>data/data-api</module>
+        <module>data/data-csv</module>
+        <module>data/data-parquet</module>
+        <module>data/data-jdbc</module>
+        <module>data/data-tablesaw</module>
+        <module>data/data-arrow</module>
+        <module>experiments/experiments-api</module>
+        <module>experiments/experiments-local</module>
+        <module>lab/lab-api</module>
+        <module>lab/notebook</module>
+        <module>train/train-api</module>
+        <module>train/train-peft</module>
+        <module>train/train-djl</module>
+        <module>train/train-remote</module>
+        <module>train/train-distributed</module>
+        <module>examples/north-star</module>
       </modules>
     </profile>
     <profile>
@@ -150,6 +144,14 @@
       <modules>
         <module>platform/java21</module>
         <module>starters/java21</module>
+        <module>tensor/tensor-api</module>
+        <module>tensor/tensor-cpu</module>
+        <module>tensor/tensor-vector</module>
+        <module>tensor/autograd</module>
+        <module>research/nn</module>
+        <module>research/research</module>
+        <module>benchmarks</module>
+        <module>train/train-multinode</module>
       </modules>
     </profile>
     <profile>

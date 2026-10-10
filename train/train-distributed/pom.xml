@@ -13,7 +13,7 @@
   <name>CortexJ Train Distributed</name>
   <description>Phase A: single-node data-parallel gradients with the collective SPI (ADR-027). Java 21.</description>
   <properties>
-    <cortexj.shared.release>21</cortexj.shared.release>
+    <cortexj.shared.release>17</cortexj.shared.release>
   </properties>
   <dependencies>
     <dependency>

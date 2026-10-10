@@ -291,4 +291,19 @@ class ProcessLlamaServerLauncherTest {
                 || name.equals("TEMP") || name.equals("TMP") || name.equals("LANG")
                 || name.startsWith("LC_") || name.startsWith("LLAMA_");
     }
+
+    @Test
+    void gpuLayersOptionParsesHonestly() throws Exception {
+        assertEquals(-1L, ProcessLlamaServerLauncher.gpuLayers(null));
+        assertEquals(-1L, ProcessLlamaServerLauncher.gpuLayers(
+                java.util.Collections.<String, Object>emptyMap()));
+        assertEquals(99L, ProcessLlamaServerLauncher.gpuLayers(
+                java.util.Collections.<String, Object>singletonMap("gpuLayers", 99)));
+        assertEquals(40L, ProcessLlamaServerLauncher.gpuLayers(
+                java.util.Collections.<String, Object>singletonMap("gpuLayers", "40")));
+        assertThrows(java.io.IOException.class, () -> ProcessLlamaServerLauncher.gpuLayers(
+                java.util.Collections.<String, Object>singletonMap("gpuLayers", -1)));
+        assertThrows(java.io.IOException.class, () -> ProcessLlamaServerLauncher.gpuLayers(
+                java.util.Collections.<String, Object>singletonMap("gpuLayers", "all")));
+    }
 }

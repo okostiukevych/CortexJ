@@ -10,6 +10,17 @@ reproducible experiment (embedded provenance: revision, dataset hash,
 seeds) → LoRA adapter (merge math, base untouched) → safetensors
 container round-trip → provenance manifest → model lockfile.
 
+## GPU path (Metal, Apple Silicon, 2026-10-10)
+
+- The llama.cpp nightly ships the Metal backend (`libggml-metal`);
+  with `--n-gpu-layers 99` all layers assign to `MTL0 (Apple M3 Pro)`
+  (verbatim server log).
+- The provider exposes it honestly: `runtimeOptions.gpuLayers` maps to
+  `--n-gpu-layers` (typed rejection of anything else); the option is
+  part of the shared-endpoint cache key (CPU and GPU servers never mix).
+- Gated live contract (`RealLlamaServerGatedTest.gpuOffloadRoundTrip`
+  + `ProcessLlamaServerLauncherTest.gpuLayersOptionParsesHonestly`).
+
 ## Release train (per-track maturity, capability matrix per release)
 
 | Track | Version | Maturity | Notes |
@@ -21,7 +32,7 @@ container round-trip → provenance manifest → model lockfile.
 | Train | 0.x | incubating (DoD recorded) | full policy surface + LoRA artifacts + safetensors; live fine-tune follow-up (#176) |
 | Tensor | 0.x | incubating (DoD recorded) | CPU reference + vector backend; conformance suite green (incl. gather/scatter) |
 | Autograd | 0.x | incubating (DoD recorded) | tape graph + differential suite + hooks/checkpointing |
-| Distributed | Phase A | incubating | single-node data-parallel; B/C need ADRs |
+| Distributed | Phase A + B | incubating | single-node + multi-node data-parallel over ZeroMQ; C needs ADR |
 | Research | 0.x | incubating | cards/citations/bundles; benchmark suites follow |
 
 Messaging stays two-level: Runtime is the production product; no

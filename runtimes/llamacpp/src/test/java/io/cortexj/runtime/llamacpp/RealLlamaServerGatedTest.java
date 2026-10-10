@@ -143,4 +143,65 @@ class RealLlamaServerGatedTest {
             System.clearProperty("cortexj.llamacpp.server");
         }
     }
+
+    /**
+     * Metal/CUDA offload through the provider: the same artifact with
+     * {@code gpuLayers} loads a GPU-backed server and generates. Gated on
+     * the real binary + model AND on Apple Silicon (the only GPU this lane
+     * can prove); everywhere else it skips loudly.
+     */
+    @Test
+    @Tag("gated")
+    void gpuOffloadRoundTripWhenAvailable() throws Exception {
+        String binary = System.getenv("CORTEXJ_LLAMACPP_SERVER");
+        String model = System.getenv("CORTEXJ_LLAMACPP_TEST_MODEL");
+        assumeTrue(binary != null && !binary.trim().isEmpty()
+                        && model != null && !model.trim().isEmpty(),
+                "CORTEXJ_LLAMACPP_SERVER/CORTEXJ_LLAMACPP_TEST_MODEL are not set - "
+                        + "the GPU offload lane is skipped explicitly (never silently)");
+        assumeTrue(System.getProperty("os.name", "").toLowerCase().contains("mac")
+                        && System.getProperty("os.arch", "").contains("aarch64"),
+                "GPU offload is proven on Apple Silicon only - skipped explicitly elsewhere");
+        assumeTrue(Files.isRegularFile(Paths.get(model.trim())),
+                "CORTEXJ_LLAMACPP_TEST_MODEL points to a missing file: " + model);
+
+        System.setProperty("cortexj.llamacpp.server", binary.trim());
+        try {
+            LlamaCppProvider provider = new LlamaCppProvider();
+            ModelArtifact artifact = new ModelArtifact.Abstract(
+                    Paths.get(model.trim()).getFileName().toString(), ArtifactFormat.GGUF,
+                    Files.size(Paths.get(model.trim())), null, null) {
+            };
+            java.util.Map<String, Object> options =
+                    java.util.Collections.<String, Object>singletonMap("gpuLayers", 99);
+            RuntimeOpenRequest openRequest = new RuntimeOpenRequest(
+                    ModelDescriptor.builder("gated/gpu-offload")
+                            .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
+                            .artifact(artifact)
+                            .build(),
+                    artifact,
+                    Paths.get(model.trim()).toAbsolutePath(),
+                    DeviceType.GPU,
+                    options,
+                    Collections.<String, String>emptyMap(),
+                    null, null, null, null);
+            ModelRuntime runtime = provider.open(openRequest);
+            RuntimeModel loaded = runtime.load(new RuntimeModelRequest(
+                    openRequest.model(), artifact,
+                    Paths.get(model.trim()).toAbsolutePath(),
+                    DeviceType.GPU,
+                    options));
+            try {
+                TextGenerationCapability generator = (TextGenerationCapability) loaded;
+                GenerationResponse response = generator.generate(
+                        GenerationRequest.prompt("Say OK"));
+                assertTrue(response.text() != null && !response.text().isEmpty(),
+                        "the GPU-backed server must produce non-empty output");
+            } finally {
+                loaded.close();
+            }
+        } finally {
+            System.clearProperty("cortexj.llamacpp.server");
+        }
+    }
 }
