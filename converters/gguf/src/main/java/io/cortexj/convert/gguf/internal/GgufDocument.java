@@ -43,12 +43,25 @@ public final class GgufDocument {
         public final long[] dimensions;
         public final int type;
         public final long offset;
+        /**
+         * Explicit on-disk byte size. Negative means "derive from the
+         * type" (correct for F32/F16/BF16 only). Converters carrying
+         * quantized tensors they do not decode set the true size here
+         * so header offsets stay exact.
+         */
+        public final long explicitByteSize;
 
         public TensorInfo(String name, long[] dimensions, int type, long offset) {
+            this(name, dimensions, type, offset, -1L);
+        }
+
+        public TensorInfo(String name, long[] dimensions, int type, long offset,
+                          long explicitByteSize) {
             this.name = name;
             this.dimensions = dimensions;
             this.type = type;
             this.offset = offset;
+            this.explicitByteSize = explicitByteSize;
         }
 
         public long elementCount() {
@@ -66,6 +79,9 @@ public final class GgufDocument {
         }
 
         public long byteSize() {
+            if (explicitByteSize >= 0) {
+                return explicitByteSize;
+            }
             switch (type) {
                 case TENSOR_F32:
                     return Math.multiplyExact(elementCount(), 4L);
@@ -87,8 +103,13 @@ public final class GgufDocument {
      * Writes magic/version/counts, all metadata KV pairs, the tensor directory
      * (with data offsets starting at zero, 64-byte aligned) and the alignment padding.
      * After this call the stream is positioned at the start of tensor data.
+     *
+     * <p>The writer pads tensor data to 64 and declares it via
+     * {@code general.alignment}, so any reader honoring the declaration
+     * (including ours, defaulting to the 32 spec default) lands right.</p>
      */
     public long writeHeader(GgufBinaryWriter writer) throws IOException {
+        upsert("general.alignment", 4, 64);
         writer.writeUInt32(GGUF_MAGIC);
         writer.writeUInt32(version);
         writer.writeInt64(tensors.size());
@@ -160,11 +181,30 @@ public final class GgufDocument {
             long offset = reader.readInt64();
             document.tensors.add(new TensorInfo(name, shape, type, offset));
         }
+        long alignment = dataAlignment(document);
         long consumed = headerSize(document);
-        long padding = (64L - (consumed % 64L)) % 64L;
+        long padding = (alignment - (consumed % alignment)) % alignment;
         reader.skip(padding);
         document.dataStartOffset = consumed + padding;
         return document;
+    }
+
+    /**
+     * Tensor-data alignment: the {@code general.alignment} metadata when
+     * declared, the GGUF default 32 otherwise. Real llama.cpp files use
+     * 32; assuming 64 shifts every tensor read (found live: 32 bytes).
+     */
+    static long dataAlignment(GgufDocument document) {
+        for (KeyValue kv : document.metadata) {
+            if ("general.alignment".equals(kv.key) && kv.value instanceof Number) {
+                long alignment = ((Number) kv.value).longValue();
+                if (alignment == 8 || alignment == 16 || alignment == 32
+                        || alignment == 64 || alignment == 128) {
+                    return alignment;
+                }
+            }
+        }
+        return 32L;
     }
 
     private static long stringSize(String value) {
