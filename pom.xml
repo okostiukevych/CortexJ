@@ -124,6 +124,8 @@
         <module>data/data-jdbc</module>
         <module>data/data-tablesaw</module>
         <module>data/data-arrow</module>
+        <module>data/data-json</module>
+        <module>data/data-tribuo</module>
         <module>experiments/experiments-api</module>
         <module>experiments/experiments-local</module>
         <module>lab/lab-api</module>

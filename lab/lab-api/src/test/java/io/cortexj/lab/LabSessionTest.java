@@ -63,6 +63,20 @@ class LabSessionTest {
     }
 
     @Test
+    void numericColumnRendersAsBarChart() {
+        io.cortexj.data.Frame frame = new io.cortexj.data.SimpleFrame(
+                new io.cortexj.data.Schema(java.util.Arrays.asList("stars"),
+                        java.util.Arrays.asList(io.cortexj.data.ColType.LONG)),
+                java.util.Arrays.<io.cortexj.data.Column<?>>asList(
+                        new io.cortexj.data.SimpleColumn<Long>("stars", Long.class,
+                                java.util.Arrays.asList(5L, 1L))));
+        Displayable chart = Displayable.chart(frame, "stars");
+        assertEquals("text/plain", chart.mimeType());
+        assertTrue(chart.content().contains("stars"), chart.content());
+        assertTrue(chart.content().contains("#"), chart.content());
+    }
+
+    @Test
     void exportProjectSkeletonWritesStarterProject() throws Exception {
         Path target = Files.createTempDirectory("cortexj-lab-export");
         try {

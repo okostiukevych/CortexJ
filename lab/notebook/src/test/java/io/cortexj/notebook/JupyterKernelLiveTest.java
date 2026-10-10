@@ -66,6 +66,16 @@ class JupyterKernelLiveTest {
             WireMessage openReply = receive(shell);
             assertTrue(openReply.content().contains("incomplete"), openReply.content());
 
+            // control socket: interrupt is answered without stopping
+            org.zeromq.ZMQ.Socket control =
+                    client.createSocket(org.zeromq.SocketType.DEALER);
+            control.connect("tcp://127.0.0.1:" + kernel.controlPort());
+            WireMessage interrupt = WireMessage.reply(null, "interrupt_request", "{}");
+            send(control, interrupt);
+            WireMessage interruptReply = receive(control);
+            assertEquals("interrupt_reply", interruptReply.messageType());
+            assertTrue(interruptReply.content().contains("ok"), interruptReply.content());
+
             // connection file round-trip
             java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("kernel-conn");
             java.nio.file.Path connectionFile = kernel.writeConnectionFile(dir);

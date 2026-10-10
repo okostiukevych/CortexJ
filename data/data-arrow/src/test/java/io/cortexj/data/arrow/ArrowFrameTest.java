@@ -32,6 +32,20 @@ class ArrowFrameTest {
     }
 
     @Test
+    void streamingFormatRoundTrips() throws Exception {
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        ArrowFrame.writeStream(frame(), output);
+        Frame read = ArrowFrame.readStream(
+                new java.io.ByteArrayInputStream(output.toByteArray()));
+        assertEquals(frame().schema().names(), read.schema().names());
+        assertEquals(frame().schema().types(), read.schema().types());
+        assertEquals(2, read.rowCount());
+        assertEquals(Long.valueOf(1L), read.column("id").get(0));
+        assertNull(read.column("text").get(1));
+        assertEquals(Fingerprint.ofFrame(frame()), Fingerprint.ofFrame(read));
+    }
+
+    @Test
     void arrowRoundTripKeepsTypesAndNulls() throws Exception {
         Path file = Files.createTempFile("frame", ".arrow");
         try {
