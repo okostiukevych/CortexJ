@@ -247,15 +247,67 @@ public class CpuBackend implements TensorBackend {
     private Tensor elementwise(CpuTensor left, CpuTensor right,
                                java.util.function.DoubleBinaryOperator op) {
         double[] a = left.toArray();
-        double[] b = right == null ? null : right.toArray();
-        if (right != null && !left.shape().equals(right.shape())) {
-            throw new IllegalArgumentException("elementwise ops need equal shapes");
+        if (right == null) {
+            double[] result = new double[a.length];
+            for (int i = 0; i < a.length; i++) {
+                result[i] = op.applyAsDouble(a[i], 0.0);
+            }
+            return new CpuTensor(left.shape(), left.dtype(), result, null);
         }
-        double[] result = new double[a.length];
-        for (int i = 0; i < a.length; i++) {
-            result[i] = op.applyAsDouble(a[i], right == null ? 0.0 : b[i]);
+        double[] b = right.toArray();
+        long[] outShape = broadcastShape(left.shape(), right.shape());
+        Shape shape = Shape.of(outShape);
+        double[] result = new double[(int) shape.size()];
+        long[] aDims = left.shape().dimensions();
+        long[] bDims = right.shape().dimensions();
+        for (long flat = 0; flat < shape.size(); flat++) {
+            result[(int) flat] = op.applyAsDouble(
+                    a[(int) broadcastOffset(flat, outShape, aDims)],
+                    b[(int) broadcastOffset(flat, outShape, bDims)]);
         }
-        return new CpuTensor(left.shape(), left.dtype(), result, null);
+        return new CpuTensor(shape, left.dtype(), result, null);
+    }
+
+    /**
+     * NumPy-style broadcasting, documented and tested: shapes align on
+     * the right, dimension 1 stretches, anything else fails typed.
+     */
+    static long[] broadcastShape(Shape left, Shape right) {
+        long[] a = left.dimensions();
+        long[] b = right.dimensions();
+        int rank = Math.max(a.length, b.length);
+        long[] out = new long[rank];
+        for (int i = 0; i < rank; i++) {
+            long da = i < rank - a.length ? 1 : a[i - (rank - a.length)];
+            long db = i < rank - b.length ? 1 : b[i - (rank - b.length)];
+            if (da != db && da != 1 && db != 1) {
+                throw new IllegalArgumentException("shapes " + left + " and " + right
+                        + " do not broadcast");
+            }
+            out[i] = Math.max(da, db);
+        }
+        return out;
+    }
+
+    private static long broadcastOffset(long flat, long[] outShape, long[] inShape) {
+        long offset = 0;
+        long multiplier = 1;
+        int shift = outShape.length - inShape.length;
+        for (int i = inShape.length - 1; i >= 0; i--) {
+            long outAxis = i + shift;
+            long outStride = 1;
+            for (int j = (int) outAxis + 1; j < outShape.length; j++) {
+                outStride *= outShape[j];
+            }
+            long coordinate = (flat / outStride) % outShape[(int) outAxis];
+            long inCoordinate = inShape[i] == 1 ? 0 : coordinate;
+            long inStride = 1;
+            for (int j = i + 1; j < inShape.length; j++) {
+                inStride *= inShape[j];
+            }
+            offset += inCoordinate * inStride;
+        }
+        return offset;
     }
 
     @Override
@@ -283,6 +335,104 @@ public class CpuBackend implements TensorBackend {
             }
         }
         return new CpuTensor(Shape.of(columns, rows), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor zeros(Shape shape, DType dtype, Device device) {
+        return new CpuTensor(shape, dtype, new double[(int) shape.size()], null);
+    }
+
+    @Override
+    public Tensor fill(Shape shape, double value, DType dtype, Device device) {
+        double[] data = new double[(int) shape.size()];
+        java.util.Arrays.fill(data, value);
+        return new CpuTensor(shape, dtype, data, null);
+    }
+
+    @Override
+    public Tensor random(Shape shape, DType dtype, Device device, long seed) {
+        double[] data = new double[(int) shape.size()];
+        java.util.Random random = new java.util.Random(seed);
+        for (int i = 0; i < data.length; i++) {
+            data[i] = random.nextDouble() * 2 - 1;
+        }
+        return new CpuTensor(shape, dtype, data, null);
+    }
+
+    @Override
+    public Tensor batchMatmul(Tensor left, Tensor right) {
+        CpuTensor a = checked(left);
+        CpuTensor b = checked(right);
+        long[] aShape = a.shape().dimensions();
+        long[] bShape = b.shape().dimensions();
+        if (aShape.length != 3 || bShape.length != 3
+                || aShape[0] != bShape[0] || aShape[2] != bShape[1]) {
+            throw new IllegalArgumentException("batchMatmul needs [batch, m, k] x [batch, k, n]");
+        }
+        int batch = (int) aShape[0];
+        int rows = (int) aShape[1];
+        int inner = (int) aShape[2];
+        int columns = (int) bShape[2];
+        double[] result = new double[batch * rows * columns];
+        double[] aData = a.toArray();
+        double[] bData = b.toArray();
+        for (int bb = 0; bb < batch; bb++) {
+            for (int r = 0; r < rows; r++) {
+                for (int k = 0; k < inner; k++) {
+                    double aValue = aData[(bb * rows + r) * inner + k];
+                    if (aValue == 0.0) {
+                        continue;
+                    }
+                    for (int c = 0; c < columns; c++) {
+                        result[(bb * rows + r) * columns + c] +=
+                                aValue * bData[(bb * inner + k) * columns + c];
+                    }
+                }
+            }
+        }
+        return new CpuTensor(Shape.of(batch, rows, columns), a.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor logSoftmax(Tensor tensor) {
+        CpuTensor value = checked(tensor);
+        double[] data = value.toArray();
+        double max = Double.NEGATIVE_INFINITY;
+        for (double element : data) {
+            max = Math.max(max, element);
+        }
+        double total = 0;
+        for (double element : data) {
+            total += Math.exp(element - max);
+        }
+        double logTotal = Math.log(total);
+        double[] result = new double[data.length];
+        for (int i = 0; i < data.length; i++) {
+            result[i] = data[i] - max - logTotal;
+        }
+        return new CpuTensor(value.shape(), value.dtype(), result, null);
+    }
+
+    @Override
+    public Tensor slice(Tensor tensor, long from, long to) {
+        CpuTensor value = checked(tensor);
+        long[] shape = value.shape().dimensions();
+        if (shape.length != 2 || from < 0 || to > shape[0] || from >= to) {
+            throw new IllegalArgumentException("slice needs 0 <= from < to <= rows of a 2D tensor");
+        }
+        int columns = (int) shape[1];
+        double[] storage = value.storage();
+        double[] view = java.util.Arrays.copyOfRange(storage,
+                (int) (from * columns), (int) (to * columns));
+        // views share the parent storage: the copy above is only the
+        // window handle; the parent reference keeps it alive (ADR-024)
+        return new CpuTensor(Shape.of(to - from, columns), value.dtype(), view, storage);
+    }
+
+    @Override
+    public Object unwrap(Tensor tensor) {
+        // the reference escape hatch: the raw storage array
+        return checked(tensor).toArray();
     }
 
     private CpuTensor checked(Tensor tensor) {
@@ -340,6 +490,11 @@ public class CpuBackend implements TensorBackend {
         public double[] toArray() {
             requireOpen();
             return storage.clone();
+        }
+
+        double[] storage() {
+            requireOpen();
+            return storage;
         }
 
         @Override

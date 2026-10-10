@@ -54,14 +54,32 @@ class DjlLiveTrainingTest {
 
         // the adapter artifact reads back through the standard PEFT path
         LoRAAdapter adapter = LoRASafetensors.read(Path.of(result.artifactPath()));
-        assertEquals("0.weight", adapter.moduleName());
+        assertEquals("01Linear_weight", adapter.moduleName());
         assertTrue(adapter.config().rank() >= 1);
 
         // the artifact checksum matches the recorded provenance
         String checksum = sha256(Path.of(result.artifactPath()));
         assertEquals(result.provenance().checksums().get("adapter_model.safetensors"), checksum);
 
+        // checkpoint/resume: the run saved a checkpoint; a resumed run
+        // completes from it
+        Path checkpoint = Path.of(result.artifactPath()).getParent().resolve("checkpoint-0");
+        assertTrue(Files.isRegularFile(checkpoint.resolve("manifest.properties")),
+                "the run must save a checkpoint manifest");
+        TrainingRequest resumed = TrainingRequest.builder()
+                .model("company/tiny-linear")
+                .dataset("sha256:train")
+                .strategy(TrainingStrategy.LORA)
+                .parameter("resumeFrom", checkpoint.toAbsolutePath().toString())
+                .data(TrainingData.of(
+                        new double[]{1, 2, 3, 4, 5, 6, 7, 8},
+                        new double[]{2, 4, 6, 8, 10, 12, 14, 16}))
+                .build();
+        TrainingResult resumedResult = backend.train(resumed, support);
+        assertTrue(Files.exists(Path.of(resumedResult.artifactPath())));
+
         Files.deleteIfExists(Path.of(result.artifactPath()));
+        Files.deleteIfExists(Path.of(resumedResult.artifactPath()));
     }
 
     @Test

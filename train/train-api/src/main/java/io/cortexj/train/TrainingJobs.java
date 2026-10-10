@@ -46,6 +46,28 @@ public final class TrainingJobs {
      * {@code requireBackend}), validates before allocating, executes.
      */
     public TrainingResult start(TrainingRequest request) {
+        return start(request, null);
+    }
+
+    /**
+     * Runs a composed plan through the same selection (the §141.2
+     * example shape, minus the Runtime facade the dependency law
+     * forbids in the stable api).
+     */
+    public TrainingResult start(TrainingPlan plan) {
+        if (plan == null || plan.request() == null) {
+            throw new CortexJException(io.cortexj.ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
+                    "training plan is invalid: a request is required");
+        }
+        return start(plan.request());
+    }
+
+    /**
+     * Runs the training job with a metrics listener: every backend
+     * metric is forwarded as it arrives (the Experiments bridge
+     * consumes this listener).
+     */
+    public TrainingResult start(TrainingRequest request, TrainingListener listener) {
         List<String> intentProblems = TrainingRequest.validateIntent(request);
         if (!intentProblems.isEmpty()) {
             throw new CortexJException(io.cortexj.ErrorCode.PLAN_USER_REQUIREMENT_IMPOSSIBLE,
@@ -78,7 +100,35 @@ public final class TrainingJobs {
             }
             throw failure;
         }
-        return chosen.train(request, chosenSupport);
+        TrainingResult result = chosen.train(request, chosenSupport);
+        if (listener != null) {
+            for (java.util.Map.Entry<String, Double> metric : result.metrics().entrySet()) {
+                listener.onMetric(result.jobId(), metric.getKey(), metric.getValue());
+            }
+            listener.onComplete(result);
+        }
+        return result;
+    }
+
+    /**
+     * Async job lifecycle: runs {@link #start(TrainingRequest,
+     * TrainingListener)} on the given executor. Cancellation interrupts
+     * the worker thread (best-effort: backends check interruption
+     * between epochs, never mid-kernel).
+     */
+    public java.util.concurrent.CompletionStage<TrainingResult> startAsync(
+            TrainingRequest request, java.util.concurrent.Executor executor) {
+        return startAsync(request, null, executor);
+    }
+
+    public java.util.concurrent.CompletionStage<TrainingResult> startAsync(
+            TrainingRequest request, TrainingListener listener,
+            java.util.concurrent.Executor executor) {
+        if (executor == null) {
+            throw new IllegalArgumentException("executor must not be null");
+        }
+        return java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> start(request, listener), executor);
     }
 
     /**

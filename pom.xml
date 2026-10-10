@@ -133,6 +133,7 @@
         <module>train/train-djl</module>
         <module>train/train-remote</module>
         <module>train/train-distributed</module>
+        <module>train/train-experiments</module>
         <module>examples/north-star</module>
       </modules>
     </profile>

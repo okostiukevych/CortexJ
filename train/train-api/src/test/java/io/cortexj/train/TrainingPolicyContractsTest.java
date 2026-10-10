@@ -1,6 +1,7 @@
 package io.cortexj.train;
 
 import io.cortexj.train.standard.CrossEntropy;
+import io.cortexj.train.standard.Loss;
 import io.cortexj.train.standard.Standard;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,32 @@ class TrainingPolicyContractsTest {
         double[] second = momentum.step(first, new double[]{2.0});
         // velocity = 0.5*(-0.2) - 0.1*2 = -0.3; value = 0.8 - 0.3 = 0.5
         assertEquals(0.5, second[0], 1e-12);
+    }
+
+    @Test
+    void adamWFirstStepIsHandComputed() {
+        // beta1=0.9, beta2=0.999, eps=1e-8, decay=0.01, lr=1e-3, params=[1], grad=[2]:
+        // m = 0.1*2 = 0.2, v = 0.001*4 = 0.004
+        // mHat = 0.2/0.1 = 2, vHat = 0.004/0.001 = 4
+        // update = 1e-3 * 2/(2 + 1e-8) + 1e-3*0.01*1 = 0.001 + 0.00001
+        Optimizer adamW = Standard.adamW(1e-3);
+        double[] updated = adamW.step(new double[]{1.0}, new double[]{2.0});
+        assertEquals(1.0 - 0.001 - 0.00001, updated[0], 1e-9);
+        assertEquals("adamw", adamW.id());
+    }
+
+    @Test
+    void lossFactoriesAreNamed() {
+        assertEquals("cross-entropy", Loss.crossEntropy().id());
+        assertEquals("mean-squared-error", Loss.meanSquaredError().id());
+        // MSE hand-computed: pred [1, 3], target [0, 0] -> (1 + 9)/2 = 5
+        assertEquals(5.0, Loss.meanSquaredError()
+                .loss(new double[]{1.0, 3.0}, new double[]{0.0, 0.0}), 1e-12);
+        // gradient: 2*(pred - target)/n = [1, 3]
+        assertEquals(1.0, Loss.meanSquaredError()
+                .gradient(new double[]{1.0, 3.0}, new double[]{0.0, 0.0})[0], 1e-12);
+        assertEquals(3.0, Loss.meanSquaredError()
+                .gradient(new double[]{1.0, 3.0}, new double[]{0.0, 0.0})[1], 1e-12);
     }
 
     @Test
@@ -100,8 +127,7 @@ class TrainingPolicyContractsTest {
     }
 
     @Test
-    void fullPolicySurfaceIsPresent() {
-        // the full training policy surface exists as contracts
+    void fullPolicySurfaceIsPresent() {        // the full training policy surface exists as contracts
         Map<String, Class<?>> contracts = Map.of(
                 "Trainer", Trainer.class,
                 "TrainingPlan", TrainingPlan.class,
@@ -116,5 +142,22 @@ class TrainingPolicyContractsTest {
             assertTrue(entry.getValue().isInterface() || !entry.getValue().isAnonymousClass(),
                     entry.getKey() + " must be a public contract");
         }
+    }
+
+    @Test
+    void highLevelExampleShapeWorks() {
+        // the §141.2 example shape, minus the Runtime facade the
+        // dependency law forbids in the stable api
+        TrainingPlan plan = Trainers.trainer()
+                .model("m")
+                .dataset("d")
+                .optimizer(io.cortexj.train.standard.AdamW.builder().learningRate(1e-3).build())
+                .loss(Loss.crossEntropy())
+                .device(Device.AUTO)
+                .build();
+        assertEquals("m", plan.request().model());
+        assertEquals("adamw", plan.optimizer().id());
+        assertEquals("cross-entropy", plan.loss().id());
+        assertEquals(Device.AUTO, plan.device());
     }
 }
