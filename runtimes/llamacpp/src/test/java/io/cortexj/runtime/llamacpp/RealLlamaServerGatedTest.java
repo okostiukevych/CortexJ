@@ -35,15 +35,29 @@ class RealLlamaServerGatedTest {
     @TempDir
     Path tempDir;
 
+    /**
+     * audit 2026-10-10: the test model resolves from
+     * CORTEXJ_LLAMACPP_TEST_MODEL - a real GGUF the binary can load. Gated
+     * (never auto-downloaded): a network fetch in tests is opt-in.
+     */
+    private static String testModelPath() {
+        String model = System.getenv("CORTEXJ_LLAMACPP_TEST_MODEL");
+        return model == null || model.trim().isEmpty() ? null : model.trim();
+    }
+
     @Test
     void realBinarySpawnAndKillWhenAvailable() throws Exception {
-        String configured = System.getenv("CORTEXJ_LLAMACPP_SERVER");
-        assumeTrue(configured != null && !configured.trim().isEmpty(),
-                "CORTEXJ_LLAMACPP_SERVER is not set - the real-binary integration lane "
-                        + "is skipped explicitly (never silently)");
-        Path binary = Paths.get(configured.trim());
+        // audit 2026-10-10: discover the binary like the provider probe does
+        // (env -> sysprop -> standard install paths) - the lane no longer
+        // skips on machines with llama-server installed, only on bare ones
+        String discovered = LlamaCppProvider.llamaServerBinary();
+        assumeTrue(discovered != null && !discovered.trim().isEmpty(),
+                "no llama-server binary found (env CORTEXJ_LLAMACPP_SERVER, sysprop, or "
+                        + "standard install paths) - the real-binary integration lane is "
+                        + "skipped explicitly (never silently)");
+        Path binary = Paths.get(discovered.trim());
         assumeTrue(Files.isRegularFile(binary),
-                "CORTEXJ_LLAMACPP_SERVER points to a missing file: " + binary
+                "the discovered llama-server points to a missing file: " + binary
                         + " - the real-binary integration lane is skipped explicitly");
 
         ProcessLlamaServerLauncher launcher = new ProcessLlamaServerLauncher(
@@ -73,10 +87,10 @@ class RealLlamaServerGatedTest {
     @Test
     @Tag("gated")
     void realBinarySuccessRoundTripWhenAvailable() throws Exception {
-        String binary = System.getenv("CORTEXJ_LLAMACPP_SERVER");
-        String model = System.getenv("CORTEXJ_LLAMACPP_TEST_MODEL");
+        String binary = LlamaCppProvider.llamaServerBinary();
+        String model = testModelPath();
         assumeTrue(binary != null && !binary.trim().isEmpty(),
-                "CORTEXJ_LLAMACPP_SERVER is not set - the success round-trip lane "
+                "no llama-server binary found - the success round-trip lane "
                         + "is skipped explicitly (never silently)");
         assumeTrue(model != null && !model.trim().isEmpty(),
                 "CORTEXJ_LLAMACPP_TEST_MODEL is not set - the success round-trip lane "
@@ -153,11 +167,11 @@ class RealLlamaServerGatedTest {
     @Test
     @Tag("gated")
     void gpuOffloadRoundTripWhenAvailable() throws Exception {
-        String binary = System.getenv("CORTEXJ_LLAMACPP_SERVER");
-        String model = System.getenv("CORTEXJ_LLAMACPP_TEST_MODEL");
+        String binary = LlamaCppProvider.llamaServerBinary();
+        String model = testModelPath();
         assumeTrue(binary != null && !binary.trim().isEmpty()
                         && model != null && !model.trim().isEmpty(),
-                "CORTEXJ_LLAMACPP_SERVER/CORTEXJ_LLAMACPP_TEST_MODEL are not set - "
+                "no llama-server binary or test model found - "
                         + "the GPU offload lane is skipped explicitly (never silently)");
         assumeTrue(System.getProperty("os.name", "").toLowerCase().contains("mac")
                         && System.getProperty("os.arch", "").contains("aarch64"),

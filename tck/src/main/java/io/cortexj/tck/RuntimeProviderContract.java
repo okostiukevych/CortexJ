@@ -94,6 +94,17 @@ public abstract class RuntimeProviderContract {
         return new RuntimeProbeContext(testEnvironment(), testHardware(true), false, Collections.<String, String>emptyMap());
     }
 
+    /**
+     * Audit 2026-10-10: the contract tests probe through this hook instead
+     * of the static {@link #probeContext()} directly - providers whose
+     * probe needs configuration (the remote runtime needs
+     * {@code remote.baseUrl}) override it, otherwise those contracts skip
+     * on every machine even when the provider is fully testable.
+     */
+    protected RuntimeProbeContext contractProbeContext() {
+        return probeContext();
+    }
+
     public static RuntimeEvaluationRequest evaluationRequest(ArtifactFormat format) {
         ModelDescriptor descriptor = ModelDescriptor.builder("tck/model")
                 .revision("tckrev")
@@ -190,7 +201,7 @@ public abstract class RuntimeProviderContract {
     public void runtimeCloseIsIdempotent() {
         // lifecycle contract: close() must be a one-shot - a second close is a
         // no-op, never a double-free of the native session (audit P0-1)
-        RuntimeProbeResult probe = provider().probe(probeContext());
+        RuntimeProbeResult probe = provider().probe(contractProbeContext());
         assumeTrue(probe.isUsable(),
                 "runtime not usable on this machine - the lifecycle close contract is skipped loudly: "
                         + probe.message());
@@ -201,14 +212,28 @@ public abstract class RuntimeProviderContract {
     }
 
     @Test
+    /**
+     * Audit 2026-10-10: server-side runtimes (remote-openai) never fail a
+     * load on the artifact path - execution happens on the server and the
+     * failure modes are the 404/auth tests in their own TCK class. Such
+     * providers override this to false so the contract skips loudly
+     * instead of asserting a local-failure semantics they do not have.
+     */
+    protected boolean failedLoadContractApplies() {
+        return true;
+    }
+
     public void failedLoadIsTypedAndProviderStaysUsable() {
-        RuntimeProbeResult probe = provider().probe(probeContext());
+        RuntimeProbeResult probe = provider().probe(contractProbeContext());
         assumeTrue(probe.isUsable(),
                 "runtime not usable on this machine - the failed-load contract is skipped loudly: "
                         + probe.message());
         assumeTrue(loadableArtifactPath() != null,
                 "the provider ships no loadable artifact on this machine - the failed-load "
                         + "contract is skipped loudly");
+        assumeTrue(failedLoadContractApplies(),
+                "server-side runtime: local artifact-failure semantics do not apply - the "
+                        + "failed-load contract is covered by the provider's own 404/auth tests");
         Path artifact = loadableArtifactPath();
         Path bogus = artifact.resolveSibling("definitely-not-a-model-" + System.nanoTime());
         ModelRuntime runtime = provider().open(openRequest(bogus));
@@ -226,7 +251,7 @@ public abstract class RuntimeProviderContract {
 
     @Test
     public void tokenStreamSupportsSingleSubscription() {
-        RuntimeProbeResult probe = provider().probe(probeContext());
+        RuntimeProbeResult probe = provider().probe(contractProbeContext());
         assumeTrue(probe.isUsable(),
                 "runtime not usable on this machine - the streaming contract is skipped loudly: "
                         + probe.message());

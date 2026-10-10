@@ -18,6 +18,18 @@ class OnnxProviderTckTest extends RuntimeProviderContract {
         return provider;
     }
 
+    // audit 2026-10-10: a generated model satisfies the failed-load
+    // contract (bogus path fails typed, valid path loads and closes) -
+    // previously the contract skipped for lack of a shipped artifact
+    @Override
+    protected java.nio.file.Path loadableArtifactPath() {
+        try {
+            return OnnxTestModels.minimalOnnxModel();
+        } catch (Exception generationFailed) {
+            return null;
+        }
+    }
+
     @Test
     void probeReportsAvailabilityOrActionableAbsence() {
         RuntimeProbeResult result = provider.probe(probeContext());

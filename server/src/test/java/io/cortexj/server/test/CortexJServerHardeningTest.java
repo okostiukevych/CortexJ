@@ -205,8 +205,15 @@ class CortexJServerHardeningTest {
         try {
             int port = server.start(0);
             final URL url = new URL("http://127.0.0.1:" + port + "/v1/chat/completions");
+            // audit 2026-10-10: flood at 3x the admission capacity - a 1x
+            // flood relied on every request thread dispatching within the
+            // probe window; under reactor CPU contention some connections
+            // dispatched late and the probe never saw saturation (flake).
+            // 3x guarantees saturation: slow connections leave the excess
+            // to be refused 503 instead of delaying it.
+            final int flood = workers * 3;
             List<Thread> blocked = new ArrayList<Thread>();
-            for (int i = 0; i < workers; i++) {
+            for (int i = 0; i < flood; i++) {
                 Thread requester = new Thread(new Runnable() {
                     @Override
                     public void run() {
@@ -224,7 +231,7 @@ class CortexJServerHardeningTest {
             }
             assertTrue(allInFlight.await(10, TimeUnit.SECONDS),
                     "the generate pool (" + generateWidth + ") must fill while "
-                            + workers + " requests hold admission permits");
+                            + flood + " requests hold admission permits");
             // poll until every requester has arrived: early probes may still
             // find a free permit, but once all blocked requests hold theirs
             // every further probe is refused

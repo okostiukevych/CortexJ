@@ -24,6 +24,19 @@ class LlamaCppProviderTckTest extends RuntimeProviderContract {
         return provider;
     }
 
+    // audit 2026-10-10: with CORTEXJ_LLAMACPP_TEST_MODEL set (a real GGUF),
+    // the lifecycle/streaming contracts run against the real llama-server
+    // instead of skipping for lack of a shipped artifact
+    @Override
+    protected java.nio.file.Path loadableArtifactPath() {
+        String model = System.getenv("CORTEXJ_LLAMACPP_TEST_MODEL");
+        if (model == null || model.trim().isEmpty()
+                || !java.nio.file.Files.isRegularFile(java.nio.file.Paths.get(model.trim()))) {
+            return null;
+        }
+        return java.nio.file.Paths.get(model.trim());
+    }
+
     @Test
     void probeWithoutNativeLibraryIsUnavailableWithRemediation() {
         System.clearProperty(LlamaCppProvider.LIB_PROPERTY);

@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.file.Path;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -149,6 +150,51 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
     @Override
     protected io.cortexj.spi.runtime.RuntimeProvider provider() {
         return provider;
+    }
+
+    // audit 2026-10-10: the remote probe needs remote.baseUrl - without the
+    // override the three lifecycle/streaming contracts skipped on every
+    // machine even though the stub above makes the provider fully testable
+    @Override
+    protected RuntimeProbeContext contractProbeContext() {
+        return contextWithBaseUrl();
+    }
+
+    // audit 2026-10-10: server-side execution needs no local file - a
+    // dummy path satisfies the streaming contract (load resolves server-side
+    // through the stub); the failed-load contract stays skipped above
+    @Override
+    protected Path loadableArtifactPath() {
+        return java.nio.file.Paths.get("tck-dummy/remote-artifact");
+    }
+
+    @Override
+    protected boolean failedLoadContractApplies() {
+        return false;
+    }
+
+    @Override
+    protected RuntimeOpenRequest openRequest(Path artifactPath) {
+        if (artifactPath == null) {
+            return new RuntimeOpenRequest(
+                    ModelDescriptor.builder("tck/model").revision("rev").task(TaskCapability.TEXT_GENERATION).build(),
+                    remoteArtifact(),
+                    null,
+                    DeviceType.REMOTE,
+                    Collections.<String, Object>emptyMap(),
+                    Collections.singletonMap("remote.baseUrl", baseUrl),
+                    testEnvironment(), testHardware(true),
+                    null, null);
+        }
+        return new RuntimeOpenRequest(
+                ModelDescriptor.builder("tck/model").revision("rev").task(TaskCapability.TEXT_GENERATION).build(),
+                remoteArtifact(),
+                artifactPath,
+                DeviceType.REMOTE,
+                Collections.<String, Object>emptyMap(),
+                Collections.singletonMap("remote.baseUrl", baseUrl),
+                testEnvironment(), testHardware(true),
+                null, null);
     }
 
     private RuntimeProbeContext contextWithBaseUrl() {
