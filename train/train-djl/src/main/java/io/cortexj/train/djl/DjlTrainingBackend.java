@@ -17,16 +17,29 @@ import ai.djl.training.optimizer.Optimizer;
 import ai.djl.training.tracker.Tracker;
 import io.cortexj.error.CortexJException;
 import io.cortexj.meta.ModelIdentity;
+import io.cortexj.train.LmDataset;
+import io.cortexj.train.LmExample;
+import io.cortexj.train.LoraSettings;
 import io.cortexj.train.TrainingBackend;
 import io.cortexj.train.TrainingData;
 import io.cortexj.train.TrainingRequest;
 import io.cortexj.train.TrainingResult;
+import io.cortexj.train.data.LmBatcher;
+import io.cortexj.train.data.LmDatasets;
+import io.cortexj.train.data.Tokenizer;
+import io.cortexj.train.djl.models.ArchitectureConfig;
+import io.cortexj.train.djl.models.ArchitectureConfigs;
+import io.cortexj.train.djl.models.DjlHfTokenizer;
+import io.cortexj.train.djl.models.GenericDecoderBlock;
+import io.cortexj.train.djl.models.HfWeightLoader;
+import io.cortexj.train.djl.models.LoadedWeights;
 import io.cortexj.train.peft.LoRAAdapter;
 import io.cortexj.train.peft.LoRAConfig;
 import io.cortexj.train.peft.LoRASafetensors;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -81,6 +94,9 @@ public class DjlTrainingBackend implements TrainingBackend {
         if (request == null) {
             return new Support(Level.PARTIAL, "request is null", 0);
         }
+        if (request.lmData() != null || request.lora() != null) {
+            return evaluateLlm(request, engines);
+        }
         boolean livePath = request.data() != null
                 && request.strategy() != io.cortexj.train.TrainingStrategy.FULL;
         if (livePath) {
@@ -97,6 +113,9 @@ public class DjlTrainingBackend implements TrainingBackend {
 
     @Override
     public TrainingResult train(TrainingRequest request, Support support) {
+        if (request != null && (request.lmData() != null || request.lora() != null)) {
+            return trainLlm(request);
+        }
         TrainingData data = request == null ? null : request.data();
         if (data == null) {
             CortexJException failure = new CortexJException("CORTEXJ-TRAIN-0001",
@@ -252,6 +271,241 @@ public class DjlTrainingBackend implements TrainingBackend {
             }
         } finally {
             model.close();
+        }
+    }
+
+    static final long MAX_BASE_BYTES = 5L * 1024L * 1024L * 1024L;
+
+    private Support evaluateLlm(TrainingRequest request, java.util.Set<String> engines) {
+        if (request.lmData() == null || request.lora() == null) {
+            return new Support(Level.PARTIAL,
+                    "the LLM path needs both lmData and lora settings on the request", 0);
+        }
+        String modelPath = request.parameters().get("modelPath");
+        if (modelPath == null || modelPath.trim().isEmpty()) {
+            return new Support(Level.UNSUPPORTED,
+                    "modelPath parameter is required (directory with config.json, "
+                            + "safetensors weights, tokenizer.json) [CORTEXJ-TRAIN-0102]", 0);
+        }
+        java.nio.file.Path dir = Paths.get(modelPath.trim());
+        if (modelPath.trim().endsWith(".gguf")) {
+            return new Support(Level.UNSUPPORTED,
+                    "quantized GGUF is not a trainable base [CORTEXJ-TRAIN-0104]", 0);
+        }
+        java.nio.file.Path configJson = dir.resolve("config.json");
+        if (!Files.isRegularFile(configJson)) {
+            return new Support(Level.UNSUPPORTED,
+                    "no config.json in modelPath [CORTEXJ-TRAIN-0102]", 0);
+        }
+        ArchitectureConfig config;
+        try {
+            config = ArchitectureConfigs.parse(configJson);
+        } catch (CortexJException e) {
+            return new Support(Level.UNSUPPORTED,
+                    e.code() + " " + e.getMessage(), 0);
+        }
+        long params = ArchitectureConfigs.paramCount(config);
+        if (params * 2 > MAX_BASE_BYTES) {
+            return new Support(Level.UNSUPPORTED,
+                    "base exceeds the 5GB F16 training limit (" + params * 2 + " bytes) "
+                            + "[CORTEXJ-TRAIN-0107]", 0);
+        }
+        int seqLen = intParameter(request, "seqLen", 512);
+        int batchSize = intParameter(request, "batchSize", 1);
+        long loraParams;
+        try {
+            loraParams = loraParamCount(config, request.lora());
+        } catch (CortexJException e) {
+            return new Support(Level.UNSUPPORTED, e.code() + " " + e.getMessage(), 0);
+        }
+        long estimate = params * 4L                       // F32 weights
+                + loraParams * 16L                        // A/B weight + grad + Adam state
+                + (long) batchSize * seqLen * config.hiddenSize() * config.numLayers() * 24L
+                + (long) batchSize * seqLen * config.vocabSize() * 4L; // logits
+        long heap = Runtime.getRuntime().maxMemory();
+        if (estimate > heap * 9 / 10) {
+            return new Support(Level.UNSUPPORTED,
+                    "estimated memory " + estimate + " bytes exceeds the JVM budget "
+                            + heap + " [CORTEXJ-TRAIN-0108]", estimate);
+        }
+        if (engines == null || !engines.contains("PyTorch")) {
+            return new Support(Level.UNSUPPORTED,
+                    "no DJL PyTorch training engine on the classpath", estimate);
+        }
+        return new Support(Level.FULL,
+                "LLM LoRA path: family=" + config.family()
+                        + " params=" + params
+                        + " estimate=" + estimate + " bytes", estimate);
+    }
+
+    private TrainingResult trainLlm(TrainingRequest request) {
+        String modelPath = request.parameters().get("modelPath");
+        if (modelPath == null || modelPath.trim().isEmpty()) {
+            throw lmFailure("CORTEXJ-TRAIN-0102",
+                    "the LLM path requires the modelPath parameter",
+                    "Point modelPath at the base model directory.");
+        }
+        if (modelPath.trim().endsWith(".gguf")) {
+            throw lmFailure("CORTEXJ-TRAIN-0104",
+                    "quantized GGUF is not a trainable base",
+                    "Point modelPath at the unquantized safetensors model directory.");
+        }
+        if (request.lora() == null || request.lmData() == null) {
+            throw lmFailure("CORTEXJ-TRAIN-0102",
+                    "the LLM path requires both lora settings and lmData",
+                    "Set .lora(...) and .lmData(...) on the request.");
+        }
+        java.nio.file.Path dir = Paths.get(modelPath.trim());
+        ArchitectureConfig config = ArchitectureConfigs.parse(dir.resolve("config.json"));
+        LoadedWeights weights = HfWeightLoader.load(dir);
+        // Vocab gate: tokenizer.json wins when present (it tokenized the
+        // data through our pipeline); a pre-tokenized LmDataset is checked
+        // against config.json instead - no silent size mismatch either way.
+        java.nio.file.Path tokenizerJson = dir.resolve("tokenizer.json");
+        if (Files.isRegularFile(tokenizerJson)) {
+            Tokenizer tokenizer = DjlHfTokenizer.load(tokenizerJson);
+            if (tokenizer.vocabSize() != config.vocabSize()) {
+                throw lmFailure("CORTEXJ-TRAIN-0106",
+                        "tokenizer vocab (" + tokenizer.vocabSize()
+                                + ") does not match config.json vocab ("
+                                + config.vocabSize() + ")",
+                        "The tokenizer, config.json and weights must agree.");
+            }
+        } else if (request.lmData().vocabSize() != config.vocabSize()) {
+            throw lmFailure("CORTEXJ-TRAIN-0106",
+                    "dataset vocab (" + request.lmData().vocabSize()
+                            + ") does not match config.json vocab ("
+                            + config.vocabSize() + ")",
+                    "Tokenize with the model's tokenizer or ship tokenizer.json.");
+        }
+        LoraSettings lora = request.lora();
+        GenericDecoderBlock block = GenericDecoderBlock.build(config,
+                new java.util.HashSet<String>(lora.targetModules()),
+                lora.rank(), lora.scaling());
+        LmTrainingLoop loop = LmTrainingLoop.create(block,
+                (float) request.learningRate(),
+                intParameter(request, "warmupSteps", 10), 0.01f);
+        int seqLen = intParameter(request, "seqLen", 512);
+        loop.initialize(seqLen);
+        block.loadWeights(weights, loop.modelManager());
+        block.initLora(longParameter(request, "seed", 42L));
+        String resumeFrom = request.parameters().get("resumeFrom");
+        loop.restoreFromCheckpoint(resumeFrom == null || resumeFrom.trim().isEmpty()
+                ? null : Paths.get(resumeFrom.trim()));
+
+        LmDataset lmData = request.lmData();
+        java.util.List<LmExample> examples = lmData.examples();
+        java.util.List<java.util.List<LmExample>> split = LmDatasets.split(examples,
+                1.0 - doubleParameter(request, "evalSplit", 0.1),
+                longParameter(request, "seed", 42L));
+        if (split.get(0).isEmpty()) {
+            throw lmFailure("CORTEXJ-TRAIN-0110",
+                    "the train split is empty",
+                    "Provide more examples or lower evalSplit.");
+        }
+        int batchSize = intParameter(request, "batchSize", 1);
+        long seed = longParameter(request, "seed", 42L);
+        java.util.List<LmBatcher.LmBatch> trainBatches = LmBatcher.batch(split.get(0),
+                batchSize, seqLen, seed, true);
+        java.util.List<LmBatcher.LmBatch> evalBatches = split.get(1).isEmpty()
+                ? java.util.Collections.<LmBatcher.LmBatch>emptyList()
+                : LmBatcher.batch(split.get(1), batchSize, seqLen, seed, false);
+
+        java.util.Map<String, Double> metrics = loop.run(trainBatches, evalBatches,
+                request.epochs(), intParameter(request, "accumulation", 4));
+
+        String outputDir = request.parameters().get("outputDir");
+        java.nio.file.Path out;
+        try {
+            out = outputDir == null || outputDir.trim().isEmpty()
+                    ? Files.createTempDirectory("cortexj-lora-adapter")
+                    : Paths.get(outputDir.trim());
+            java.util.Map<String, String> checksums = AdapterExport.writeAll(block,
+                    lora.rank(), lora.alpha(), lora.targetModules(), out);
+            loop.saveCheckpoint(out.resolve("checkpoint-0"));
+            return new TrainingResult("train-" + System.nanoTime(),
+                    ModelIdentity.of(request.model(), null),
+                    out.toAbsolutePath().toString(),
+                    metrics,
+                    new TrainingResult.ProvenanceHolder(
+                            lmData.fingerprint(),
+                            java.util.List.of(seed),
+                            id(), "cpu", checksums));
+        } catch (java.io.IOException e) {
+            throw lmFailure("CORTEXJ-TRAIN-0111",
+                    "adapter export failed: " + e.getMessage(),
+                    "Check the output directory permissions.");
+        } finally {
+            loop.close();
+        }
+    }
+
+    private static long loraParamCount(ArchitectureConfig config, LoraSettings lora) {
+        long count = 0;
+        long hidden = config.hiddenSize();
+        long kvDim = config.kvDim();
+        long intermediate = config.intermediateSize();
+        for (String target : lora.targetModules()) {
+            long perModule;
+            if ("q_proj".equals(target)) {
+                perModule = hidden + hidden;
+            } else if ("k_proj".equals(target) || "v_proj".equals(target)) {
+                perModule = hidden + kvDim;
+            } else if ("o_proj".equals(target)) {
+                perModule = hidden + hidden;
+            } else if ("gate_proj".equals(target) || "up_proj".equals(target)) {
+                perModule = hidden + intermediate;
+            } else if ("down_proj".equals(target)) {
+                perModule = intermediate + hidden;
+            } else {
+                throw lmFailure("CORTEXJ-TRAIN-0109",
+                        "unknown LoRA target module: " + target,
+                        "Use q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj.");
+            }
+            count += config.numLayers() * lora.rank() * perModule;
+        }
+        return count;
+    }
+
+    private static CortexJException lmFailure(String code, String message, String remediation) {
+        CortexJException failure = new CortexJException(code, message, remediation);
+        failure.detail("backend", BACKEND_ID);
+        return failure;
+    }
+
+    private static int intParameter(TrainingRequest request, String key, int fallback) {
+        String value = request.parameters().get(key);
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static long longParameter(TrainingRequest request, String key, long fallback) {
+        String value = request.parameters().get(key);
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static double doubleParameter(TrainingRequest request, String key, double fallback) {
+        String value = request.parameters().get(key);
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
         }
     }
 
