@@ -76,21 +76,61 @@ public final class DjlHfTokenizer implements Tokenizer {
         return delegate.decode(values, false);
     }
 
-    /** Counts tokenizer.json vocab entries (object or [piece, score] array). */
+    /**
+     * Counts tokenizer.json vocab entries (object or [piece, score]
+     * array) plus added tokens (top-level array and
+     * tokenizer_config.json added_tokens_decoder, deduped by id).
+     * Reserved id ranges with no entry anywhere (Qwen ships 267)
+     * stay uncounted: the backend gates on overflow, and the
+     * embedding-matrix check covers the model side.
+     */
     public static int vocabCount(Path tokenizerJson) {
         try {
             ObjectMapper mapper = new ObjectMapper();
-            JsonNode vocab = mapper.readTree(Files.newInputStream(tokenizerJson))
-                    .path("model").path("vocab");
+            JsonNode root = mapper.readTree(Files.newInputStream(tokenizerJson));
+            JsonNode vocab = root.path("model").path("vocab");
+            java.util.Set<Integer> ids = new java.util.HashSet<Integer>();
             if (vocab.isObject()) {
-                return vocab.size();
+                java.util.Iterator<String> names = vocab.fieldNames();
+                while (names.hasNext()) {
+                    int id = vocab.path(names.next()).asInt(-1);
+                    if (id >= 0) {
+                        ids.add(Integer.valueOf(id));
+                    }
+                }
+            } else if (vocab.isArray()) {
+                for (int i = 0; i < vocab.size(); i++) {
+                    ids.add(Integer.valueOf(i));
+                }
+            } else {
+                throw new CortexJException("CORTEXJ-TRAIN-0106",
+                        "tokenizer.json carries no vocab",
+                        "Ship a standard HuggingFace tokenizer.json.");
             }
-            if (vocab.isArray()) {
-                return vocab.size();
+            JsonNode added = root.path("added_tokens");
+            if (added.isArray()) {
+                for (JsonNode entry : added) {
+                    int id = entry.path("id").asInt(-1);
+                    if (id >= 0) {
+                        ids.add(Integer.valueOf(id));
+                    }
+                }
             }
-            throw new CortexJException("CORTEXJ-TRAIN-0106",
-                    "tokenizer.json carries no vocab",
-                    "Ship a standard HuggingFace tokenizer.json.");
+            Path sibling = tokenizerJson.toAbsolutePath().getParent();
+            Path config = sibling == null ? null : sibling.resolve("tokenizer_config.json");
+            if (config != null && Files.isRegularFile(config)) {
+                JsonNode decoder = mapper.readTree(Files.newInputStream(config))
+                        .path("added_tokens_decoder");
+                java.util.Iterator<String> keys = decoder.fieldNames();
+                while (keys.hasNext()) {
+                    try {
+                        ids.add(Integer.valueOf(Integer.parseInt(keys.next())));
+                    } catch (NumberFormatException ignored) {
+                        // non-numeric keys cannot map to ids
+                    }
+                }
+            }
+            return ids.size();
         } catch (IOException e) {
             throw new CortexJException("CORTEXJ-TRAIN-0105",
                     "tokenizer.json is not readable: " + e.getMessage(),

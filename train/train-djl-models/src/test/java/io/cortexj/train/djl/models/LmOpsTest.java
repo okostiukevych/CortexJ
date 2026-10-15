@@ -77,6 +77,56 @@ class LmOpsTest {
     }
 
     @Test
+    void siluStaysFiniteFarIntoTheTails() {
+        assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - ops skipped loudly");
+        Model model = Model.newInstance("silu-tail-test", "PyTorch");
+        try {
+            NDManager manager = model.getNDManager();
+            NDArray x = manager.create(new float[]{-100f, -1000f, 100f}, new Shape(3));
+            NDArray y = LmOps.silu(x);
+            for (float value : y.toFloatArray()) {
+                assertTrue(Float.isFinite(value), "silu forward must stay finite");
+            }
+            assertEquals(0f, y.toFloatArray()[0], 1e-6f);
+            assertEquals(0f, y.toFloatArray()[1], 1e-6f);
+            assertEquals(100f, y.toFloatArray()[2], 1.0f);
+        } finally {
+            model.close();
+        }
+    }
+
+    @Test
+    void siluBackwardStaysFinite() {
+        assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - ops skipped loudly");
+        Model model = Model.newInstance("silu-grad-test", "PyTorch");
+        try {
+            ai.djl.nn.SequentialBlock block = new ai.djl.nn.SequentialBlock();
+            block.add(ai.djl.nn.core.Linear.builder().setUnits(1).build());
+            model.setBlock(block);
+            ai.djl.training.Trainer trainer = model.newTrainer(
+                    new ai.djl.training.DefaultTrainingConfig(
+                            ai.djl.training.loss.Loss.l2Loss()));
+            trainer.initialize(new Shape(3));
+            NDManager manager = model.getNDManager();
+            NDArray x = manager.create(new float[]{-100f, -1000f, 100f}, new Shape(3));
+            x.setRequiresGradient(true);
+            try (ai.djl.training.GradientCollector gc = trainer.newGradientCollector()) {
+                NDArray y = LmOps.silu(x);
+                gc.backward(y.sum());
+            }
+            float[] grad = x.getGradient().toFloatArray();
+            for (float value : grad) {
+                assertTrue(Float.isFinite(value),
+                        "silu backward must stay finite (was NaN via 0*Inf)");
+            }
+            assertEquals(0f, grad[0], 1e-3f);
+            assertEquals(1f, grad[2], 1e-3f);
+        } finally {
+            model.close();
+        }
+    }
+
+    @Test
     void ropeWithIdentityTablesLeavesInputUnchanged() {
         assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - ops skipped loudly");
         Model model = Model.newInstance("rope-test", "PyTorch");

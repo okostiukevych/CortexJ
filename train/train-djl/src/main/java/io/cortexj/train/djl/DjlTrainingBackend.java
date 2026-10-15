@@ -364,17 +364,21 @@ public class DjlTrainingBackend implements TrainingBackend {
         java.nio.file.Path tokenizerJson = dir.resolve("tokenizer.json");
         if (Files.isRegularFile(tokenizerJson)) {
             Tokenizer tokenizer = DjlHfTokenizer.load(tokenizerJson);
-            if (tokenizer.vocabSize() != config.vocabSize()) {
+            // one-sided gate: the tokenizer must not address ids past
+            // the embedding matrix. Qwen-family tokenizers declare fewer
+            // entries than config.json vocab (reserved rows stay empty);
+            // the embedding-matrix check in loadWeights covers that side.
+            if (tokenizer.vocabSize() > config.vocabSize()) {
                 throw lmFailure("CORTEXJ-TRAIN-0106",
                         "tokenizer vocab (" + tokenizer.vocabSize()
-                                + ") does not match config.json vocab ("
+                                + ") exceeds config.json vocab ("
                                 + config.vocabSize() + ")",
                         "The tokenizer, config.json and weights must agree.");
             }
-        } else if (request.lmData().vocabSize() != config.vocabSize()) {
+        } else if (request.lmData().vocabSize() > config.vocabSize()) {
             throw lmFailure("CORTEXJ-TRAIN-0106",
                     "dataset vocab (" + request.lmData().vocabSize()
-                            + ") does not match config.json vocab ("
+                            + ") exceeds config.json vocab ("
                             + config.vocabSize() + ")",
                     "Tokenize with the model's tokenizer or ship tokenizer.json.");
         }

@@ -14,9 +14,20 @@ final class LmOps {
         return x.mul(inverse).mul(weight);
     }
 
-    /** x * sigmoid(x) = x / (1 + e^-x), built from verified primitives. */
+    /**
+     * x * sigmoid(x) with an overflow-free sigmoid: sigmoid(x) =
+     * exp(x - max(x,0)) / (1 + exp(-|x|)), every exp argument is
+     * non-positive. The naive 1/(1+exp(-x)) overflows to Inf for
+     * x &lt;&lt; 0 and its backward then yields 0*Inf = NaN gradients
+     * (observed live on Qwen3-0.6B: NaN LoRA grads from the first
+     * step while the loss stays finite).
+     */
     static NDArray silu(NDArray x) {
-        return x.mul(x.neg().exp().add(1).pow(-1));
+        NDArray shift = x.maximum(0);
+        NDArray numerator = x.sub(shift).exp();
+        NDArray abs = x.maximum(x.neg());
+        NDArray denominator = abs.neg().exp().add(1);
+        return x.mul(numerator.div(denominator));
     }
 
     /** cos[p][d] = cos(p * theta^(-2d/headDim)), headDim = 2 * half. */

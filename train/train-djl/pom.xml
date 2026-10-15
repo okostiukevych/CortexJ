@@ -71,6 +71,19 @@
       <artifactId>jackson-databind</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- end-to-end lane: ADR-029 merge + jinfer reference generation -->
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-convert-lora</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-jinfer</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <profiles>
     <!-- Opt-in live lane: the DJL PyTorch engine (native) makes the
