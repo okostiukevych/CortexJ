@@ -90,8 +90,8 @@ final class CausalGqaAttention {
 
         if (kvHeads != heads) {
             int times = heads / kvHeads;
-            k = k.repeat(1, times);
-            v = v.repeat(1, times);
+            k = LmOps.repeatInterleaveHeads(k, kvHeads, times);
+            v = LmOps.repeatInterleaveHeads(v, kvHeads, times);
         }
 
         // fold the heads into the batch: the engine batchMatMul is 3-D only

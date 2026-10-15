@@ -61,6 +61,22 @@ class LmOpsTest {
     }
 
     @Test
+    void gqaExpansionInterleavesInsteadOfTiling() {
+        assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - ops skipped loudly");
+        Model model = Model.newInstance("gqa-test", "PyTorch");
+        try {
+            NDManager manager = model.getNDManager();
+            // (1, 2 kv heads, 1 pos, 2 dims): kv0 = [1, 2], kv1 = [3, 4]
+            NDArray kv = manager.create(new float[]{1f, 2f, 3f, 4f}, new Shape(1, 2, 1, 2));
+            NDArray expanded = LmOps.repeatInterleaveHeads(kv, 2, 2);
+            assertArrayEquals(new float[]{1f, 2f, 1f, 2f, 3f, 4f, 3f, 4f},
+                    expanded.toFloatArray(), 1e-6f);
+        } finally {
+            model.close();
+        }
+    }
+
+    @Test
     void ropeWithIdentityTablesLeavesInputUnchanged() {
         assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - ops skipped loudly");
         Model model = Model.newInstance("rope-test", "PyTorch");

@@ -40,7 +40,21 @@ final class LmOps {
     }
 
     /** Adds the additive causal mask (0 on/under the diagonal, -1e9 above). */
-    static NDArray causalScores(NDArray scores, NDManager manager, int positions) {
+
+    /**
+     * GQA head expansion (N, kvHeads, T, headDim) -> (N, kvHeads*times, T,
+     * headDim) with INTERLEAVING ([k0,k0,k1,k1,...]): plain repeat tiles
+     * the whole block ([k0,k1,k0,k1,...]) and misaligns every query group
+     * past the first.
+     */
+    static NDArray repeatInterleaveHeads(NDArray x, int kvHeads, int times) {
+        long n = x.getShape().get(0);
+        long t = x.getShape().get(2);
+        long headDim = x.getShape().get(3);
+        return x.reshape(n, kvHeads, 1, t, headDim)
+                .tile(new long[]{1, 1, times, 1, 1})
+                .reshape(n, kvHeads * times, t, headDim);
+    }    static NDArray causalScores(NDArray scores, NDManager manager, int positions) {
         float[] mask = new float[positions * positions];
         for (int i = 0; i < positions; i++) {
             for (int j = i + 1; j < positions; j++) {
