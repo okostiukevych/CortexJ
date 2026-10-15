@@ -40,6 +40,18 @@ class ArchitectureConfigsTest {
     }
 
     @Test
+    void explicitHeadDimWinsOverTheQuotient() {
+        ArchitectureConfig config = ArchitectureConfigs.fromJson("{"
+                + "\"architectures\":[\"Qwen3ForCausalLM\"],"
+                + "\"hidden_size\":1024,\"num_hidden_layers\":28,\"num_attention_heads\":16,"
+                + "\"num_key_value_heads\":8,\"head_dim\":128,\"intermediate_size\":3072,"
+                + "\"vocab_size\":151936}");
+        assertEquals(128, config.headDim());
+        assertEquals(128, config.kvHeadDim());
+        assertEquals(8 * 128, config.kvDim());
+    }
+
+    @Test
     void unknownArchitectureFailsTypedListingSupported() {
         CortexJException failure = assertThrows(CortexJException.class,
                 () -> ArchitectureConfigs.fromJson("{\"architectures\":[\"FancyForCausalLM\"]}"));

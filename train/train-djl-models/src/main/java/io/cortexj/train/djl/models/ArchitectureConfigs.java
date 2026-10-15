@@ -52,12 +52,15 @@ public final class ArchitectureConfigs {
             throw failure;
         }
         int numKvHeads = root.path("num_key_value_heads").asInt(numHeads);
+        // Qwen3-0.6B class carries head_dim != hidden/heads (128 vs 64):
+        // the explicit field wins, the quotient is the fallback
+        int headDim = root.path("head_dim").asInt(hiddenSize / numHeads);
         double ropeTheta = root.path("rope_theta").asDouble(10000.0);
         double rmsEps = root.path("rms_norm_eps").asDouble(1e-6);
         boolean tie = root.path("tie_word_embeddings").asBoolean(false);
         int maxPositions = root.path("max_position_embeddings").asInt(4096);
         return new ArchitectureConfig(family, hiddenSize, numLayers, numHeads,
-                numKvHeads, intermediateSize, vocabSize, ropeTheta, rmsEps, tie,
+                numKvHeads, headDim, intermediateSize, vocabSize, ropeTheta, rmsEps, tie,
                 Math.max(maxPositions, 512));
     }
 

@@ -8,6 +8,7 @@ public final class ArchitectureConfig {
     private final int numLayers;
     private final int numHeads;
     private final int numKvHeads;
+    private final int headDim;
     private final int intermediateSize;
     private final int vocabSize;
     private final double ropeTheta;
@@ -16,13 +17,14 @@ public final class ArchitectureConfig {
     private final int maxPositions;
 
     ArchitectureConfig(DecoderFamily family, int hiddenSize, int numLayers, int numHeads,
-                       int numKvHeads, int intermediateSize, int vocabSize, double ropeTheta,
-                       double rmsEps, boolean tieEmbeddings, int maxPositions) {
+                       int numKvHeads, int headDim, int intermediateSize, int vocabSize,
+                       double ropeTheta, double rmsEps, boolean tieEmbeddings, int maxPositions) {
         this.family = family;
         this.hiddenSize = hiddenSize;
         this.numLayers = numLayers;
         this.numHeads = numHeads;
         this.numKvHeads = numKvHeads;
+        this.headDim = headDim;
         this.intermediateSize = intermediateSize;
         this.vocabSize = vocabSize;
         this.ropeTheta = ropeTheta;
@@ -84,11 +86,11 @@ public final class ArchitectureConfig {
     }
 
     public int headDim() {
-        return hiddenSize / numHeads;
+        return headDim;
     }
 
     public int kvHeadDim() {
-        return hiddenSize / numHeads;
+        return headDim;
     }
 
     public int kvDim() {

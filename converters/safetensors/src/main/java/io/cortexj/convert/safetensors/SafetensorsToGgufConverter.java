@@ -101,7 +101,9 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 if (kvHeads <= 0) {
                     kvHeads = headCount;
                 }
-                long headDim = headCount <= 0 ? 0 : hiddenSize / headCount;
+                // explicit head_dim wins (Qwen3-0.6B: 128 vs hidden/heads 64)
+                long headDim = longOf(config, "head_dim",
+                        headCount <= 0 ? 0 : hiddenSize / headCount);
                 document.upsert(architecture + ".attention.head_count_kv",
                         GgufBinaryReader.Types.UINT32, Long.valueOf(kvHeads));
                 document.upsert(architecture + ".attention.key_length",
