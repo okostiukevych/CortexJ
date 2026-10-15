@@ -38,5 +38,54 @@
       <artifactId>cortexj-train-distributed</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- the LLM LoRA path: datasets, model blocks, exact tokenization -->
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-data</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-djl-models</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-djl-models</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <!-- the shared safetensors container fixture is not transitive through
+         the djl-models test-jar: test scope never travels -->
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-convert-safetensors</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
+  <profiles>
+    <!-- Opt-in live lane: the DJL PyTorch engine (native) makes the
+         engine-gated contract tests execute instead of skipping loudly. -->
+    <profile>
+      <id>live-engine</id>
+      <dependencies>
+        <dependency>
+          <groupId>ai.djl.pytorch</groupId>
+          <artifactId>pytorch-engine</artifactId>
+          <version>0.38.0</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>ai.djl.pytorch</groupId>
+          <artifactId>pytorch-native-cpu</artifactId>
+          <classifier>osx-aarch64</classifier>
+          <version>2.7.1</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>

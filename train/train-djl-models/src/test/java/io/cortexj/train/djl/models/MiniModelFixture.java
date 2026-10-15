@@ -62,9 +62,9 @@ public final class MiniModelFixture {
             tensors.put("model.layers." + layer + ".self_attn.o_proj.weight",
                     tensor(random, 32 * 32, new long[]{32, 32}));
             tensors.put("model.layers." + layer + ".self_attn.q_norm.weight",
-                    tensor(random, 8, new long[]{8}));
+                    ones(8));
             tensors.put("model.layers." + layer + ".self_attn.k_norm.weight",
-                    tensor(random, 8, new long[]{8}));
+                    ones(8));
             tensors.put("model.layers." + layer + ".mlp.gate_proj.weight",
                     tensor(random, 64 * 32, new long[]{64, 32}));
             tensors.put("model.layers." + layer + ".mlp.up_proj.weight",
@@ -72,11 +72,11 @@ public final class MiniModelFixture {
             tensors.put("model.layers." + layer + ".mlp.down_proj.weight",
                     tensor(random, 32 * 64, new long[]{32, 64}));
             tensors.put("model.layers." + layer + ".input_layernorm.weight",
-                    tensor(random, 32, new long[]{32}));
+                    ones(32));
             tensors.put("model.layers." + layer + ".post_attention_layernorm.weight",
-                    tensor(random, 32, new long[]{32}));
+                    ones(32));
         }
-        tensors.put("model.norm.weight", tensor(random, 32, new long[]{32}));
+        tensors.put("model.norm.weight", ones(32));
         tensors.put("lm_head.weight", tensor(random, 64 * 32, new long[]{64, 32}));
         SafetensorsFixture.write(directory.resolve("model.safetensors"), tensors);
     }
@@ -86,6 +86,18 @@ public final class MiniModelFixture {
         for (int i = 0; i < size; i++) {
             values[i] = (random.nextFloat() - 0.5f) * 0.1f;
         }
+        return new SafetensorsFixture.Tensor("F32", shape, SafetensorsFixture.f32(values));
+    }
+
+    /**
+     * Norm weights are ones (like real checkpoints, where RMSNorm
+     * weights initialize near 1.0): random ~0.05 norm weights crush
+     * every activation and leave LoRA with no learning signal.
+     */
+    private static SafetensorsFixture.Tensor ones(int size) {
+        float[] values = new float[size];
+        java.util.Arrays.fill(values, 1.0f);
+        long[] shape = new long[]{size};
         return new SafetensorsFixture.Tensor("F32", shape, SafetensorsFixture.f32(values));
     }
 }
