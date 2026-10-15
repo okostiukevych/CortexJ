@@ -66,4 +66,28 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <!-- Opt-in live lane: the DJL PyTorch engine (native) makes the
+         engine-gated contract tests execute instead of skipping loudly.
+         Activate with -Plive-engine on the same machine that ran the
+         verification lanes (macOS arm64 here). -->
+    <profile>
+      <id>live-engine</id>
+      <dependencies>
+        <dependency>
+          <groupId>ai.djl.pytorch</groupId>
+          <artifactId>pytorch-engine</artifactId>
+          <version>0.38.0</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>ai.djl.pytorch</groupId>
+          <artifactId>pytorch-native-cpu</artifactId>
+          <classifier>osx-aarch64</classifier>
+          <version>2.7.1</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>
