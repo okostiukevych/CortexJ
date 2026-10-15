@@ -1,21 +1,19 @@
 package io.cortexj.train.djl;
 
 import io.cortexj.convert.lora.LoraMerge;
-import io.cortexj.hardware.EnvironmentProfile;
-import io.cortexj.hardware.HardwareProfile;
 import io.cortexj.inference.GenerationRequest;
 import io.cortexj.inference.GenerationResponse;
 import io.cortexj.inference.TextGenerationCapability;
+import io.cortexj.model.ArtifactFormat;
+import io.cortexj.model.ModelArtifact;
 import io.cortexj.model.ModelDescriptor;
-import io.cortexj.runtime.DeviceDescriptor;
+import io.cortexj.model.TaskCapability;
 import io.cortexj.runtime.DeviceType;
-import io.cortexj.runtime.jinfer.JInferRuntimeProvider;
+import io.cortexj.runtime.llamacpp.LlamaCppProvider;
 import io.cortexj.spi.runtime.ModelRuntime;
 import io.cortexj.spi.runtime.RuntimeModel;
 import io.cortexj.spi.runtime.RuntimeModelRequest;
 import io.cortexj.spi.runtime.RuntimeOpenRequest;
-import io.cortexj.spi.runtime.RuntimeProbeContext;
-import io.cortexj.spi.runtime.RuntimeProbeResult;
 import io.cortexj.train.LmDataset;
 import io.cortexj.train.LoraSettings;
 import io.cortexj.train.TrainingBackend;
@@ -38,7 +36,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -76,12 +73,13 @@ class EndToEndLiveTest {
                     .strategy(TrainingStrategy.LORA)
                     .lora(LoraSettings.of(4, 8, Arrays.asList("q_proj", "v_proj")))
                     .lmData(dataset)
-                    .epochs(2)
-                    .learningRate(2e-4)
+                    .epochs(5)
+                    .learningRate(5e-4)
                     .parameter("modelPath", dir.toString())
                     .parameter("seqLen", "256")
                     .parameter("batchSize", "1")
                     .parameter("accumulation", "2")
+                    .parameter("warmupSteps", "5")
                     .parameter("seed", "42")
                     .parameter("evalSplit", "0.2")
                     .parameter("outputDir", out.toString())
@@ -110,15 +108,28 @@ class EndToEndLiveTest {
                     baseGguf, mappings, LoraMerge.QuantPolicy.SAME, merged));
             assertTrue(Files.isRegularFile(merge.outputModel()));
 
-            String heldOut = "Say the magic word: cortexj-rocks";
-            String baseText = generate(baseGguf, heldOut);
-            String mergedText = generate(merge.outputModel(), heldOut);
-            assertNotNull(baseText);
-            assertTrue(!mergedText.trim().isEmpty(), "merged model must generate");
-            assertTrue(mergedText.contains("cortexj-rocks")
-                            || !mergedText.equals(baseText),
-                    "the merged model must differ from the base on the held-out prompt: "
-                            + "base=\"" + baseText + "\" merged=\"" + mergedText + "\"");
+            String trainedPrompt = "Say the magic word.";
+            String unrelatedPrompt = "The capital of France is";
+            loadThroughRuntime(baseGguf);
+            loadThroughRuntime(merge.outputModel());
+            String baseTrained = rawComplete(baseGguf, trainedPrompt, 18098);
+            String mergedTrained = rawComplete(merge.outputModel(), trainedPrompt, 18099);
+            String baseOther = rawComplete(baseGguf, unrelatedPrompt, 18098);
+            String mergedOther = rawComplete(merge.outputModel(), unrelatedPrompt, 18099);
+            System.out.println("E2E-BASE-TRAINED=[" + baseTrained + "]");
+            System.out.println("E2E-MERGED-TRAINED=[" + mergedTrained + "]");
+            System.out.println("E2E-BASE-OTHER=[" + baseOther + "]");
+            System.out.println("E2E-MERGED-OTHER=[" + mergedOther + "]");
+            assertNotNull(baseTrained);
+            // (1) the fact was learned: the trained pattern completes with the magic word
+            assertTrue(mergedTrained.contains("cortexj-rocks"),
+                    "the merged model must emit the trained fact: " + mergedTrained);
+            // (2) no catastrophic drift or leakage: unrelated prompts still
+            // generate sanely and do not emit the trained fact
+            assertTrue(!mergedOther.trim().isEmpty(), "merged model must generate");
+            assertTrue(!mergedOther.contains("cortexj-rocks"),
+                    "the trained fact must not leak into unrelated prompts: "
+                            + mergedOther);
         } finally {
             deleteRecursively(work);
         }
@@ -141,41 +152,129 @@ class EndToEndLiveTest {
         return file;
     }
 
-    private String generate(Path gguf, String prompt) {
-        JInferRuntimeProvider provider = new JInferRuntimeProvider();
-        EnvironmentProfile environment = new EnvironmentProfile(
-                "cortexj", "jdk", Runtime.version().feature(),
-                Runtime.version().toString(), "macos", "aarch64",
-                Runtime.getRuntime().availableProcessors(),
-                16L * 1024 * 1024 * 1024, 512L * 1024 * 1024 * 1024,
-                16L * 1024 * 1024 * 1024, true, null);
-        HardwareProfile hardware = new HardwareProfile(
-                Collections.singletonList(DeviceDescriptor.of(DeviceType.CPU, "cpu",
-                        16L * 1024 * 1024 * 1024)),
-                16L * 1024 * 1024 * 1024, false, false, false, false,
-                Collections.<String>emptyList());
-        RuntimeProbeResult probe = provider.probe(
-                new RuntimeProbeContext(environment, hardware, false, Collections.emptyMap()));
-        assumeTrue(probe.isUsable(),
-                "JInfer not usable in this JVM - reference generation skipped loudly: "
-                        + probe.message());
-        ModelRuntime runtime = provider.open(new RuntimeOpenRequest(
-                ModelDescriptor.builder("e2e/jinfer").build(), null, gguf, DeviceType.CPU,
-                Collections.emptyMap(), Collections.emptyMap(), environment, hardware,
-                null, null));
-        RuntimeModel loaded = runtime.load(new RuntimeModelRequest(
-                ModelDescriptor.builder("e2e/jinfer").build(), null, gguf, DeviceType.CPU,
-                Collections.emptyMap()));
+    /**
+     * Deployment proof: the file loads through the real CortexJ
+     * Runtime path (llamacpp provider -> llama-server spawn check).
+     */
+    private void loadThroughRuntime(Path gguf) throws Exception {
+        String binary = discoverLlamaServer();
+        assumeTrue(binary != null,
+                "no llama-server binary found - deployment proof skipped loudly");
+        System.setProperty("cortexj.llamacpp.server", binary);
         try {
-            assertTrue(loaded instanceof TextGenerationCapability,
-                    "the jinfer model must support text generation");
-            GenerationResponse response = ((TextGenerationCapability) loaded).generate(
-                    GenerationRequest.builder().prompt(prompt)
-                            .temperature(0.0).maxTokens(16).seed(1L).build());
-            return response.text();
+            LlamaCppProvider provider = new LlamaCppProvider();
+            ModelArtifact artifact = new ModelArtifact.Abstract(
+                    gguf.getFileName().toString(), ArtifactFormat.GGUF,
+                    Files.size(gguf), null, null) {
+            };
+            RuntimeOpenRequest openRequest = new RuntimeOpenRequest(
+                    ModelDescriptor.builder("e2e/llamacpp")
+                            .task(TaskCapability.TEXT_GENERATION)
+                            .artifact(artifact)
+                            .build(),
+                    artifact,
+                    gguf.toAbsolutePath(),
+                    DeviceType.CPU,
+                    Collections.<String, Object>emptyMap(),
+                    Collections.<String, String>emptyMap(),
+                    null, null, null, null);
+            ModelRuntime runtime = provider.open(openRequest);
+            RuntimeModel loaded = runtime.load(new RuntimeModelRequest(
+                    openRequest.model(), artifact,
+                    gguf.toAbsolutePath(),
+                    DeviceType.CPU,
+                    Collections.<String, Object>emptyMap()));
+            try {
+                assertTrue(loaded instanceof TextGenerationCapability,
+                        "the llamacpp model must support text generation");
+            } finally {
+                runtime.close();
+            }
         } finally {
-            runtime.close();
+            System.clearProperty("cortexj.llamacpp.server");
         }
+    }
+
+    /**
+     * Raw greedy completion (no chat template - the base model does
+     * not follow instruct format, and the provider chat-wraps).
+     */
+    private String rawComplete(Path gguf, String prompt, int port) throws Exception {
+        String binary = discoverLlamaServer();
+        assumeTrue(binary != null,
+                "no llama-server binary found - reference generation skipped loudly");
+        Process server = new ProcessBuilder(binary, "-m", gguf.toString(),
+                "--host", "127.0.0.1", "--port", String.valueOf(port))
+                .redirectErrorStream(true)
+                .start();
+        try {
+            assumeTrue(waitHealthy(port, java.time.Duration.ofMinutes(3)),
+                    "llama-server did not become healthy - skipped loudly");
+            com.fasterxml.jackson.databind.ObjectMapper mapper =
+                    new com.fasterxml.jackson.databind.ObjectMapper();
+            String body = mapper.writeValueAsString(java.util.Map.of(
+                    "prompt", prompt,
+                    "n_predict", 32,
+                    "temperature", 0.0,
+                    "seed", 1,
+                    "stream", false,
+                    "cache_prompt", false));
+            java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create("http://127.0.0.1:" + port + "/completion"))
+                    .timeout(java.time.Duration.ofSeconds(180))
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            java.net.http.HttpResponse<String> response = client.send(request,
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            return mapper.readTree(response.body()).path("content").asText("");
+        } finally {
+            server.destroy();
+            server.waitFor();
+        }
+    }
+
+    private static boolean waitHealthy(int port, java.time.Duration timeout)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeout.toMillis();
+        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                        .uri(java.net.URI.create("http://127.0.0.1:" + port + "/health"))
+                        .timeout(java.time.Duration.ofSeconds(2))
+                        .GET().build();
+                if (client.send(request,
+                        java.net.http.HttpResponse.BodyHandlers.ofString()).statusCode() == 200) {
+                    return true;
+                }
+            } catch (Exception stillLoading) {
+                Thread.sleep(1000);
+            }
+        }
+        return false;
+    }
+
+    /** llama-server discovery mirroring the provider: env, sysprop, standard paths. */
+    private static String discoverLlamaServer() {
+        String env = System.getenv("CORTEXJ_LLAMACPP_SERVER");
+        if (env != null && !env.trim().isEmpty()
+                && Files.isRegularFile(Path.of(env.trim()))) {
+            return env.trim();
+        }
+        String property = System.getProperty("cortexj.llamacpp.server");
+        if (property != null && !property.trim().isEmpty()
+                && Files.isRegularFile(Path.of(property.trim()))) {
+            return property.trim();
+        }
+        for (String candidate : new String[]{"/opt/homebrew/bin/llama-server",
+                "/usr/local/bin/llama-server", "/usr/bin/llama-server"}) {
+            if (Files.isRegularFile(Path.of(candidate))) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private static void deleteRecursively(Path path) throws IOException {

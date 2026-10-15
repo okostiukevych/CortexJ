@@ -71,7 +71,7 @@
       <artifactId>jackson-databind</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- end-to-end lane: ADR-029 merge + jinfer reference generation -->
+    <!-- end-to-end lane: ADR-029 merge + llamacpp Runtime reference -->
     <dependency>
       <groupId>io.cortexj</groupId>
       <artifactId>cortexj-convert-lora</artifactId>
@@ -80,7 +80,7 @@
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
-      <artifactId>cortexj-runtime-jinfer</artifactId>
+      <artifactId>cortexj-runtime-llamacpp</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>

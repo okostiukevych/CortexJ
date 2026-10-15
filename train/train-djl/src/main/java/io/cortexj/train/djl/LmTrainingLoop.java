@@ -210,16 +210,6 @@ final class LmTrainingLoop {
         return weights == 0 ? Double.NaN : weighted / weights;
     }
 
-    private static double validTokens(LmBatcher.LmBatch batch) {
-        double total = 0;
-        for (float[] row : batch.mask) {
-            for (float v : row) {
-                total += v;
-            }
-        }
-        return total;
-    }
-
     private static int[] flattenInts(int[][] values) {
         int width = values.length > 0 ? values[0].length : 0;
         int[] flat = new int[values.length * width];
