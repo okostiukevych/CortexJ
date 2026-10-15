@@ -47,8 +47,9 @@ final class LmOps {
                 mask[i * positions + j] = -1e9f;
             }
         }
+        // (1, T, T): broadcasts against the folded (batch * heads, T, T) scores
         return scores.add(manager.create(mask,
-                new Shape(positions, positions)).reshape(1, 1, positions, positions));
+                new Shape(positions, positions)).reshape(1, positions, positions));
     }
 
     private static float[] ropeTable(int positions, int half, double theta, boolean cosine) {
