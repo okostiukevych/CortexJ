@@ -475,7 +475,13 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.FLOAT32, scoreList));
         List<Object> merges = new ArrayList<Object>();
         for (JsonNode merge : model.path("merges")) {
-            merges.add(merge.asText(""));
+            // HF BPE merges serialize as ["a", "b"] pairs in some
+            // tokenizers and "a b" strings in others; GGUF wants "a b"
+            if (merge.isArray() && merge.size() == 2) {
+                merges.add(merge.get(0).asText("") + " " + merge.get(1).asText(""));
+            } else {
+                merges.add(merge.asText(""));
+            }
         }
         document.upsert("tokenizer.ggml.merges", GgufBinaryReader.Types.ARRAY,
                 new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.STRING, merges));

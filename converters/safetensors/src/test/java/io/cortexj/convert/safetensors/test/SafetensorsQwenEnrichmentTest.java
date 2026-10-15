@@ -44,7 +44,7 @@ class SafetensorsQwenEnrichmentTest {
                         .getBytes(StandardCharsets.UTF_8));
         Files.write(tempDir.resolve("tokenizer.json"),
                 ("{\"model\":{\"type\":\"BPE\",\"vocab\":{\"a\":0,\"b\":1,\"c\":2,\"d\":3,"
-                        + "\"e\":4,\"f\":5,\"g\":6,\"h\":7},\"merges\":[\"a b\"]}}")
+                        + "\"e\":4,\"f\":5,\"g\":6,\"h\":7},\"merges\":[[\"a\",\"b\"]]}}")
                         .getBytes(StandardCharsets.UTF_8));
         Files.write(tempDir.resolve("tokenizer_config.json"),
                 ("{\"eos_token\":\"h\",\"pad_token\":\"a\",\"add_bos_token\":false,"
@@ -120,6 +120,7 @@ class SafetensorsQwenEnrichmentTest {
         GgufBinaryReader.ArrayValue merges =
                 (GgufBinaryReader.ArrayValue) metadata.get("tokenizer.ggml.merges");
         assertEquals(1, merges.values.size());
+        assertEquals("a b", merges.values.get(0));
         assertEquals(7L, ((Number) metadata.get("tokenizer.ggml.eos_token_id")).longValue());
         assertEquals(7L, ((Number) metadata.get("tokenizer.ggml.bos_token_id")).longValue());
         // GGUF declares dims innermost-first: HF [8, 32] becomes [32, 8]
