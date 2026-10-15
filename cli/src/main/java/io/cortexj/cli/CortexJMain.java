@@ -64,6 +64,18 @@ public final class CortexJMain {
             if (command.equals("convert")) {
                 return convert(args);
             }
+            if (command.equals("train")) {
+                try {
+                    TrainCommand.run(args);
+                    return 0;
+                } catch (IllegalArgumentException e) {
+                    System.err.println("train failed: " + e.getMessage());
+                    return 1;
+                } catch (Exception e) {
+                    System.err.println("train failed: " + e);
+                    return 2;
+                }
+            }
             if (command.equals("server")) {
                 try {
                     return server(args, platform);
@@ -106,6 +118,9 @@ public final class CortexJMain {
         System.out.println();
         System.out.println("Conversion:");
         System.out.println("  cortexj convert <model> --to f16 --out <dir>  convert GGUF float width");
+        System.out.println();
+        System.out.println("Training:");
+        System.out.println("  cortexj train <modelPath> --dataset <jsonl> [--format sft|text] [--rank N] [--out dir]");
         System.out.println();
         System.out.println("Air-gap bundle:");
         System.out.println("  cortexj bundle create <model> --out <dir>   create a portable offline bundle");

@@ -18,6 +18,26 @@
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-data</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-djl</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-train-djl-models</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
       <artifactId>cortexj-platform-java8</artifactId>
       <version>${project.version}</version>
     </dependency>

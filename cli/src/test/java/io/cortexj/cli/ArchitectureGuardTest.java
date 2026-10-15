@@ -13,20 +13,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Autograd / Research), and core must stay free of framework and engine
  * dependencies (AP-001/AP-002).
  *
- * <p>The future-track packages do not exist yet, so the first rule passes
- * vacuously today - its value is failing the build the moment someone
- * wires a future track into the Runtime foundation.</p>
+ * <p>Scope follows the ADR-016 module graph, not the whole codebase:
+ * future tracks may use each other, and leaf tools (the CLI) may use
+ * any track - the production inference path stays standalone because
+ * the foundation jars never gain those dependencies (G-016).</p>
  */
 class ArchitectureGuardTest {
 
     private static final JavaClasses RUNTIME =
             new ClassFileImporter().importPackages("io.cortexj");
 
+    /** Future-track packages plus leaf consumers: outside the foundation scope. */
+    private static final String[] OUTSIDE_FOUNDATION = {
+            "io.cortexj.cli..",
+            "io.cortexj.lab..",
+            "io.cortexj.data..",
+            "io.cortexj.experiments..",
+            "io.cortexj.train..",
+            "io.cortexj.tensor..",
+            "io.cortexj.autograd..",
+            "io.cortexj.research..",
+            "io.cortexj.notebook..",
+            "io.cortexj.nn..",
+    };
+
     @Test
     void runtimeNeverDependsOnFutureTracks() {
         noClasses()
                 .that().resideInAnyPackage(
                         "io.cortexj..")
+                .and().resideOutsideOfPackages(OUTSIDE_FOUNDATION)
                 .should().dependOnClassesThat().resideInAnyPackage(
                         "io.cortexj.lab..",
                         "io.cortexj.data..",
