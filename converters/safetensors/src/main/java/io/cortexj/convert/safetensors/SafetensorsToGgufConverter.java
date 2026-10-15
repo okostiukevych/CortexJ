@@ -95,7 +95,30 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 document.upsert(architecture + ".attention.head_count",
                         GgufBinaryReader.Types.UINT32,
                         Long.valueOf(longOf(config, "num_attention_heads", 0)));
+                long hiddenSize = longOf(config, "hidden_size", 0);
+                long headCount = longOf(config, "num_attention_heads", 0);
+                long kvHeads = longOf(config, "num_key_value_heads", headCount);
+                if (kvHeads <= 0) {
+                    kvHeads = headCount;
+                }
+                long headDim = headCount <= 0 ? 0 : hiddenSize / headCount;
+                document.upsert(architecture + ".attention.head_count_kv",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(kvHeads));
+                document.upsert(architecture + ".attention.key_length",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(headDim));
+                document.upsert(architecture + ".attention.value_length",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(headDim));
+                document.upsert(architecture + ".feed_forward_length",
+                        GgufBinaryReader.Types.UINT32,
+                        Long.valueOf(longOf(config, "intermediate_size", 0)));
+                float normEps = (float) doubleOf(config, "rms_norm_eps", 1e-6);
+                document.upsert(architecture + ".attention.layer_norm_rms_epsilon",
+                        GgufBinaryReader.Types.FLOAT32, Float.valueOf(normEps));
+                document.upsert(architecture + ".rope.freq_base",
+                        GgufBinaryReader.Types.FLOAT32,
+                        Float.valueOf((float) doubleOf(config, "rope_theta", 10000.0)));
             }
+            String tokenizerNote = writeTokenizer(document, source);
             document.upsert("general.file_type", GgufBinaryReader.Types.UINT32,
                     Long.valueOf("float16".equalsIgnoreCase(
                             String.valueOf(config.get("torch_dtype"))) ? 1 : 0));
@@ -103,7 +126,8 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
 
             for (SafetensorsFile.TensorInfo tensor : file.tensors()) {
                 document.tensors.add(new GgufDocument.TensorInfo(
-                        tensor.name, tensor.shape, ggufTypeOf(tensor.dtype), 0L));
+                        ggufName(tensor.name, architecture), tensor.shape,
+                        ggufTypeOf(tensor.dtype), 0L));
             }
 
             Path output = request.outputDirectory().resolve(name + ".gguf");
@@ -137,6 +161,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             provenance.put("outputBytes", String.valueOf(Files.size(output)));
             provenance.put("tensorsConverted", String.valueOf(file.tensors().size()));
             provenance.put("configDerived", String.valueOf(architecture != null));
+            provenance.put("tokenizer", tokenizerNote);
             provenance.put("outputChecksum", "sha256:" + sha256);
 
             Map<String, String> metadata =
@@ -168,6 +193,71 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
     private static String fileNameOf(Path path) {
         java.nio.file.Path name = path == null ? null : path.getFileName();
         return name == null ? "" : name.toString();
+    }
+
+    /**
+     * HF -> canonical GGUF tensor names for the llama family (read off
+     * the official Qwen3 GGUF: token_embd, blk.N.attn_q/k/v/output,
+     * attn_q/k_norm, attn_norm, ffn_gate/up/down, ffn_norm,
+     * output_norm, output). Other architectures pass through untouched
+     * (recorded in provenance, never guessed).
+     */
+    static String ggufName(String hfName, String modelType) {
+        if (!"qwen2".equals(modelType) && !"qwen3".equals(modelType)
+                && !"llama".equals(modelType) && !"mistral".equals(modelType)) {
+            return hfName;
+        }
+        if ("model.embed_tokens.weight".equals(hfName)) {
+            return "token_embd.weight";
+        }
+        if ("model.norm.weight".equals(hfName)) {
+            return "output_norm.weight";
+        }
+        if ("lm_head.weight".equals(hfName)) {
+            return "output.weight";
+        }
+        java.util.regex.Matcher layer =
+                java.util.regex.Pattern.compile("^model\\.layers\\.(\\d+)\\.(.+)$")
+                        .matcher(hfName);
+        if (!layer.matches()) {
+            return hfName;
+        }
+        String block = "blk." + layer.group(1) + ".";
+        String rest = layer.group(2);
+        if (rest.startsWith("self_attn.q_proj.")) {
+            return block + "attn_q." + rest.substring("self_attn.q_proj.".length());
+        }
+        if (rest.startsWith("self_attn.k_proj.")) {
+            return block + "attn_k." + rest.substring("self_attn.k_proj.".length());
+        }
+        if (rest.startsWith("self_attn.v_proj.")) {
+            return block + "attn_v." + rest.substring("self_attn.v_proj.".length());
+        }
+        if (rest.startsWith("self_attn.o_proj.")) {
+            return block + "attn_output." + rest.substring("self_attn.o_proj.".length());
+        }
+        if (rest.startsWith("self_attn.q_norm.")) {
+            return block + "attn_q_norm." + rest.substring("self_attn.q_norm.".length());
+        }
+        if (rest.startsWith("self_attn.k_norm.")) {
+            return block + "attn_k_norm." + rest.substring("self_attn.k_norm.".length());
+        }
+        if (rest.startsWith("mlp.gate_proj.")) {
+            return block + "ffn_gate." + rest.substring("mlp.gate_proj.".length());
+        }
+        if (rest.startsWith("mlp.up_proj.")) {
+            return block + "ffn_up." + rest.substring("mlp.up_proj.".length());
+        }
+        if (rest.startsWith("mlp.down_proj.")) {
+            return block + "ffn_down." + rest.substring("mlp.down_proj.".length());
+        }
+        if (rest.startsWith("input_layernorm.")) {
+            return block + "attn_norm." + rest.substring("input_layernorm.".length());
+        }
+        if (rest.startsWith("post_attention_layernorm.")) {
+            return block + "ffn_norm." + rest.substring("post_attention_layernorm.".length());
+        }
+        return hfName;
     }
 
     private static int ggufTypeOf(String dtype) throws IOException {
@@ -264,6 +354,187 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
         } catch (NumberFormatException invalid) {
             return fallback;
         }
+    }
+
+    private static double doubleOf(Map<String, String> config, String key, double fallback) {
+        String value = config.get(key);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException invalid) {
+            return fallback;
+        }
+    }
+
+    /**
+     * BPE tokenizer metadata for the verified qwen family (model=gpt2,
+     * pre=qwen2 - read off the official Qwen3 GGUF): dense id->token
+     * array, type array (normal/control/user-defined/unused PAD fill
+     * for reserved ids), zero scores, merges, special ids. Other
+     * architectures skip tokenizer emission (recorded, never guessed).
+     * Returns the provenance note.
+     */
+    private static String writeTokenizer(GgufDocument document, Path source) throws IOException {
+        java.nio.file.Path parent = source.toAbsolutePath().getParent();
+        Path tokenizerJson = parent == null ? null : parent.resolve("tokenizer.json");
+        Path tokenizerConfig = parent == null ? null : parent.resolve("tokenizer_config.json");
+        if (tokenizerJson == null || !Files.isRegularFile(tokenizerJson)) {
+            return "skipped (no adjacent tokenizer.json)";
+        }
+        Map<String, String> config = readAdjacentConfig(source);
+        String modelType = config.get("model_type");
+        if (!"qwen2".equals(modelType) && !"qwen3".equals(modelType)) {
+            return "skipped (unverified family " + modelType + ", metadata only)";
+        }
+        long size = Files.size(tokenizerJson);
+        if (size > 100L * 1024L * 1024L) {
+            throw new IOException("tokenizer.json is unreasonably large (" + size
+                    + " bytes, cap 100MB)");
+        }
+        ObjectMapper mapper = constrainedMapper();
+        JsonNode root = mapper.readTree(Files.readAllBytes(tokenizerJson));
+        JsonNode model = root.path("model");
+        JsonNode vocab = model.path("vocab");
+        if (!vocab.isObject()) {
+            throw new IOException("tokenizer.json has no object vocab");
+        }
+        int vocabSize = longOf(config, "vocab_size", 0) > 0
+                ? (int) longOf(config, "vocab_size", 0) : vocab.size();
+        String[] tokens = new String[vocabSize];
+        java.util.Iterator<String> names = vocab.fieldNames();
+        while (names.hasNext()) {
+            String name = names.next();
+            int id = vocab.path(name).asInt(-1);
+            if (id >= 0 && id < vocabSize) {
+                tokens[id] = name;
+            }
+        }
+        // added tokens (specials and user-defined) live in tokenizer_config.json
+        java.util.Map<Integer, Boolean> addedSpecial = new java.util.LinkedHashMap<>();
+        java.util.Map<String, Integer> addedIds = new java.util.LinkedHashMap<>();
+        if (tokenizerConfig != null && Files.isRegularFile(tokenizerConfig)) {
+            JsonNode added = mapper.readTree(Files.readAllBytes(tokenizerConfig))
+                    .path("added_tokens_decoder");
+            java.util.Iterator<String> ids = added.fieldNames();
+            while (ids.hasNext()) {
+                String idText = ids.next();
+                try {
+                    int id = Integer.parseInt(idText);
+                    JsonNode entry = added.path(idText);
+                    String content = entry.path("content").asText("");
+                    if (id >= 0 && id < vocabSize && !content.isEmpty()) {
+                        tokens[id] = content;
+                        addedSpecial.put(Integer.valueOf(id),
+                                Boolean.valueOf(entry.path("special").asBoolean(false)));
+                        addedIds.put(content, Integer.valueOf(id));
+                    }
+                } catch (NumberFormatException ignored) {
+                    // a non-numeric added-token key cannot map to an id: skip it loudly below
+                }
+            }
+        }
+        // reserved ids with no token anywhere become [PAD{id}] placeholders,
+        // exactly like the official artifacts (type UNUSED)
+        for (int id = 0; id < vocabSize; id++) {
+            if (tokens[id] == null) {
+                tokens[id] = "[PAD" + id + "]";
+            }
+        }
+        List<Object> tokenList = new ArrayList<Object>();
+        List<Object> typeList = new ArrayList<Object>();
+        List<Object> scoreList = new ArrayList<Object>();
+        for (int id = 0; id < vocabSize; id++) {
+            tokenList.add(tokens[id]);
+            scoreList.add(Float.valueOf(0.0f));
+            typeList.add(Integer.valueOf(tokenTypeOf(id, tokens[id], addedSpecial)));
+        }
+        document.upsert("tokenizer.ggml.model", GgufBinaryReader.Types.STRING, "gpt2");
+        document.upsert("tokenizer.ggml.pre", GgufBinaryReader.Types.STRING, "qwen2");
+        document.upsert("tokenizer.ggml.tokens", GgufBinaryReader.Types.ARRAY,
+                new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.STRING, tokenList));
+        document.upsert("tokenizer.ggml.token_type", GgufBinaryReader.Types.ARRAY,
+                new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.INT32, typeList));
+        document.upsert("tokenizer.ggml.scores", GgufBinaryReader.Types.ARRAY,
+                new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.FLOAT32, scoreList));
+        List<Object> merges = new ArrayList<Object>();
+        for (JsonNode merge : model.path("merges")) {
+            merges.add(merge.asText(""));
+        }
+        document.upsert("tokenizer.ggml.merges", GgufBinaryReader.Types.ARRAY,
+                new GgufBinaryReader.ArrayValue(GgufBinaryReader.Types.STRING, merges));
+        if (tokenizerConfig != null && Files.isRegularFile(tokenizerConfig)) {
+            JsonNode configRoot = mapper.readTree(Files.readAllBytes(tokenizerConfig));
+            int eos = specialId(configRoot, "eos_token", tokens, addedIds, -1);
+            int bos = specialId(configRoot, "bos_token", tokens, addedIds, eos);
+            int pad = specialId(configRoot, "pad_token", tokens, addedIds, -1);
+            int unk = specialId(configRoot, "unk_token", tokens, addedIds, -1);
+            if (eos >= 0) {
+                document.upsert("tokenizer.ggml.eos_token_id",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(eos));
+            }
+            if (bos >= 0) {
+                document.upsert("tokenizer.ggml.bos_token_id",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(bos));
+            }
+            if (pad >= 0) {
+                document.upsert("tokenizer.ggml.padding_token_id",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(pad));
+            }
+            if (unk >= 0) {
+                document.upsert("tokenizer.ggml.unknown_token_id",
+                        GgufBinaryReader.Types.UINT32, Long.valueOf(unk));
+            }
+            document.upsert("tokenizer.ggml.add_bos_token", GgufBinaryReader.Types.BOOL,
+                    Boolean.valueOf(configRoot.path("add_bos_token").asBoolean(false)));
+            String chatTemplate = configRoot.path("chat_template").asText("");
+            if (!chatTemplate.isEmpty()) {
+                document.upsert("tokenizer.chat_template",
+                        GgufBinaryReader.Types.STRING, chatTemplate);
+            }
+        }
+        return "qwen-bpe (pre=qwen2, " + vocabSize + " tokens, " + merges.size() + " merges)";
+    }
+
+    /** 1 normal, 2 unknown, 3 control, 4 user-defined, 6 byte, else 5 unused. */
+    private static int tokenTypeOf(int id, String token,
+                                   java.util.Map<Integer, Boolean> addedSpecial) {
+        Boolean special = addedSpecial.get(Integer.valueOf(id));
+        if (special != null) {
+            return special.booleanValue() ? 3 : 4;
+        }
+        if (token.startsWith("<0x") && token.endsWith(">")) {
+            return 6;
+        }
+        if (token.startsWith("[PAD") && token.endsWith("]")) {
+            return 5;
+        }
+        return 1;
+    }
+
+    private static int specialId(JsonNode configRoot, String field, String[] tokens,
+                                 java.util.Map<String, Integer> addedIds, int fallback) {
+        JsonNode node = configRoot.path(field);
+        if (node.isInt()) {
+            int id = node.asInt(-1);
+            return id >= 0 && id < tokens.length ? id : fallback;
+        }
+        String content = node.isTextual() ? node.asText("")
+                : node.path("content").asText("");
+        if (content.isEmpty()) {
+            return fallback;
+        }
+        Integer added = addedIds.get(content);
+        if (added != null) {
+            return added.intValue();
+        }
+        for (int id = 0; id < tokens.length; id++) {
+            if (content.equals(tokens[id])) {
+                return id;
+            }
+        }
+        return fallback;
     }
 
     private static void copyExactly(InputStream input, OutputStream output,
