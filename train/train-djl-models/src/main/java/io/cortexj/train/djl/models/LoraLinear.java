@@ -56,6 +56,11 @@ public final class LoraLinear extends AbstractBlock {
 
     /** Loads the frozen base weight (out x in row-major HF layout) and optional bias. */
     public void loadFrozen(float[] weightOutIn, float[] biasOrNull, NDManager manager) {
+        if (weightOutIn == null || weightOutIn.length != inUnits * outUnits) {
+            throw new IllegalArgumentException("frozen weight has "
+                    + (weightOutIn == null ? 0 : weightOutIn.length) + " floats, expected "
+                    + inUnits * outUnits + " (" + outUnits + "x" + inUnits + ")");
+        }
         float[] transposed = new float[inUnits * outUnits];
         for (int o = 0; o < outUnits; o++) {
             for (int i = 0; i < inUnits; i++) {

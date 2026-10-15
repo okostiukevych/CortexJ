@@ -40,21 +40,29 @@ final class CausalGqaAttention {
 
     void loadFrozen(float[] q, float[] k, float[] v, float[] o,
                     float[] qNormWeight, float[] kNormWeight, NDManager manager) {
-        wq = manager.create(transpose(q, config.hiddenSize(), config.hiddenSize()),
-                new Shape(config.hiddenSize(), config.hiddenSize()));
-        wk = manager.create(transpose(k, config.kvDim(), config.hiddenSize()),
-                new Shape(config.hiddenSize(), config.kvDim()));
-        wv = manager.create(transpose(v, config.kvDim(), config.hiddenSize()),
-                new Shape(config.hiddenSize(), config.kvDim()));
-        wo = manager.create(transpose(o, config.hiddenSize(), config.hiddenSize()),
-                new Shape(config.hiddenSize(), config.hiddenSize()));
+        int hidden = config.hiddenSize();
+        int qDim = config.numHeads() * config.headDim();
+        int kvDim = config.kvDim();
+        require(q, qDim * hidden, "q_proj");
+        require(k, kvDim * hidden, "k_proj");
+        require(v, kvDim * hidden, "v_proj");
+        require(o, hidden * qDim, "o_proj");
+        wq = manager.create(transpose(q, qDim, hidden), new Shape(hidden, qDim));
+        wk = manager.create(transpose(k, kvDim, hidden), new Shape(hidden, kvDim));
+        wv = manager.create(transpose(v, kvDim, hidden), new Shape(hidden, kvDim));
+        wo = manager.create(transpose(o, hidden, qDim), new Shape(qDim, hidden));
         if (config.qkNorm()) {
+            require(qNormWeight, config.headDim(), "q_norm");
+            require(kNormWeight, config.kvHeadDim(), "k_norm");
             qNorm = manager.create(qNormWeight, new Shape(config.headDim()));
             kNorm = manager.create(kNormWeight, new Shape(config.kvHeadDim()));
         }
     }
 
     void loadBiases(float[] q, float[] k, float[] v, NDManager manager) {
+        require(q, config.hiddenSize(), "q_proj.bias");
+        require(k, config.kvDim(), "k_proj.bias");
+        require(v, config.kvDim(), "v_proj.bias");
         bq = manager.create(q, new Shape(config.hiddenSize()));
         bk = manager.create(k, new Shape(config.kvDim()));
         bv = manager.create(v, new Shape(config.kvDim()));
@@ -104,7 +112,8 @@ final class CausalGqaAttention {
         int last = scores.getShape().dimension() - 1;
         NDArray folded = scores.softmax(last).batchMatMul(foldedV);
         NDArray context = folded.reshape(n, heads, t, headDim);
-        context = context.transpose(0, 2, 1, 3).reshape(n, t, hidden);
+        int concatDim = heads * headDim;
+        context = context.transpose(0, 2, 1, 3).reshape(n, t, concatDim);
         return Projections.project(context, wo, null, oLora, store, training);
     }
 
@@ -116,5 +125,13 @@ final class CausalGqaAttention {
             }
         }
         return t;
+    }
+
+    private static void require(float[] values, int expected, String what) {
+        if (values == null || values.length != expected) {
+            throw new IllegalStateException("tensor " + what + " has "
+                    + (values == null ? 0 : values.length) + " floats, expected "
+                    + expected + " (architecture mismatch)");
+        }
     }
 }

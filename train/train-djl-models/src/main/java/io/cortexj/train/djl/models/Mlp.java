@@ -26,12 +26,23 @@ final class Mlp {
     void loadFrozen(float[] gate, float[] up, float[] down, NDManager manager) {
         int hidden = config.hiddenSize();
         int inter = config.intermediateSize();
+        require(gate, inter * hidden, "gate_proj");
+        require(up, inter * hidden, "up_proj");
+        require(down, hidden * inter, "down_proj");
         gateWeight = manager.create(CausalGqaAttention.transpose(gate, inter, hidden),
                 new Shape(hidden, inter));
         upWeight = manager.create(CausalGqaAttention.transpose(up, inter, hidden),
                 new Shape(hidden, inter));
         downWeight = manager.create(CausalGqaAttention.transpose(down, hidden, inter),
                 new Shape(inter, hidden));
+    }
+
+    private static void require(float[] values, int expected, String what) {
+        if (values == null || values.length != expected) {
+            throw new IllegalStateException("tensor " + what + " has "
+                    + (values == null ? 0 : values.length) + " floats, expected "
+                    + expected + " (architecture mismatch)");
+        }
     }
 
     NDArray forward(NDArray x, ParameterStore store, boolean training) {

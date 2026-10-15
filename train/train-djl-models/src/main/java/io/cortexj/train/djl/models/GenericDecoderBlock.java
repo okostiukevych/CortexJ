@@ -50,30 +50,34 @@ public final class GenericDecoderBlock extends AbstractBlock {
     public static GenericDecoderBlock build(ArchitectureConfig config, Set<String> targetModules,
                                             int rank, float scaling) {
         GenericDecoderBlock block = new GenericDecoderBlock(config);
+        int hidden = config.hiddenSize();
+        int qDim = config.numHeads() * config.headDim();
+        int kvDim = config.kvDim();
+        int inter = config.intermediateSize();
         for (int layer = 0; layer < config.numLayers(); layer++) {
             CausalGqaAttention attention = new CausalGqaAttention(config, layer,
                     block.wire("layers." + layer + ".self_attn.q_proj",
-                            targetModules.contains("q_proj"), config.hiddenSize(),
-                            config.hiddenSize(), rank, scaling),
+                            targetModules.contains("q_proj"), hidden,
+                            qDim, rank, scaling),
                     block.wire("layers." + layer + ".self_attn.k_proj",
-                            targetModules.contains("k_proj"), config.hiddenSize(),
-                            config.kvDim(), rank, scaling),
+                            targetModules.contains("k_proj"), hidden,
+                            kvDim, rank, scaling),
                     block.wire("layers." + layer + ".self_attn.v_proj",
-                            targetModules.contains("v_proj"), config.hiddenSize(),
-                            config.kvDim(), rank, scaling),
+                            targetModules.contains("v_proj"), hidden,
+                            kvDim, rank, scaling),
                     block.wire("layers." + layer + ".self_attn.o_proj",
-                            targetModules.contains("o_proj"), config.hiddenSize(),
-                            config.hiddenSize(), rank, scaling));
+                            targetModules.contains("o_proj"), qDim,
+                            hidden, rank, scaling));
             Mlp mlp = new Mlp(config,
                     block.wire("layers." + layer + ".mlp.gate_proj",
-                            targetModules.contains("gate_proj"), config.hiddenSize(),
-                            config.intermediateSize(), rank, scaling),
+                            targetModules.contains("gate_proj"), hidden,
+                            inter, rank, scaling),
                     block.wire("layers." + layer + ".mlp.up_proj",
-                            targetModules.contains("up_proj"), config.hiddenSize(),
-                            config.intermediateSize(), rank, scaling),
+                            targetModules.contains("up_proj"), hidden,
+                            inter, rank, scaling),
                     block.wire("layers." + layer + ".mlp.down_proj",
-                            targetModules.contains("down_proj"), config.intermediateSize(),
-                            config.hiddenSize(), rank, scaling));
+                            targetModules.contains("down_proj"), inter,
+                            hidden, rank, scaling));
             block.layers[layer] = new DecoderLayer(config, attention, mlp);
         }
         return block;
