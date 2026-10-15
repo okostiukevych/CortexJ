@@ -34,9 +34,15 @@ public final class MiniModelFixture {
     private final Path directory;
 
     public MiniModelFixture(Path base) throws IOException {
-        directory = Files.createDirectories(base.resolve("mini-qwen3"));
+        this(base, false);
+    }
+
+    /** Tied variant: tie_word_embeddings=true but lm_head.weight still shipped. */
+    public MiniModelFixture(Path base, boolean tied) throws IOException {
+        directory = Files.createDirectories(
+                base.resolve(tied ? "mini-qwen3-tied" : "mini-qwen3"));
         Files.write(directory.resolve("config.json"),
-                CONFIG_JSON.getBytes(StandardCharsets.UTF_8));
+                configJson(tied).getBytes(StandardCharsets.UTF_8));
         writeWeights(new Random(1234L));
     }
 
@@ -46,6 +52,11 @@ public final class MiniModelFixture {
 
     public ArchitectureConfig config() {
         return ArchitectureConfigs.parse(directory.resolve("config.json"));
+    }
+
+    private static String configJson(boolean tied) {
+        return CONFIG_JSON.replace("\"tie_word_embeddings\":false",
+                "\"tie_word_embeddings\":" + tied);
     }
 
     private void writeWeights(Random random) throws IOException {

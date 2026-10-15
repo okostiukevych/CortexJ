@@ -71,6 +71,28 @@ class GenericDecoderBlockTest {
     }
 
     @Test
+    void tiedCheckpointWithDuplicateLmHeadLoadsFine() throws IOException {
+        assumeTrue(LoraLinearTest.enginePresent(), "no DJL PyTorch engine - tied load skipped loudly");
+        MiniModelFixture fixture = new MiniModelFixture(temp, true);
+        ArchitectureConfig config = fixture.config();
+        assertTrue(config.tieEmbeddings());
+        GenericDecoderBlock block = GenericDecoderBlock.build(config,
+                Collections.<String>emptySet(), 0, 0.0f);
+        Model model = Model.newInstance("mini-qwen3-tied", "PyTorch");
+        try {
+            model.setBlock(block);
+            ai.djl.training.Trainer trainer = model.newTrainer(
+                    new ai.djl.training.DefaultTrainingConfig(Loss.l2Loss()));
+            trainer.initialize(new Shape(1, 4));
+            // must not throw: the duplicate lm_head is ignored, the tied
+            // embedding stays authoritative
+            block.loadWeights(HfWeightLoader.load(fixture.directory()), model.getNDManager());
+        } finally {
+            model.close();
+        }
+    }
+
+    @Test
     void missingWeightsDirectoryFailsTyped() throws IOException {
         Path empty = Files.createDirectories(temp.resolve("empty"));
         Files.write(empty.resolve("config.json"),

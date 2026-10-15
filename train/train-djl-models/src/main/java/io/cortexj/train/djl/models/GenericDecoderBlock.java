@@ -98,6 +98,13 @@ public final class GenericDecoderBlock extends AbstractBlock {
                 unexpected.add(name);
             }
         }
+        // tied checkpoints (Qwen3-0.6B class) routinely still ship an
+        // lm_head.weight copy: the tied embedding stays authoritative
+        // (exactly what HF tie_weights does), the duplicate is ignored
+        if (config.tieEmbeddings() && unexpected.size() == 1
+                && unexpected.contains("lm_head.weight")) {
+            unexpected.clear();
+        }
         if (!missing.isEmpty() || !unexpected.isEmpty()) {
             CortexJException failure = new CortexJException("CORTEXJ-TRAIN-0103",
                     "base weight tensors do not match the architecture",
