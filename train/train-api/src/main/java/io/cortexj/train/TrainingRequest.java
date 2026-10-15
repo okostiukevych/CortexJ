@@ -20,6 +20,8 @@ public final class TrainingRequest {
     private final Device device;
     private final Map<String, String> parameters;
     private final TrainingData data;
+    private final LoraSettings lora;
+    private final LmDataset lmData;
 
     private TrainingRequest(Builder builder) {
         this.model = builder.model;
@@ -30,6 +32,8 @@ public final class TrainingRequest {
         this.device = builder.device;
         this.parameters = new LinkedHashMap<String, String>(builder.parameters);
         this.data = builder.data;
+        this.lora = builder.lora;
+        this.lmData = builder.lmData;
     }
 
     public static Builder builder() {
@@ -73,6 +77,16 @@ public final class TrainingRequest {
         return data;
     }
 
+    /** LoRA hyperparameters for the LLM fine-tuning path (null for the tiny-model path). */
+    public LoraSettings lora() {
+        return lora;
+    }
+
+    /** Tokenized LM training data (null for the tiny-model path). */
+    public LmDataset lmData() {
+        return lmData;
+    }
+
     public static final class Builder {
 
         private String model;
@@ -83,6 +97,8 @@ public final class TrainingRequest {
         private Device device = Device.AUTO;
         private final Map<String, String> parameters = new LinkedHashMap<String, String>();
         private TrainingData data;
+        private LoraSettings lora;
+        private LmDataset lmData;
 
         public Builder model(String model) {
             if (model == null || model.trim().isEmpty()) {
@@ -141,6 +157,16 @@ public final class TrainingRequest {
 
         public Builder data(TrainingData data) {
             this.data = data;
+            return this;
+        }
+
+        public Builder lora(LoraSettings lora) {
+            this.lora = lora;
+            return this;
+        }
+
+        public Builder lmData(LmDataset lmData) {
+            this.lmData = lmData;
             return this;
         }
 
