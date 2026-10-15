@@ -81,6 +81,15 @@ public class DjlTrainingBackend implements TrainingBackend {
             return new Support(Level.UNSUPPORTED,
                     "DJL engine discovery failed on this machine: " + discoveryFailure, 0);
         }
+        if (request == null) {
+            return new Support(Level.PARTIAL, "request is null", 0);
+        }
+        // the LLM path validates the request first and checks engines
+        // last, so its gates stay engine-independent (testable without
+        // the native engine on the classpath)
+        if (request.lmData() != null || request.lora() != null) {
+            return evaluateLlm(request, engines);
+        }
         if (engines.isEmpty()) {
             return new Support(Level.UNSUPPORTED,
                     "no DJL training engine is installed on the classpath", 0);
@@ -90,12 +99,6 @@ public class DjlTrainingBackend implements TrainingBackend {
             return new Support(Level.UNSUPPORTED,
                     "DJL engines present (" + engines + ") do not support training; "
                             + "add the PyTorch engine", 0);
-        }
-        if (request == null) {
-            return new Support(Level.PARTIAL, "request is null", 0);
-        }
-        if (request.lmData() != null || request.lora() != null) {
-            return evaluateLlm(request, engines);
         }
         boolean livePath = request.data() != null
                 && request.strategy() != io.cortexj.train.TrainingStrategy.FULL;
