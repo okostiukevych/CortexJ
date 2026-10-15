@@ -92,8 +92,10 @@ class SafetensorsQwenEnrichmentTest {
 
         GgufDocument document = GgufDocument.read(output);
         List<String> names = new ArrayList<String>();
+        Map<String, long[]> shapes = new LinkedHashMap<String, long[]>();
         for (GgufDocument.TensorInfo tensor : document.tensors) {
             names.add(tensor.name);
+            shapes.put(tensor.name, tensor.dimensions);
         }
         for (String expected : new String[]{"token_embd.weight", "output_norm.weight",
                 "blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
@@ -120,6 +122,10 @@ class SafetensorsQwenEnrichmentTest {
         assertEquals(1, merges.values.size());
         assertEquals(7L, ((Number) metadata.get("tokenizer.ggml.eos_token_id")).longValue());
         assertEquals(7L, ((Number) metadata.get("tokenizer.ggml.bos_token_id")).longValue());
+        // GGUF declares dims innermost-first: HF [8, 32] becomes [32, 8]
+        long[] embedShape = shapes.get("token_embd.weight");
+        assertEquals(32L, embedShape[0]);
+        assertEquals(8L, embedShape[1]);
     }
 
     private static byte[] zeros(int floats) {

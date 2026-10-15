@@ -126,7 +126,7 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
 
             for (SafetensorsFile.TensorInfo tensor : file.tensors()) {
                 document.tensors.add(new GgufDocument.TensorInfo(
-                        ggufName(tensor.name, architecture), tensor.shape,
+                        ggufName(tensor.name, architecture), reversed(tensor.shape),
                         ggufTypeOf(tensor.dtype), 0L));
             }
 
@@ -193,6 +193,19 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
     private static String fileNameOf(Path path) {
         java.nio.file.Path name = path == null ? null : path.getFileName();
         return name == null ? "" : name.toString();
+    }
+
+    /**
+     * GGUF declares tensor dims innermost-first (reversed vs HF
+     * row-major); the data bytes stay untouched, only the header
+     * order flips. Verified against the official Qwen3 GGUF.
+     */
+    static long[] reversed(long[] shape) {
+        long[] out = new long[shape.length];
+        for (int i = 0; i < shape.length; i++) {
+            out[i] = shape[shape.length - 1 - i];
+        }
+        return out;
     }
 
     /**
