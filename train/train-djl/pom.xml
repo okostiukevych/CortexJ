@@ -65,6 +65,12 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+    <!-- live-lane HTTP reference client (llama-server /completion) -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <profiles>
     <!-- Opt-in live lane: the DJL PyTorch engine (native) makes the
