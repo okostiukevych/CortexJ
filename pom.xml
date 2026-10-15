@@ -132,8 +132,10 @@
         <module>lab/lab-api</module>
         <module>lab/notebook</module>
         <module>train/train-api</module>
+        <module>train/train-data</module>
         <module>train/train-peft</module>
         <module>train/train-djl</module>
+        <module>train/train-djl-models</module>
         <module>train/train-remote</module>
         <module>train/train-distributed</module>
         <module>train/train-experiments</module>
