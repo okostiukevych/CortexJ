@@ -96,8 +96,8 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                         GgufBinaryReader.Types.UINT32,
                         Long.valueOf(longOf(config, "num_attention_heads", 0)));
             }
-            document.upsert("general.file_type", GgufBinaryReader.Types.INT32,
-                    Integer.valueOf("float16".equalsIgnoreCase(
+            document.upsert("general.file_type", GgufBinaryReader.Types.UINT32,
+                    Long.valueOf("float16".equalsIgnoreCase(
                             String.valueOf(config.get("torch_dtype"))) ? 1 : 0));
             document.upsert("cortexj.converted_by", GgufBinaryReader.Types.STRING, ID);
 
