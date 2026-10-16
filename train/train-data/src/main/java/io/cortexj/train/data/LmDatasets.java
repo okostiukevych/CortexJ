@@ -57,6 +57,44 @@ public final class LmDatasets {
         return dataset(examples, tokenizer, file);
     }
 
+    /**
+     * Format C (chat SFT): one {"messages": [...]} per line, rendered
+     * through a {@link ChatTemplates} preset; loss on the assistant
+     * turn only (content + closing turn token).
+     */
+    public static LmDataset jsonlChat(Path file, Tokenizer tokenizer, int maxSeqLen,
+                                      String templateId) {
+        List<LmExample> examples = new ArrayList<LmExample>();
+        int line = 0;
+        for (String text : lines(file)) {
+            line++;
+            if (text.trim().isEmpty()) {
+                continue;
+            }
+            JsonNode node = parse(file, line, text);
+            JsonNode messages = node.get("messages");
+            if (messages == null || !messages.isArray() || messages.size() == 0) {
+                CortexJException failure = new CortexJException("CORTEXJ-TRAIN-0112",
+                        "malformed chat dataset line: missing 'messages' array",
+                        "One JSON object per line with a 'messages' array of"
+                                + " {role, content} turns.");
+                failure.detail("file", file.toString());
+                failure.detail("line", String.valueOf(line));
+                throw failure;
+            }
+            List<ChatTemplates.Message> turns = new ArrayList<ChatTemplates.Message>();
+            for (JsonNode turn : messages) {
+                turns.add(new ChatTemplates.Message(
+                        turn.path("role").asText(""),
+                        turn.path("content").asText("")));
+            }
+            ChatTemplates.Rendered rendered = ChatTemplates.render(templateId, turns);
+            examples.add(encode(rendered.contextText(), rendered.responseText(),
+                    tokenizer, maxSeqLen));
+        }
+        return dataset(examples, tokenizer, file);
+    }
+
     /** Deterministic 90/10-style split; floor to the train side. */
     public static List<List<LmExample>> split(List<LmExample> examples,
                                                double trainFraction, long seed) {
