@@ -306,4 +306,132 @@ class ProcessLlamaServerLauncherTest {
         assertThrows(java.io.IOException.class, () -> ProcessLlamaServerLauncher.gpuLayers(
                 java.util.Collections.<String, Object>singletonMap("gpuLayers", "all")));
     }
+
+    @Test
+    void loraFlagsParseStringAndListFormsAndRejectGarbage() throws Exception {
+        java.util.Map<String, Object> single = new java.util.LinkedHashMap<>();
+        single.put("lora", "/adapters/first.gguf:0.75");
+        java.util.List<String> flags = ProcessLlamaServerLauncher.loraFlags(single);
+        assertEquals(1, flags.size());
+        assertEquals("/adapters/first.gguf:0.75", flags.get(0));
+
+        java.util.Map<String, Object> many = new java.util.LinkedHashMap<>();
+        many.put("lora", java.util.Arrays.asList("/a.gguf", "/b.gguf:2"));
+        assertEquals(java.util.Arrays.asList("/a.gguf", "/b.gguf:2"),
+                ProcessLlamaServerLauncher.loraFlags(many));
+
+        java.util.Map<String, Object> none = new java.util.LinkedHashMap<>();
+        assertTrue(ProcessLlamaServerLauncher.loraFlags(none).isEmpty());
+        assertTrue(ProcessLlamaServerLauncher.loraFlags(null).isEmpty());
+
+        java.util.Map<String, Object> badScale = new java.util.LinkedHashMap<>();
+        badScale.put("lora", "/a.gguf:zero");
+        assertThrows(java.io.IOException.class,
+                () -> ProcessLlamaServerLauncher.loraFlags(badScale));
+
+        java.util.Map<String, Object> zeroScale = new java.util.LinkedHashMap<>();
+        zeroScale.put("lora", "/a.gguf:0");
+        assertThrows(java.io.IOException.class,
+                () -> ProcessLlamaServerLauncher.loraFlags(zeroScale));
+
+        java.util.Map<String, Object> wrongType = new java.util.LinkedHashMap<>();
+        wrongType.put("lora", 42);
+        assertThrows(java.io.IOException.class,
+                () -> ProcessLlamaServerLauncher.loraFlags(wrongType));
+
+        java.util.Map<String, Object> empty = new java.util.LinkedHashMap<>();
+        empty.put("lora", "  ");
+        assertThrows(java.io.IOException.class,
+                () -> ProcessLlamaServerLauncher.loraFlags(empty));
+    }
+
+    @Test
+    void launchPassesLoraFlagsResolvedAgainstTheArtifact() throws Exception {
+        StubbornProcess process = new StubbornProcess() {
+            @Override
+            public boolean waitFor(long timeout, TimeUnit unit) {
+                running = false;
+                return true;
+            }
+        };
+        com.sun.net.httpserver.HttpServer health = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        health.createContext("/health", new com.sun.net.httpserver.HttpHandler() {
+            @Override
+            public void handle(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+            }
+        });
+        health.start();
+        final java.util.List<String> captured = new java.util.ArrayList<String>();
+        try {
+            final ProcessLlamaServerLauncher launcher = new ProcessLlamaServerLauncher(
+                    "fake-llama-server", 5_000, null,
+                    new ProcessLlamaServerLauncher.ProcessStarter() {
+                        @Override
+                        public Process start(ProcessBuilder builder) {
+                            captured.addAll(builder.command());
+                            return process;
+                        }
+                    });
+            Path artifact = Files.createTempFile(tempDir, "fake-model", ".gguf");
+            Path adapterDir = tempDir.resolve("adapters");
+            Files.createDirectories(adapterDir);
+            Path adapter = Files.createTempFile(adapterDir, "adapter", ".gguf");
+            // the relative entry must exist; it resolves against the artifact's dir
+            Path relativeRenamed = artifact.getParent().resolve("relative.gguf");
+            Files.write(relativeRenamed, new byte[0]);
+            java.util.Map<String, Object> args = new java.util.LinkedHashMap<>();
+            args.put("lora", java.util.Arrays.asList(
+                    adapter.toAbsolutePath().toString() + ":0.5", "relative.gguf"));
+            try {
+                launcher.launchWithHealthUrl(artifact,
+                        "http://127.0.0.1:" + health.getAddress().getPort(), args);
+                int loraAt = captured.indexOf("--lora");
+                assertTrue(loraAt >= 0, "--lora must be passed to llama-server");
+                assertEquals(adapter.toAbsolutePath().toString() + ":0.5",
+                        captured.get(loraAt + 1));
+                // relative path resolves against the artifact's directory
+                assertEquals(relativeRenamed.toAbsolutePath().toString(),
+                        captured.get(loraAt + 3));
+            } finally {
+                Files.deleteIfExists(artifact);
+                Files.deleteIfExists(adapter);
+                Files.deleteIfExists(relativeRenamed);
+            }
+        } finally {
+            health.stop(0);
+        }
+    }
+
+    @Test
+    void launchFailsTypedWhenTheLoraFileDoesNotExist() throws Exception {
+        StubbornProcess process = new StubbornProcess();
+        ProcessLlamaServerLauncher launcher = launcherFor(process, 200);
+        Path artifact = Files.createTempFile(tempDir, "fake-model", ".gguf");
+        java.util.Map<String, Object> args = new java.util.LinkedHashMap<>();
+        args.put("lora", tempDir.resolve("missing.gguf").toString());
+        try {
+            assertThrows(java.io.IOException.class, () -> launcher.launch(artifact, args));
+            assertFalse(process.destroyCalled,
+                    "validation must fail before any process starts");
+        } finally {
+            Files.deleteIfExists(artifact);
+        }
+    }
+
+    @Test
+    void cacheKeySeparatesDifferentAdapters() throws Exception {
+        java.util.Map<String, Object> withLora = new java.util.LinkedHashMap<>();
+        withLora.put("lora", "/adapters/a.gguf:0.5");
+        java.util.Map<String, Object> plain = new java.util.LinkedHashMap<>();
+        Path artifact = java.nio.file.Paths.get("/models/base.gguf");
+        String a = ProcessLlamaServerLauncher.cacheKey(artifact, withLora);
+        String b = ProcessLlamaServerLauncher.cacheKey(artifact, plain);
+        assertTrue(a.contains("lora="), "the key must carry the adapter");
+        assertTrue(!a.equals(b), "different adapters must not share a process");
+        assertEquals(a, ProcessLlamaServerLauncher.cacheKey(artifact, withLora),
+                "the same adapter must reuse the same process");
+    }
 }

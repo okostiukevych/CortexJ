@@ -227,9 +227,7 @@ public final class LlamaCppProvider implements RuntimeProvider {
         }
 
         private String cacheKey(Path artifactPath, java.util.Map<String, Object> serverArgs) {
-            Object gpuLayers = serverArgs.get("gpuLayers");
-            return artifactPath.toAbsolutePath().toString()
-                    + "#ngl=" + (gpuLayers == null ? "auto" : String.valueOf(gpuLayers));
+            return ProcessLlamaServerLauncher.cacheKey(artifactPath, serverArgs);
         }
 
         @Override

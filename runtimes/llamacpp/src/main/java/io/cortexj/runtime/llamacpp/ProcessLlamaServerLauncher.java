@@ -50,7 +50,96 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
     @Override
     public LlamaServerEndpoint launch(Path artifactPath, java.util.Map<String, Object> serverArgs)
             throws IOException {
-        return launchWithHealthUrl(artifactPath, null, gpuLayers(serverArgs));
+        return launchWithHealthUrl(artifactPath, null, gpuLayers(serverArgs),
+                resolvedLoraFiles(artifactPath, loraFlags(serverArgs)));
+    }
+
+    /**
+     * The {@code lora} option composes trained adapters at inference
+     * time (ADR-029 follow-up): a String or a List of Strings, each
+     * {@code path} or {@code path:scale} (scale must be positive),
+     * passed to llama-server as repeated {@code --lora path[:scale]}
+     * flags. Anything else fails typed.
+     */
+    static java.util.List<String> loraFlags(java.util.Map<String, Object> serverArgs)
+            throws IOException {
+        java.util.List<String> flags = new java.util.ArrayList<String>();
+        if (serverArgs == null) {
+            return flags;
+        }
+        Object value = serverArgs.get("lora");
+        if (value == null) {
+            return flags;
+        }
+        if (value instanceof java.util.List) {
+            for (Object element : (java.util.List<?>) value) {
+                flags.add(normalizedLora(element));
+            }
+            return flags;
+        }
+        flags.add(normalizedLora(value));
+        return flags;
+    }
+
+    private static String normalizedLora(Object value) throws IOException {
+        if (!(value instanceof String) || ((String) value).trim().isEmpty()) {
+            throw new IOException("llama.cpp option 'lora' must be a path or a list of"
+                    + " 'path[:scale]' strings, got: " + value);
+        }
+        String entry = ((String) value).trim();
+        int scaleAt = entry.lastIndexOf(':');
+        if (scaleAt >= 0) {
+            try {
+                if (Double.parseDouble(entry.substring(scaleAt + 1)) <= 0.0) {
+                    throw new NumberFormatException("non-positive");
+                }
+            } catch (NumberFormatException notAScale) {
+                throw new IOException("llama.cpp option 'lora' scale must be a positive"
+                        + " number, got: " + entry);
+            }
+        }
+        return entry;
+    }
+
+    /** Missing adapter files fail typed before any process starts. */
+    private static java.util.List<String> resolvedLoraFiles(Path artifactPath,
+                                                            java.util.List<String> flags)
+            throws IOException {
+        Path parent = artifactPath.toAbsolutePath().getParent();
+        java.util.List<String> resolved = new java.util.ArrayList<String>();
+        for (String entry : flags) {
+            int scaleAt = entry.lastIndexOf(':');
+            String pathPart = scaleAt >= 0 ? entry.substring(0, scaleAt) : entry;
+            java.nio.file.Path loraPath = java.nio.file.Paths.get(pathPart);
+            if (!loraPath.isAbsolute() && parent != null) {
+                loraPath = parent.resolve(loraPath);
+            }
+            if (!Files.isRegularFile(loraPath)) {
+                throw new IOException("llama.cpp option 'lora' points to a missing adapter"
+                        + " file: " + loraPath);
+            }
+            resolved.add(loraPath.toAbsolutePath() + (scaleAt >= 0 ? entry.substring(scaleAt) : ""));
+        }
+        return resolved;
+    }
+
+    /**
+     * Endpoint cache key: adapters are part of the process identity -
+     * two handles with different adapters must never share one
+     * llama-server process.
+     */
+    static String cacheKey(Path artifactPath, java.util.Map<String, Object> serverArgs) {
+        Object gpuLayers = serverArgs == null ? null : serverArgs.get("gpuLayers");
+        StringBuilder key = new StringBuilder(artifactPath.toAbsolutePath().toString());
+        key.append("#ngl=").append(gpuLayers == null ? "auto" : String.valueOf(gpuLayers));
+        try {
+            for (String lora : loraFlags(serverArgs)) {
+                key.append("#lora=").append(lora);
+            }
+        } catch (IOException invalid) {
+            // invalid options fail at launch; the key just stays adapter-less
+        }
+        return key.toString();
     }
 
     /**
@@ -89,7 +178,22 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
         return launchWithHealthUrl(artifactPath, healthBaseUrl, -1);
     }
 
-    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl, long gpuLayers)
+    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl,
+                                            long gpuLayers) throws IOException {
+        return launchWithHealthUrl(artifactPath, healthBaseUrl, gpuLayers,
+                java.util.Collections.<String>emptyList());
+    }
+
+    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl,
+                                            java.util.Map<String, Object> serverArgs)
+            throws IOException {
+        return launchWithHealthUrl(artifactPath, healthBaseUrl, gpuLayers(serverArgs),
+                resolvedLoraFiles(artifactPath, loraFlags(serverArgs)));
+    }
+
+    LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl,
+                                            long gpuLayers,
+                                            java.util.List<String> loraFlags)
             throws IOException {
         if (artifactPath == null || !Files.isRegularFile(artifactPath)) {
             throw new IOException("GGUF artifact does not exist: " + artifactPath);
@@ -108,6 +212,10 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
         if (gpuLayers >= 0) {
             command.add("--n-gpu-layers");
             command.add(String.valueOf(gpuLayers));
+        }
+        for (String lora : loraFlags) {
+            command.add("--lora");
+            command.add(lora);
         }
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.environment().clear();
