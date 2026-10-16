@@ -31,4 +31,23 @@ class TrainCommandArgsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TrainCommand.parse(new String[]{"train"}));
     }
+
+    @Test
+    void familyDefaultTemplatesCoverEveryDecoderFamily() {
+        assertEquals("qwen", TrainCommand.defaultTemplate(
+                io.cortexj.train.djl.models.DecoderFamily.QWEN2));
+        assertEquals("qwen", TrainCommand.defaultTemplate(
+                io.cortexj.train.djl.models.DecoderFamily.QWEN3));
+        assertEquals("llama3", TrainCommand.defaultTemplate(
+                io.cortexj.train.djl.models.DecoderFamily.LLAMA));
+    }
+
+    @Test
+    void parseAcceptsChatTemplateFlag() {
+        Map<String, String> parsed = TrainCommand.parse(new String[]{
+                "train", "/model", "--dataset", "/data.jsonl",
+                "--format", "chat", "--chatTemplate", "llama3"});
+        assertEquals("chat", parsed.get("format"));
+        assertEquals("llama3", parsed.get("chatTemplate"));
+    }
 }

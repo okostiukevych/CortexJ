@@ -33,9 +33,21 @@ public final class TrainCommand {
         int seqLen = Integer.parseInt(parsed.getOrDefault("seqLen", "512"));
         DjlHfTokenizer tokenizer = DjlHfTokenizer.load(
                 java.nio.file.Paths.get(modelPath, "tokenizer.json"));
-        LmDataset dataset = "text".equals(format)
-                ? LmDatasets.jsonlText(java.nio.file.Paths.get(datasetFile), tokenizer, seqLen)
-                : LmDatasets.jsonlSft(java.nio.file.Paths.get(datasetFile), tokenizer, seqLen);
+        LmDataset dataset;
+        if ("text".equals(format)) {
+            dataset = LmDatasets.jsonlText(java.nio.file.Paths.get(datasetFile), tokenizer, seqLen);
+        } else if ("chat".equals(format)) {
+            String templateId = parsed.get("chatTemplate");
+            if (templateId == null || templateId.trim().isEmpty()) {
+                templateId = defaultTemplate(
+                        io.cortexj.train.djl.models.ArchitectureConfigs.parse(
+                                java.nio.file.Paths.get(modelPath, "config.json")).family());
+            }
+            dataset = LmDatasets.jsonlChat(java.nio.file.Paths.get(datasetFile), tokenizer,
+                    seqLen, templateId);
+        } else {
+            dataset = LmDatasets.jsonlSft(java.nio.file.Paths.get(datasetFile), tokenizer, seqLen);
+        }
         TrainingRequest.Builder builder = TrainingRequest.builder()
                 .model(modelPath)
                 .dataset(dataset.fingerprint())
@@ -59,12 +71,25 @@ public final class TrainCommand {
         }
     }
 
+    /** Family-derived chat template default: Qwen -> ChatML, Llama -> llama3. */
+    static String defaultTemplate(io.cortexj.train.djl.models.DecoderFamily family) {
+        switch (family) {
+            case QWEN2:
+            case QWEN3:
+                return "qwen";
+            case LLAMA:
+                return "llama3";
+            default:
+                throw new IllegalArgumentException("unsupported family: " + family);
+        }
+    }
+
     static Map<String, String> parse(String[] args) {
         if (args.length < 2) {
             throw new IllegalArgumentException(
-                    "usage: cortexj train <modelPath> --dataset <file> [--format sft|text] "
-                            + "[--rank N] [--alpha N] [--targets a,b] [--epochs N] [--lr F] "
-                            + "[--seqLen N] [--out dir]");
+                    "usage: cortexj train <modelPath> --dataset <file> [--format sft|text|chat]"
+                            + " [--chatTemplate qwen|llama3] [--rank N] [--alpha N] [--targets a,b]"
+                            + " [--epochs N] [--lr F] [--seqLen N] [--out dir]");
         }
         Map<String, String> parsed = new HashMap<String, String>();
         parsed.put("modelPath", args[1]);
