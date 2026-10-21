@@ -14,7 +14,12 @@
   <description>Arrow IPC adapter over the Data API (ADR-019): file/streaming format round-trip. The library never leaks into data-api signatures.</description>
   <properties>
     <cortexj.shared.release>17</cortexj.shared.release>
-    <arrow.version>18.1.0</arrow.version>
+    <arrow.version>19.0.0</arrow.version>
+    <!-- arrow 19 pulls netty-buffer 4.2.x whose allocator init fails on
+         JDK 25 (UnsafeDirectLittleEndian -> EmptyByteBuf.memoryAddress UOE).
+         Pinning 4.1.x restores the JDK-25-safe unsafe path, unchanged from
+         arrow 18 behavior. -->
+    <netty-buffer.version>4.1.139.Final</netty-buffer.version>
   </properties>
   <dependencies>
     <dependency>
@@ -31,6 +36,25 @@
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-memory-netty</artifactId>
       <version>${arrow.version}</version>
+      <scope>runtime</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>io.netty</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- pinned netty-buffer for the JDK-25 allocator compatibility (see version comment) -->
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-buffer</artifactId>
+      <version>${netty-buffer.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-common</artifactId>
+      <version>${netty-buffer.version}</version>
       <scope>runtime</scope>
     </dependency>
     <!-- Arrow schema serialization needs annotations at runtime -->

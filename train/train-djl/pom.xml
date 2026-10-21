@@ -24,7 +24,7 @@
     <dependency>
       <groupId>ai.djl</groupId>
       <artifactId>api</artifactId>
-      <version>0.38.0</version>
+      <version>0.39.0</version>
     </dependency>
     <!-- adapter export needs the PEFT module (compile, optional for consumers) -->
     <dependency>
@@ -94,7 +94,7 @@
         <dependency>
           <groupId>ai.djl.pytorch</groupId>
           <artifactId>pytorch-engine</artifactId>
-          <version>0.38.0</version>
+          <version>0.39.0</version>
           <scope>test</scope>
         </dependency>
         <dependency>
