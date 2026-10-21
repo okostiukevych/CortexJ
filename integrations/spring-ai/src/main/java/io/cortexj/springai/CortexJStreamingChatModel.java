@@ -1,24 +1,20 @@
 package io.cortexj.springai;
 
 import io.cortexj.CortexJ;
-import io.cortexj.error.CortexJException;
-import io.cortexj.inference.GenerationRequest;
+import io.cortexj.inference.TextGenerationCapability;
 import io.cortexj.model.ModelHandle;
 import io.cortexj.model.ModelReference;
-import io.cortexj.stream.StreamSubscription;
-import io.cortexj.stream.TokenConsumer;
-import io.cortexj.stream.TokenStream;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxSink;
 
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-
+/**
+ * Streaming-only Spring AI model over a loaded CortexJ model. A thin delegate to
+ * the same bridge {@link CortexJChatModel#stream(Prompt)} uses - kept for callers
+ * that only instantiate a streaming model (e.g. a service exposed purely as
+ * {@code StreamingChatModel}).
+ */
 public final class CortexJStreamingChatModel implements StreamingChatModel, AutoCloseable {
 
     private final CortexJ platform;
@@ -34,6 +30,7 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
     }
 
     private CortexJStreamingChatModel(CortexJ platform, String modelReference, boolean ownsPlatform) {
+        SpringAiSupport.requireChatAdapterSupport();
         this.platform = platform;
         this.ownsPlatform = ownsPlatform;
         this.handle = platform.models().load(ModelReference.of(modelReference));
@@ -41,37 +38,11 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
 
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
-        return Flux.<ChatResponse>create(sink -> {
-            TokenStream stream = generator().stream(GenerationRequest.prompt(prompt.getContents()));
-            AtomicReference<StreamSubscription> subscription = new AtomicReference<StreamSubscription>();
-            sink.onCancel(() -> {
-                StreamSubscription active = subscription.get();
-                if (active != null) {
-                    active.cancel();
-                }
-                stream.close();
-            });
-            subscription.set(stream.subscribe(new TokenConsumer() {
-                @Override
-                public void onToken(io.cortexj.stream.Token token) {
-                    if (!sink.isCancelled()) {
-                        sink.next(new ChatResponse(List.of(new Generation(new AssistantMessage(token.text())))));
-                    }
-                }
+        return CortexJStreamBridge.stream(generator(), modelId(), prompt);
+    }
 
-                @Override
-                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
-                    sink.complete();
-                    stream.close();
-                }
-
-                @Override
-                public void onError(CortexJException error) {
-                    sink.error(error);
-                    stream.close();
-                }
-            }));
-        }, FluxSink.OverflowStrategy.LATEST);
+    public String getModelName() {
+        return modelId();
     }
 
     @Override
@@ -82,7 +53,11 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
         }
     }
 
-    io.cortexj.inference.TextGenerationCapability generator() {
-        return handle.capability(io.cortexj.inference.TextGenerationCapability.class);
+    TextGenerationCapability generator() {
+        return handle.capability(TextGenerationCapability.class);
+    }
+
+    private String modelId() {
+        return handle.descriptor().canonicalId();
     }
 }

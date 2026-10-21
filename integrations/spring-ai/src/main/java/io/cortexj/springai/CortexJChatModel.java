@@ -1,19 +1,31 @@
 package io.cortexj.springai;
 
 import io.cortexj.CortexJ;
-import io.cortexj.inference.GenerationRequest;
 import io.cortexj.inference.GenerationResponse;
 import io.cortexj.inference.TextGenerationCapability;
 import io.cortexj.model.ModelHandle;
 import io.cortexj.model.ModelReference;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 
+/**
+ * Spring AI 2.x {@link ChatModel} backed by a loaded CortexJ model:
+ * {@link #call(Prompt)} executes a blocking generation, {@link #stream(Prompt)}
+ * streams tokens through a {@code Flux}. Both map Spring AI messages
+ * (system/user/assistant/tool) and {@link org.springframework.ai.chat.prompt.ChatOptions}
+ * into the CortexJ generation request, and surface token usage and finish reason
+ * in the response metadata.
+ *
+ * <p>Tool calling is NOT executed by the runtime: the adapter never emits tool-call
+ * requests, so Spring AI's {@code ToolCallingAdvisor} has nothing to act on. Tool-capable
+ * usage requires the runtime API to expose tool calls first.</p>
+ */
 public final class CortexJChatModel implements ChatModel, AutoCloseable {
 
     private final CortexJ platform;
@@ -29,6 +41,7 @@ public final class CortexJChatModel implements ChatModel, AutoCloseable {
     }
 
     private CortexJChatModel(CortexJ platform, String modelReference, boolean ownsPlatform) {
+        SpringAiSupport.requireChatAdapterSupport();
         this.platform = platform;
         this.ownsPlatform = ownsPlatform;
         this.handle = platform.models().load(ModelReference.of(modelReference));
@@ -36,12 +49,26 @@ public final class CortexJChatModel implements ChatModel, AutoCloseable {
 
     @Override
     public ChatResponse call(Prompt prompt) {
-        GenerationResponse response = generator().generate(GenerationRequest.prompt(prompt.getContents()));
-        return new ChatResponse(List.of(new Generation(new AssistantMessage(response.text()))));
+        GenerationResponse response = generator().generate(CortexJMapper.generationRequest(prompt));
+        Generation generation = CortexJMapper.generation(response.text(), response.finishReason());
+        return new ChatResponse(List.of(generation),
+                CortexJMapper.metadata(modelId(), response.usage(), response.metadata()));
+    }
+
+    @Override
+    public Flux<ChatResponse> stream(Prompt prompt) {
+        return CortexJStreamBridge.stream(generator(), modelId(), prompt);
+    }
+
+    @Override
+    public ChatOptions getOptions() {
+        // the planner resolved the artifact already: expose its canonical id,
+        // remaining defaults stay empty
+        return ChatOptions.builder().model(modelId()).build();
     }
 
     public String getModelName() {
-        return handle.descriptor().canonicalId();
+        return modelId();
     }
 
     @Override
@@ -54,5 +81,9 @@ public final class CortexJChatModel implements ChatModel, AutoCloseable {
 
     TextGenerationCapability generator() {
         return handle.capability(TextGenerationCapability.class);
+    }
+
+    private String modelId() {
+        return handle.descriptor().canonicalId();
     }
 }
