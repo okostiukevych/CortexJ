@@ -2,6 +2,7 @@ package io.cortexj.springai;
 
 import io.cortexj.inference.FinishReason;
 import io.cortexj.inference.GenerationRequest;
+import io.cortexj.inference.GenerationResponse;
 import io.cortexj.inference.TokenUsage;
 import io.cortexj.model.ChatMessage;
 import io.cortexj.model.ChatRole;
@@ -12,6 +13,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -50,46 +52,79 @@ final class CortexJMapper {
             builder.prompt(orEmpty(prompt.getContents()));
         } else {
             for (Message message : instructions) {
-                builder.message(toChatMessage(message));
+                for (ChatMessage chatMessage : toChatMessages(message)) {
+                    builder.message(chatMessage);
+                }
             }
         }
         applyOptions(prompt.getOptions(), builder);
+        appendTools(prompt.getOptions(), builder);
         return builder.build();
     }
 
-    private static ChatMessage toChatMessage(Message message) {
-        if (message instanceof ToolResponseMessage) {
-            // tool results carry their payloads in the responses, not in the message text
-            return ChatMessage.of(ChatRole.TOOL, toolResponsesContent((ToolResponseMessage) message));
+    private static java.util.List<ChatMessage> toChatMessages(Message message) {
+        // TOOL results fan out: each response is its own TOOL message tied to
+        // the call it answers by id (the agentic loop pairs them)
+        if (message instanceof ToolResponseMessage toolMessage) {
+            java.util.List<ChatMessage> mapped = new java.util.ArrayList<ChatMessage>();
+            if (toolMessage.getResponses() != null) {
+                for (ToolResponseMessage.ToolResponse response : toolMessage.getResponses()) {
+                    String data = response.responseData() == null ? "" : response.responseData();
+                    if (response.id() != null && !response.id().isEmpty()) {
+                        mapped.add(ChatMessage.tool(response.id(), data));
+                    } else {
+                        mapped.add(ChatMessage.of(ChatRole.TOOL, data));
+                    }
+                }
+            }
+            return mapped;
         }
         String text = message.getText() == null ? "" : message.getText();
         MessageType type = message.getMessageType() == null ? MessageType.USER : message.getMessageType();
         if (type == MessageType.SYSTEM) {
-            return ChatMessage.system(text);
+            return java.util.List.of(ChatMessage.system(text));
         }
         if (type == MessageType.ASSISTANT) {
-            return ChatMessage.assistant(text);
+            if (message instanceof AssistantMessage && ((AssistantMessage) message).hasToolCalls()) {
+                return java.util.List.of(ChatMessage.assistantToolCalls(
+                        toolCalls(((AssistantMessage) message).getToolCalls()), text));
+            }
+            return java.util.List.of(ChatMessage.assistant(text));
         }
         if (type == MessageType.TOOL) {
-            return ChatMessage.of(ChatRole.TOOL, text);
+            return java.util.List.of(ChatMessage.of(ChatRole.TOOL, text));
         }
-        return ChatMessage.user(text);
+        return java.util.List.of(ChatMessage.user(text));
     }
 
-    /** OpenAI-style tool result content: each response's data, joined in order. */
-    private static String toolResponsesContent(ToolResponseMessage message) {
-        StringBuilder content = new StringBuilder();
-        if (message.getResponses() != null) {
-            for (ToolResponseMessage.ToolResponse response : message.getResponses()) {
-                if (content.length() > 0) {
-                    content.append('\n');
-                }
-                if (response.responseData() != null) {
-                    content.append(response.responseData());
+    private static java.util.List<io.cortexj.model.ToolCall> toolCalls(
+            List<AssistantMessage.ToolCall> toolCalls) {
+        java.util.List<io.cortexj.model.ToolCall> mapped = new java.util.ArrayList<io.cortexj.model.ToolCall>();
+        if (toolCalls != null) {
+            for (AssistantMessage.ToolCall call : toolCalls) {
+                mapped.add(new io.cortexj.model.ToolCall(call.id(), call.name(), call.arguments()));
+            }
+        }
+        return mapped;
+    }
+
+    /** ToolCallingChatOptions callbacks -> declared tools for the runtime. */
+    private static void appendTools(ChatOptions options, GenerationRequest.Builder builder) {
+        if (options instanceof org.springframework.ai.model.tool.ToolCallingChatOptions toolOptions) {
+            List<org.springframework.ai.tool.ToolCallback> callbacks = toolOptions.getToolCallbacks();
+            if (callbacks != null) {
+                for (org.springframework.ai.tool.ToolCallback callback : callbacks) {
+                    org.springframework.ai.tool.definition.ToolDefinition definition =
+                            callback.getToolDefinition();
+                    if (definition != null) {
+                        builder.tool(io.cortexj.model.ToolDefinition.function(
+                                definition.name(),
+                                definition.description(),
+                                definition.inputSchema()));
+                    }
                 }
             }
         }
-        return content.toString();
     }
 
     private static void applyOptions(ChatOptions options, GenerationRequest.Builder builder) {
@@ -118,16 +153,39 @@ final class CortexJMapper {
 
     /** Builds a Generation with finish-reason metadata attached to it. */
     static Generation generation(String text, FinishReason finishReason) {
-        AssistantMessage output = new AssistantMessage(text == null ? "" : text);
+        return generation(text, finishReason, java.util.List.of());
+    }
+
+    /**
+     * Builds a Generation whose assistant output carries the tool calls the
+     * model proposed (Spring's {@code ToolCallingManager} reads them from
+     * here to execute the caller's {@code ToolCallback}s).
+     */
+    static Generation generation(String text, FinishReason finishReason,
+                                 java.util.List<io.cortexj.model.ToolCall> toolCalls) {
+        AssistantMessage.Builder<?> output = AssistantMessage.builder().content(orEmpty(text));
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            List<AssistantMessage.ToolCall> records = new java.util.ArrayList<AssistantMessage.ToolCall>();
+            for (io.cortexj.model.ToolCall call : toolCalls) {
+                records.add(new AssistantMessage.ToolCall(call.id(), "function", call.name(), call.arguments()));
+            }
+            output.toolCalls(records);
+        }
         ChatGenerationMetadata metadata = ChatGenerationMetadata.builder()
                 .finishReason(finishReasonValue(finishReason))
                 .build();
-        return new Generation(output, metadata);
+        return new Generation(output.build(), metadata);
+    }
+
+    /** Full response: one generation + metadata, used by the blocking adapter. */
+    static ChatResponse chatResponse(GenerationResponse response, String model) {
+        Generation generation = generation(response.text(), response.finishReason(), response.toolCalls());
+        return new ChatResponse(java.util.List.of(generation),
+                metadata(model, response.usage(), response.metadata()));
     }
 
     /** Builds response metadata: model id, token usage and platform event metadata. */
-    static ChatResponseMetadata metadata(String model, TokenUsage usage, Map<String, String> platformMetadata) {
-        ChatResponseMetadata.Builder builder = ChatResponseMetadata.builder()
+    static ChatResponseMetadata metadata(String model, TokenUsage usage, Map<String, String> platformMetadata) {        ChatResponseMetadata.Builder builder = ChatResponseMetadata.builder()
                 .model(model == null ? "" : model);
         if (usage != null && usage.isKnown()) {
             builder.usage(new CortexJUsage(usage));

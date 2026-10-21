@@ -12,6 +12,10 @@ public final class TokenStreamPublisher {
         stream.emit(text, null);
     }
 
+    public void publishToolCalls(java.util.List<io.cortexj.model.ToolCall> toolCalls) {
+        stream.publishToolCalls(toolCalls);
+    }
+
     public void complete(FinishReason reason, long inputTokens, long outputTokens) {
         stream.complete(reason, new io.cortexj.inference.TokenUsage(inputTokens, outputTokens));
     }

@@ -49,14 +49,20 @@ public final class CortexJChatModel implements ChatModel, AutoCloseable {
 
     @Override
     public ChatResponse call(Prompt prompt) {
+        if (CortexJToolLoop.hasToolCallbacks(prompt)) {
+            return CortexJToolLoop.run(generator(), modelId(), prompt);
+        }
         GenerationResponse response = generator().generate(CortexJMapper.generationRequest(prompt));
-        Generation generation = CortexJMapper.generation(response.text(), response.finishReason());
-        return new ChatResponse(List.of(generation),
-                CortexJMapper.metadata(modelId(), response.usage(), response.metadata()));
+        return CortexJMapper.chatResponse(response, modelId());
     }
 
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
+        if (CortexJToolLoop.hasToolCallbacks(prompt)) {
+            // honest limit: with tools the loop runs inline (Spring semantics for
+            // internal tool execution) and a single final chunk is streamed
+            return Flux.just(CortexJToolLoop.run(generator(), modelId(), prompt));
+        }
         return CortexJStreamBridge.stream(generator(), modelId(), prompt);
     }
 
@@ -86,4 +92,5 @@ public final class CortexJChatModel implements ChatModel, AutoCloseable {
     private String modelId() {
         return handle.descriptor().canonicalId();
     }
+
 }

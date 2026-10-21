@@ -10,11 +10,15 @@ import io.cortexj.stream.Token;
 import io.cortexj.stream.TokenConsumer;
 import io.cortexj.stream.TokenStream;
 
+import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
+import io.cortexj.model.ToolCall;
 
 /**
  * Push-based token stream with replay-before-subscribe semantics (audit H-2):
@@ -56,10 +60,15 @@ public final class PushTokenStream implements TokenStream {
 
     // replay state for tokens that fire before subscribe()
     private final Queue<Token> earlyTokens = new ArrayDeque<Token>();
+    // tool-call batches published before subscribe() (same replay contract)
+    private final Queue<List<ToolCall>> earlyToolCalls = new ArrayDeque<List<ToolCall>>();
     // live delivery queue (post-subscribe): early tokens are handed over in
     // FIFO order on subscribe, so replay-before-live ordering holds without
     // delivering under the lock
     private final Queue<Token> pending = new ArrayDeque<Token>();
+    // tool-call batches queued for delivery after the tokens and before the
+    // terminal (providers publish accumulated calls once, never interleaved)
+    private final Queue<List<ToolCall>> pendingToolCalls = new ArrayDeque<List<ToolCall>>();
     // terminal fired but not yet delivered; at most one of the two is ever set
     private StreamCompletion bufferedCompletion;
     private CortexJException bufferedError;
@@ -105,8 +114,50 @@ public final class PushTokenStream implements TokenStream {
         }
     }
 
-    public void complete(FinishReason finishReason, io.cortexj.inference.TokenUsage usage) {
-        boolean recorded = false;
+    /**
+     * Queues a batch of structured tool calls for delivery. The batch is
+     * delivered after the tokens published so far and before the terminal -
+     * providers publish the accumulated calls once, never interleaved with
+     * tokens. Ignored after the terminal fired (parity with post-terminal
+     * token emits).
+     */
+    public void publishToolCalls(List<ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return;
+        }
+        boolean deliverNow = false;
+        synchronized (lock) {
+            if (closed.get() || completed.get() || failed.get()) {
+                return;
+            }
+            if (consumer.get() == null) {
+                if (earlyToolCalls.size() >= EARLY_TOKEN_BUFFER_LIMIT) {
+                    failLocked(earlyToolCallOverflowError(EARLY_TOKEN_BUFFER_LIMIT));
+                    return;
+                }
+                earlyToolCalls.add(new ArrayList<ToolCall>(toolCalls));
+                return;
+            }
+            pendingToolCalls.add(new ArrayList<ToolCall>(toolCalls));
+            deliverNow = true;
+        }
+        if (deliverNow) {
+            drain();
+        }
+    }
+
+    private static CortexJException earlyToolCallOverflowError(int limit) {
+        return new InferenceException(
+                ErrorCode.INFERENCE_STREAM_FAILED,
+                "token stream buffer overflow: more than " + limit
+                        + " tool-call batches were published before a subscriber attached; "
+                        + "the generation was failed",
+                "Subscribe to the token stream before the producer starts, or "
+                        + "raise PushTokenStream.EARLY_TOKEN_BUFFER_LIMIT; the "
+                        + "stream never buffers without bound.");
+    }
+
+    public void complete(FinishReason finishReason, io.cortexj.inference.TokenUsage usage) {        boolean recorded = false;
         synchronized (lock) {
             recorded = completeLocked(finishReason, usage);
         }
@@ -199,6 +250,8 @@ public final class PushTokenStream implements TokenStream {
             // caps ever drift apart
             pending.addAll(earlyTokens);
             earlyTokens.clear();
+            pendingToolCalls.addAll(earlyToolCalls);
+            earlyToolCalls.clear();
             if (pending.size() > LIVE_TOKEN_BUFFER_LIMIT) {
                 failLocked(liveOverflowError(LIVE_TOKEN_BUFFER_LIMIT));
             }
@@ -242,11 +295,14 @@ public final class PushTokenStream implements TokenStream {
         }
         while (true) {
             Token token = null;
+            List<ToolCall> toolCallBatch = null;
             StreamCompletion completion = null;
             CortexJException error = null;
             synchronized (lock) {
                 if (!pending.isEmpty()) {
                     token = pending.poll();
+                } else if (!pendingToolCalls.isEmpty()) {
+                    toolCallBatch = pendingToolCalls.poll();
                 } else if (bufferedError != null) {
                     error = bufferedError;
                     bufferedError = null;
@@ -264,6 +320,8 @@ public final class PushTokenStream implements TokenStream {
             try {
                 if (token != null) {
                     target.onToken(token);
+                } else if (toolCallBatch != null) {
+                    target.onToolCalls(toolCallBatch);
                 } else if (error != null) {
                     target.onError(error);
                 } else {
@@ -285,7 +343,8 @@ public final class PushTokenStream implements TokenStream {
     private boolean hasWork() {
         synchronized (lock) {
             return consumer.get() != null
-                    && (!pending.isEmpty() || bufferedError != null || bufferedCompletion != null);
+                    && (!pending.isEmpty() || !pendingToolCalls.isEmpty()
+                        || bufferedError != null || bufferedCompletion != null);
         }
     }
 

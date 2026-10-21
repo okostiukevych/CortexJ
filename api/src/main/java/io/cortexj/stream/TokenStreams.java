@@ -9,10 +9,18 @@ public final class TokenStreams {
     }
 
     public static TokenStream single(final String text) {
+        return single(text, java.util.Collections.<io.cortexj.model.ToolCall>emptyList());
+    }
+
+    /** Text-only in-memory stream that also carries proposed tool calls (nonStreaming providers). */
+    public static TokenStream single(final String text, final java.util.List<io.cortexj.model.ToolCall> toolCalls) {
         return new TokenStream() {
             @Override
             public StreamSubscription subscribe(TokenConsumer consumer) {
                 consumer.onToken(new Token(text, 0, null));
+                if (toolCalls != null && !toolCalls.isEmpty()) {
+                    consumer.onToolCalls(toolCalls);
+                }
                 consumer.onComplete(new StreamCompletion(FinishReason.STOP, null));
                 return new StreamSubscription() {
                     @Override

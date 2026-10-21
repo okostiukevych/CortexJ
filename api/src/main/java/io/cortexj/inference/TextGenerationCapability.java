@@ -31,7 +31,9 @@ public interface TextGenerationCapability {
             @Override
             public TokenStream stream(GenerationRequest request) {
                 GenerationResponse response = delegate.generate(request);
-                return TokenStreams.single(response.text());
+                // propose-at-source parity: a generate-only provider must not
+                // lose the tool calls when callers take the streaming path
+                return TokenStreams.single(response.text(), response.toolCalls());
             }
         };
     }

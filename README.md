@@ -140,7 +140,7 @@ Layering rules (enforced by module boundaries):
 | `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
 | `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
 | `cortexj-examples-spring-ai` | Spring AI bean wiring example (spec 83, Java 17+) |
-| `integrations/spring-ai` | Spring AI 2.0.x adapter: `ChatModel` (call + stream), `StreamingChatModel`, `EmbeddingModel`, full message/options/usage mapping (Java 17+) |
+| `integrations/spring-ai` | Spring AI 2.0.x adapter: `ChatModel` (call + stream + tool loop), `StreamingChatModel`, `EmbeddingModel`, full message/options/usage mapping (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |

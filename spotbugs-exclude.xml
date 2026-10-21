@@ -25,6 +25,7 @@
       <Class name="io.cortexj.inference.GenerationResponse"/>
       <Class name="io.cortexj.inference.InferenceResponse"/>
       <Class name="io.cortexj.inference.RerankingRequest"/>
+      <Class name="io.cortexj.model.ChatMessage"/>
       <Class name="io.cortexj.model.ModelArtifact$Abstract"/>
       <Class name="io.cortexj.observability.PlatformEvent"/>
       <Class name="io.cortexj.planner.ExecutionRequest"/>

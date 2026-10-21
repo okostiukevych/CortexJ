@@ -38,6 +38,11 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
 
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
+        if (CortexJToolLoop.hasToolCallbacks(prompt)) {
+            // honest limit: with tools the loop runs inline (Spring semantics for
+            // internal tool execution) and a single final chunk is streamed
+            return Flux.just(CortexJToolLoop.run(generator(), modelId(), prompt));
+        }
         return CortexJStreamBridge.stream(generator(), modelId(), prompt);
     }
 

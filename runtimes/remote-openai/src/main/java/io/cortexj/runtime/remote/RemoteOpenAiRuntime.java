@@ -215,7 +215,15 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             String text = choice.path("message").path("content").asText("");
             FinishReason finish = finishReason(choice.path("finish_reason").asText("stop"));
             TokenUsage usage = usageOf(root.path("usage"));
-            return new GenerationResponse(text, finish, usage, Collections.singletonMap("remoteModel", modelId));
+            JsonNode toolNode = choice.path("message").path("tool_calls");
+            List<io.cortexj.model.ToolCall> toolCalls = toolNode.isArray()
+                    ? toolCallsPayload(toolNode)
+                    : java.util.Collections.<io.cortexj.model.ToolCall>emptyList();
+            Map<String, String> metadata = Collections.singletonMap("remoteModel", modelId);
+            if (toolCalls.isEmpty()) {
+                return new GenerationResponse(text, finish, usage, metadata);
+            }
+            return new GenerationResponse(text, finish, usage, metadata, toolCalls);
         }
 
         @Override
@@ -378,6 +386,10 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 long inputTokens = -1;
                 long outputTokens = -1;
                 long lastActivity = System.currentTimeMillis();
+                // streamed tool calls arrive as index-keyed delta fragments:
+                // id/name land once, function.arguments arrives in pieces
+                java.util.Map<Integer, String[]> toolAccumulator =
+                        new java.util.LinkedHashMap<Integer, String[]>();
                 while (!cancelled.get() && !runtimeClosed.get()) {
                     String line;
                     try {
@@ -409,6 +421,29 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     if (!delta.isEmpty()) {
                         publisher.publish(delta);
                     }
+                    JsonNode streamedToolCalls = choice.path("delta").path("tool_calls");
+                    if (streamedToolCalls.isArray()) {
+                        for (JsonNode toolNode : streamedToolCalls) {
+                            int slot = toolNode.path("index").asInt(toolAccumulator.size());
+                            if (slot < 0) {
+                                slot = toolAccumulator.size();
+                            }
+                            String[] acc = toolAccumulator.get(slot);
+                            if (acc == null) {
+                                acc = new String[]{"", "", ""};
+                                toolAccumulator.put(slot, acc);
+                            }
+                            String id = toolNode.path("id").asText("");
+                            if (!id.isEmpty()) {
+                                acc[0] = id;
+                            }
+                            String name = toolNode.path("function").path("name").asText("");
+                            if (!name.isEmpty() && acc[1].isEmpty()) {
+                                acc[1] = name;
+                            }
+                            acc[2] += toolNode.path("function").path("arguments").asText("");
+                        }
+                    }
                     if (choice.has("finish_reason") && !choice.path("finish_reason").isNull()) {
                         finish = finishReason(choice.path("finish_reason").asText("stop"));
                     }
@@ -427,6 +462,23 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     // the subscriber instead of leaving it waiting forever
                     publisher.fail(closedDuringStream());
                     return;
+                }
+                if (!toolAccumulator.isEmpty()) {
+                    java.util.SortedSet<Integer> slots = new java.util.TreeSet<Integer>(toolAccumulator.keySet());
+                    List<io.cortexj.model.ToolCall> calls = new ArrayList<io.cortexj.model.ToolCall>();
+                    for (int slot : slots) {
+                        String[] acc = toolAccumulator.get(slot);
+                        if (acc[1].trim().isEmpty()) {
+                            throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                                    "streamed tool call carries no function name",
+                                    "The OpenAI-compatible endpoint delivered an "
+                                            + "incomplete tool_calls fragment; check the "
+                                            + "endpoint's streaming implementation or "
+                                            + "decline the tools.");
+                        }
+                        calls.add(new io.cortexj.model.ToolCall(acc[0], acc[1], acc[2]));
+                    }
+                    publisher.publishToolCalls(calls);
                 }
                 publisher.complete(finish, inputTokens, outputTokens);
             }
@@ -499,15 +551,21 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         private Map<String, Object> generationPayload(GenerationRequest request, boolean stream) {
             Map<String, Object> payload = new LinkedHashMap<String, Object>();
             payload.put("model", modelId);
-            List<Map<String, String>> messages = new ArrayList<Map<String, String>>();
+            List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
             if (request.isChat()) {
                 for (io.cortexj.model.ChatMessage message : request.messages()) {
-                    messages.add(messagePayload(message.role().name().toLowerCase(), message.content()));
+                    messages.add(messagePayload(message));
                 }
             } else {
-                messages.add(messagePayload("user", request.prompt()));
+                Map<String, Object> promptMessage = new LinkedHashMap<String, Object>();
+                promptMessage.put("role", "user");
+                promptMessage.put("content", request.prompt());
+                messages.add(promptMessage);
             }
             payload.put("messages", messages);
+            if (!request.tools().isEmpty()) {
+                payload.put("tools", toolsPayload(request.tools()));
+            }
             if (request.temperature() != null) {
                 payload.put("temperature", request.temperature());
             }
@@ -530,11 +588,70 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             return payload;
         }
 
-        private Map<String, String> messagePayload(String role, String content) {
-            Map<String, String> message = new LinkedHashMap<String, String>();
-            message.put("role", role);
-            message.put("content", content);
-            return message;
+        private Map<String, Object> messagePayload(io.cortexj.model.ChatMessage message) {
+            Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            String role = message.role().name().toLowerCase();
+            payload.put("role", role);
+            payload.put("content", message.content());
+            if (message.role() == io.cortexj.model.ChatRole.TOOL && !message.toolCallId().isEmpty()) {
+                // the only link between an executed result and the call it answers;
+                // legacy TOOL messages without an id render as plain tool text
+                payload.put("tool_call_id", message.toolCallId());
+            }
+            if (!message.toolCalls().isEmpty()) {
+                // assistant echo of the calls proposed in the previous round
+                List<Map<String, Object>> toolCalls = new ArrayList<Map<String, Object>>();
+                for (io.cortexj.model.ToolCall call : message.toolCalls()) {
+                    Map<String, Object> wire = new LinkedHashMap<String, Object>();
+                    wire.put("id", call.id());
+                    wire.put("type", "function");
+                    Map<String, Object> fn = new LinkedHashMap<String, Object>();
+                    fn.put("name", call.name());
+                    fn.put("arguments", call.arguments());
+                    wire.put("function", fn);
+                    toolCalls.add(wire);
+                }
+                payload.put("tool_calls", toolCalls);
+            }
+            return payload;
+        }
+
+        private List<Map<String, Object>> toolsPayload(List<io.cortexj.model.ToolDefinition> tools) {
+            List<Map<String, Object>> payload = new ArrayList<Map<String, Object>>();
+            for (io.cortexj.model.ToolDefinition tool : tools) {
+                Map<String, Object> fn = new LinkedHashMap<String, Object>();
+                fn.put("name", tool.name());
+                fn.put("description", tool.description());
+                if (!tool.parametersJson().isEmpty()) {
+                    // the schema is JSON on the wire: parse it, never re-serialize as a string
+                    fn.put("parameters", client.fromJson(tool.parametersJson(), com.fasterxml.jackson.databind.JsonNode.class));
+                }
+                Map<String, Object> wire = new LinkedHashMap<String, Object>();
+                wire.put("type", "function");
+                wire.put("function", fn);
+                payload.add(wire);
+            }
+            return payload;
+        }
+
+        private List<io.cortexj.model.ToolCall> toolCallsPayload(JsonNode array) {
+            List<io.cortexj.model.ToolCall> calls = new ArrayList<io.cortexj.model.ToolCall>();
+            for (JsonNode callNode : array) {
+                String name = callNode.path("function").path("name").asText("");
+                if (name.trim().isEmpty()) {
+                    throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                            "remote tool call carries no function name: "
+                                    + abbreviate(callNode.toString()),
+                            "The OpenAI-compatible endpoint returned a malformed "
+                                    + "tool_calls entry; decline the tools or use a "
+                                    + "provider that renders them correctly.");
+                }
+                calls.add(new io.cortexj.model.ToolCall(
+                        callNode.path("id").asText(""),
+                        name,
+                        callNode.path("function").path("arguments").asText("")));
+            }
+            return calls;
         }
 
         private HttpJsonClient.Response postJson(String path, Map<String, Object> payload) {

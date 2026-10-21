@@ -1,6 +1,7 @@
 package io.cortexj.inference;
 
 import io.cortexj.model.ChatMessage;
+import io.cortexj.model.ToolDefinition;
 import io.cortexj.planner.RuntimeOptions;
 
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ public final class GenerationRequest {
     private final Integer topK;
     private final Long seed;
     private final List<String> stopSequences;
+    private final List<ToolDefinition> tools;
     private final RuntimeOptions runtimeOptions;
 
     private GenerationRequest(Builder builder) {
@@ -29,6 +31,7 @@ public final class GenerationRequest {
         this.topK = builder.topK;
         this.seed = builder.seed;
         this.stopSequences = Collections.unmodifiableList(new ArrayList<String>(builder.stopSequences));
+        this.tools = Collections.unmodifiableList(new ArrayList<ToolDefinition>(builder.tools));
         this.runtimeOptions = builder.runtimeOptions;
     }
 
@@ -72,6 +75,11 @@ public final class GenerationRequest {
         return stopSequences;
     }
 
+    /** Tools the caller declares as available, empty when none were declared. */
+    public List<ToolDefinition> tools() {
+        return tools;
+    }
+
     public RuntimeOptions runtimeOptions() {
         return runtimeOptions;
     }
@@ -90,10 +98,25 @@ public final class GenerationRequest {
         private Integer topK;
         private Long seed;
         private final List<String> stopSequences = new ArrayList<String>();
+        private final List<ToolDefinition> tools = new ArrayList<ToolDefinition>();
         private RuntimeOptions runtimeOptions;
 
         public Builder prompt(String prompt) {
             this.prompt = prompt;
+            return this;
+        }
+
+        public Builder tool(ToolDefinition tool) {
+            if (tool != null) {
+                tools.add(tool);
+            }
+            return this;
+        }
+
+        public Builder tools(List<ToolDefinition> values) {
+            if (values != null) {
+                tools.addAll(values);
+            }
             return this;
         }
 
