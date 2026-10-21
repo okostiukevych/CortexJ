@@ -41,6 +41,15 @@
     </Or>
   </Match>
 
+  <!-- Boot starter property surface (audit follow-up 2026-10-21): CortexJProperties
+       is a @ConfigurationProperties binding DTO - Spring mutates it through the
+       setters and the remote() holder is exposition BY BINDING CONTRACT. Not an
+       API value type: it never leaves the auto-configuration stack. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP"/>
+    <Class name="io.cortexj.springboot.CortexJProperties"/>
+  </Match>
+
   <!-- audit 2026-10-10: full-reactor spotbugs surfaced pre-existing findings
        in the incubating modules (research/nn/autograd/tensor - the release
        train lists them as 0.x incubating). The exposure findings there are

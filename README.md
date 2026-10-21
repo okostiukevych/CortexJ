@@ -54,6 +54,33 @@ Starters for **every supported LTS line** (§7.1 of the spec): `cortexj-starter-
 built for a newer JVM fails fast with an actionable diagnostic (AC-JAVA-004), and the
 business code stays identical across all five (AC-JAVA-003).
 
+### Spring Boot auto-configuration
+
+`cortexj-spring-boot-starter` (Spring Boot 4.x, Java 17+) wires the platform and an
+auto-loaded `ChatModel` from `cortexj.*` properties; see `docs/spring-ai.md` and
+`docs/tool-calling.md` for tool-loop usage:
+
+```yaml
+cortexj:
+  model: qwen3/qwen3-4b
+  offline: false
+  allow-remote-runtime: true
+  remote:
+    base-url: https://my-openai-compatible-endpoint/v1
+    api-key: sk-...
+```
+
+```java
+@Service
+class AnswerService {
+    private final ChatModel model;   // CortexJChatModel auto-wired
+    AnswerService(ChatModel model) { this.model = model; }
+}
+```
+
+Every bean is overridable (`@ConditionalOnMissingBean`); an unresolvable `cortexj.model`
+fails the startup with a typed `CORTEXJ-` diagnostic.
+
 ## CLI
 
 ```text
@@ -141,6 +168,7 @@ Layering rules (enforced by module boundaries):
 | `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
 | `cortexj-examples-spring-ai` | Spring AI bean wiring example (spec 83, Java 17+) |
 | `integrations/spring-ai` | Spring AI 2.0.x adapter: `ChatModel` (call + stream + tool loop), `StreamingChatModel`, `EmbeddingModel`, full message/options/usage mapping (Java 17+) |
+| `starters/spring-boot` | Spring Boot 4.x auto-configuration: `cortexj.*` properties -> platform + `ChatModel` beans, user-overridable (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |

@@ -115,6 +115,7 @@
       <modules>
         <module>platform/java17</module>
         <module>starters/java17</module>
+        <module>starters/spring-boot</module>
         <module>integrations/spring-ai</module>
         <module>integrations/langchain4j</module>
         <module>examples/spring-ai</module>
