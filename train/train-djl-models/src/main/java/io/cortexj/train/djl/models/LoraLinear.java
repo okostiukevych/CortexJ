@@ -28,6 +28,7 @@ public final class LoraLinear extends AbstractBlock {
     private final float scaling;
     private NDArray frozenWeight; // (in, out), transposed at load
     private NDArray frozenBias;    // (out) or null
+    private final Random initRng = new Random();
 
     public LoraLinear(int inUnits, int outUnits, int rank, float scaling) {
         this.inUnits = inUnits;
@@ -75,13 +76,16 @@ public final class LoraLinear extends AbstractBlock {
     /**
      * Deterministic LoRA init after trainer.initialize: A ~ N(0, 0.02)
      * from the seeded RNG, B = 0. Uses the proven set-after-initialize
-     * pattern (DjlTrainingBackend.resumeBlock).
+     * pattern (DjlTrainingBackend.resumeBlock). The RNG is an instance
+     * field re-seeded per init call: identical distribution sequence to
+     * a fresh {@code new Random(seed)}, without throwing the object away
+     * after a single use.
      */
     public void initLora(long seed) {
-        Random random = new Random(seed);
+        initRng.setSeed(seed);
         float[] aValues = new float[rank * inUnits];
         for (int i = 0; i < aValues.length; i++) {
-            aValues[i] = (float) (random.nextGaussian() * 0.02);
+            aValues[i] = (float) (initRng.nextGaussian() * 0.02);
         }
         a.getParameters().values().get(0).getArray().set(aValues);
         b.getParameters().values().get(0).getArray().set(new float[outUnits * rank]);

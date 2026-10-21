@@ -256,4 +256,15 @@
     </Or>
   </Match>
 
+  <!-- GenericDecoderBlock stores the trainer's NDManager for the Block
+       lifetime: DJL Block.forward has no manager parameter and DJL 0.38 does
+       not expose NDArray.getManager(), so the block must hold the manager
+       that loaded the weights (DjlTrainingLoop drives one manager across
+       train/forward; the trainer's own loop creates and closes it). This is
+       the live-collaborator idiom, same class as ModelBundler above. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Class name="io.cortexj.train.djl.models.GenericDecoderBlock"/>
+  </Match>
+
 </FindBugsFilter>

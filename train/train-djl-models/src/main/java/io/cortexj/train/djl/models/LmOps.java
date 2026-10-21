@@ -64,7 +64,7 @@ final class LmOps {
         long headDim = x.getShape().get(3);
         return x.reshape(n, kvHeads, 1, t, headDim)
                 .tile(new long[]{1, 1, times, 1, 1})
-                .reshape(n, kvHeads * times, t, headDim);
+                .reshape(n, (long) kvHeads * times, t, headDim);
     }    static NDArray causalScores(NDArray scores, NDManager manager, int positions) {
         float[] mask = new float[positions * positions];
         for (int i = 0; i < positions; i++) {

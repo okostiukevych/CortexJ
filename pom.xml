@@ -67,7 +67,6 @@
     <module>worker</module>
     <module>converters/gguf</module>
     <module>converters/safetensors</module>
-    <module>converters/lora</module>
     <module>server</module>
     <module>maven-plugin</module>
     <module>examples</module>
@@ -119,6 +118,7 @@
         <module>integrations/spring-ai</module>
         <module>integrations/langchain4j</module>
         <module>examples/spring-ai</module>
+        <module>converters/lora</module>
         <module>data/data-api</module>
         <module>data/data-csv</module>
         <module>data/data-parquet</module>

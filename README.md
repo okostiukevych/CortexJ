@@ -140,7 +140,7 @@ Layering rules (enforced by module boundaries):
 | `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
 | `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
 | `cortexj-examples-spring-ai` | Spring AI bean wiring example (spec 83, Java 17+) |
-| `integrations/spring-ai` | Spring AI adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
+| `integrations/spring-ai` | Spring AI 2.0.x adapter: `ChatModel` (call + stream), `StreamingChatModel`, `EmbeddingModel`, full message/options/usage mapping (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
 | `cortexj-platform-java8..25` | LTS platform modules |
 | `cortexj-starter-java8/11/17/21/25` | Maven starters with JVM validation |
@@ -197,8 +197,8 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **~132 test classes / ~548 tests green on JDK 25** (14 gated
-skips are loud assumeTrue, never silent; perf-tagged load/fuzz/throughput tests
+Current test matrix: **~202 test classes / ~1434 tests green on JDK 25** (58 gated
+skips across the live native lanes are loud assumeTrue, never silent; perf-tagged load/fuzz/throughput tests
 run separately with `mvn test -Pperf`); the full 2026-10-01 audit pass (31 issues
 resolved: concurrency refcount races, carrier pinning, executor bounds, download
 caps/retry/resume validation, parser hardening, server hardening, pinned in-use
@@ -225,10 +225,12 @@ Everything required by the spec's v1.0 scope (§105) and DoD (§107/108) is impl
 and the three locally-tractable future items are pulled forward (M10): enterprise
 runtime policy (§128), benchmark-aware planner hints (§126), isolated native worker
 mode (§127). Remaining items are only what the spec itself marks as impossible,
-optional, or future: JInfer (artifact absent from Maven Central — §107.5 requires
-MVP to work without it), GPU CI lanes (require self-hosted CUDA/Metal runners —
-prepared and gated), server multimodal endpoints (§60 "future"), and the
-`cortexj-declarative` evolution beyond prompt+validation (§48/§49).
+optional, or future: JInfer ran without the artifact at spec time - it is now published
+on Maven Central (`com.qxotic:jinfer-chat` 0.3.1, last update 2026-10-07) and the Java 25
+lane consumes it as the optional runtime provider (§107.5's MVP-without-it requirement
+still holds: the platform does not depend on it), GPU CI lanes (require self-hosted
+CUDA/Metal runners — prepared and gated), server multimodal endpoints (§60 "future"),
+and the `cortexj-declarative` evolution beyond prompt+validation (§48/§49).
 Before a public 1.0 release: Maven Central publishing,
 the API stability freeze process (§73/74 — tiers documented, `compat` profile ready),
 and a signed-off production security review cycle on top of the recorded one.
@@ -251,9 +253,10 @@ mvn clean install
 
 Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 
-- `mvn test` green on each LTS JDK — the shared core suite (~464 tests on the
-  JDK 8 lane, ~479 on JDK 11/17/21, ~497 on JDK 25), 0 failures on every lane
-  (verified locally on real JDKs 8/11/17/21/25)
+- `mvn test` green on each LTS JDK — the full reactor suite per lane (984 tests on
+  the JDK 8 lane, 1014 on JDK 11, 1277 on JDK 17, 1391 on JDK 21, 1434 on JDK 25),
+  0 failures on every lane (re-verified locally on real JDKs 8/11/17/21/25,
+  audit 2026-10-21)
   (JDK 8 build uses `-source/-target 8`; JDK 9+ uses `--release 8`).
 - The single shaded CLI jar runs unchanged on Java 8 through 25, reporting the correct
   JVM each time; newer platform classes are skipped gracefully on older JVMs, and the
@@ -262,7 +265,7 @@ Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 - `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
   and the exact remediation: *replace with cortexj-starter-java8*.
 
-~548 automated tests across ~132 test classes: planner synthetic matrices (determinism, hard
+~1434 automated tests across ~202 test classes: planner synthetic matrices (determinism, hard
 constraints, JVM/quality/offline policies, benchmark hints, enterprise policy rules), provider
 TCK (lifecycle, streaming, cancellation, registration, conversion, platform, policy contracts), concurrency/race regression
 suite (double-close, cold-load races, close-during-stream, cancellation - tagged `concurrency`),

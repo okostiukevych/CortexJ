@@ -126,7 +126,13 @@ public final class LoraAdapterGguf {
         }
         List<Entry> entries = new ArrayList<>();
         for (Path file : files) {
-            Matcher matcher = TRAINING_LAYOUT.matcher(file.getFileName().toString());
+            // getFileName() is null for entries without a name (e.g. filesystem roots
+            // surfaced by exotic providers): fail typed naming the path - never guessed
+            java.nio.file.Path fileName = file.getFileName();
+            if (fileName == null) {
+                throw new IOException("adapter entry carries no file name: " + file);
+            }
+            Matcher matcher = TRAINING_LAYOUT.matcher(fileName.toString());
             if (!matcher.matches()) {
                 throw new IOException("adapter file does not follow the training export"
                         + " naming convention (adapter_layers_N_self_attn_q_proj.safetensors): "

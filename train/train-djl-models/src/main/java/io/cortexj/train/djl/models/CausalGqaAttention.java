@@ -76,7 +76,6 @@ final class CausalGqaAttention {
         int kvHeads = config.numKvHeads();
         int headDim = config.headDim();
         int kvHeadDim = config.kvHeadDim();
-        int hidden = config.hiddenSize();
 
         NDArray q = Projections.project(x, wq, bq, qLora, store, training);
         NDArray k = Projections.project(x, wk, bk, kLora, store, training);
