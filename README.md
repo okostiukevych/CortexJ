@@ -225,7 +225,7 @@ by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
 (spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
 GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
 
-Current test matrix: **~202 test classes / ~1434 tests green on JDK 25** (58 gated
+Current test matrix: **~270 test classes / ~1712 tests green on JDK 25** (58 gated
 skips across the live native lanes are loud assumeTrue, never silent; perf-tagged load/fuzz/throughput tests
 run separately with `mvn test -Pperf`); the full 2026-10-01 audit pass (31 issues
 resolved: concurrency refcount races, carrier pinning, executor bounds, download
@@ -281,8 +281,8 @@ mvn clean install
 
 Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 
-- `mvn test` green on each LTS JDK — the full reactor suite per lane (984 tests on
-  the JDK 8 lane, 1014 on JDK 11, 1277 on JDK 17, 1391 on JDK 21, 1434 on JDK 25),
+- `mvn test` green on each LTS JDK — the full reactor suite per lane (1154 tests on
+  the JDK 8 lane, 1184 on JDK 11, 1520 on JDK 17, 1634 on JDK 21, 1712 on JDK 25),
   0 failures on every lane (re-verified locally on real JDKs 8/11/17/21/25,
   audit 2026-10-21)
   (JDK 8 build uses `-source/-target 8`; JDK 9+ uses `--release 8`).
@@ -293,7 +293,7 @@ Multi-JDK verification (executed on real JDKs 8/11/17/21/25):
 - `cortexj-starter-java25` on a Java 8 JVM fails fast with `CORTEXJ-CONF-0002`
   and the exact remediation: *replace with cortexj-starter-java8*.
 
-~1434 automated tests across ~202 test classes: planner synthetic matrices (determinism, hard
+~1712 automated tests across ~270 test classes: planner synthetic matrices (determinism, hard
 constraints, JVM/quality/offline policies, benchmark hints, enterprise policy rules), provider
 TCK (lifecycle, streaming, cancellation, registration, conversion, platform, policy contracts), concurrency/race regression
 suite (double-close, cold-load races, close-during-stream, cancellation - tagged `concurrency`),
