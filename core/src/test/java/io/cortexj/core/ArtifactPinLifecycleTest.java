@@ -246,7 +246,7 @@ class ArtifactPinLifecycleTest {
     @Test
     void localFileArtifactsAreNeverPinned() throws Exception {
         final AtomicReference<String> location = new AtomicReference<String>(
-                "file:" + tempDir.resolve("local/model.bin").toAbsolutePath());
+                tempDir.resolve("local/model.bin").toUri().toString());
         Files.createDirectories(tempDir.resolve("local"));
         Files.write(tempDir.resolve("local/model.bin"), new byte[PAYLOAD_SIZE]);
         DefaultCortexJ platform = (DefaultCortexJ) CortexJ.builder()

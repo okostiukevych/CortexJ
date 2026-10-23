@@ -9,6 +9,11 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # Hosted runners occasionally see connection resets from Maven Central;
+  # retry transient transport failures instead of failing the lane.
+  MAVEN_ARGS: -Dmaven.wagon.http.retryHandler.count=3 -Daether.connector.http.retryHandler.count=3
+
 jobs:
   build:
     name: JDK ${{ matrix.java }} on ${{ matrix.os }}

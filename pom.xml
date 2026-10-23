@@ -29,7 +29,7 @@
        SCM + developers are required on staged artifacts. -->
   <scm>
     <connection>scm:git:https://github.com/okostiukevych/CortexJ.git</connection>
-    <developerConnection>scm:git:ssh://github.com/okostiukevych/CortexJ.git</developerConnection>
+    <developerConnection>scm:git:ssh://git@github.com/okostiukevych/CortexJ.git</developerConnection>
     <url>https://github.com/okostiukevych/CortexJ</url>
   </scm>
 

@@ -37,6 +37,8 @@ public interface ModelReference {
     }
 
     static ModelReference ofFile(String path) {
-        return of("file:" + path);
+        // Path.toUri() produces a valid hierarchical file URI on every platform;
+        // "file:" + path breaks on Windows (backslashes in an opaque URI part).
+        return of(java.nio.file.Paths.get(path).toAbsolutePath().toUri().toString());
     }
 }
