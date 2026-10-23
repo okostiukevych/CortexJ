@@ -1,8 +1,6 @@
-# All CI jobs are GATED for now (if: false) - they show as skipped on every
-# run, never execute, never burn Actions minutes. Re-enable by removing the
-# `if: false` line from each job when a verification pass is needed (see
-# issues #53, #56, #91). CodeQL stays gated in codeql.yml: the repository is
-# private without GitHub Advanced Security, so the SARIF upload would fail.
+# Full verification matrix: five LTS lines on Linux and macOS, Windows smoke
+# lanes, JPMS descriptors, static analysis + coverage, and CPU runtime probes.
+# GPU lanes stay opt-in on self-hosted runners (GPU_RUNNERS_ENABLED).
 
 name: CI
 
@@ -13,7 +11,6 @@ on:
 
 jobs:
   build:
-    if: false
     name: JDK ${{ matrix.java }} on ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,7 +45,6 @@ jobs:
         run: mvn -B clean install
 
   windows:
-    if: false
     name: JDK ${{ matrix.java }} on windows-latest
     strategy:
       fail-fast: false
@@ -73,7 +69,6 @@ jobs:
         run: mvn -B clean install
 
   jpms:
-    if: false
     name: JPMS module descriptors (JDK ${{ matrix.java }})
     strategy:
       fail-fast: false
@@ -97,13 +92,11 @@ jobs:
       - name: Build with module-info
         run: mvn -B clean install -Pjpms
 
-  # Issue #53: quality lane - SpotBugs static analysis (triage in
-  # spotbugs-exclude.xml, findings outside it fail the build) and JaCoCo
-  # coverage report published as a CI artifact. Runs on JDK 21 (SpotBugs
-  # 4.9.8.5 also reads JDK 25 class files, but 21 keeps the lane stable).
+  # Quality lane: SpotBugs (documented triage in spotbugs-exclude.xml;
+  # findings outside it fail the build) and a JaCoCo coverage report
+  # published as a CI artifact. Runs on JDK 21 for a stable toolchain.
   quality:
-    if: false
-    name: Static analysis + coverage (disabled)
+    name: Static analysis + coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -137,7 +130,6 @@ jobs:
   # accelerators; the lanes below are explicitly CPU-only and never silently
   # skip compatibility assertions - provider probes report honestly on any lane.
   cpu-verification:
-    if: false
     name: CPU-only runtime verification
     runs-on: macos-latest
     steps:
@@ -157,7 +149,7 @@ jobs:
       - name: CLI doctor (probes report honestly on CI machines, failures fail the build)
         run: |
           mvn -B clean install -DskipTests
-          java -jar cli/target/cortexj-cli-0.1.0-SNAPSHOT.jar doctor
+          java -jar cli/target/cortexj-cli-*.jar doctor
 
   # GPU test infrastructure is SEPARATE from ordinary CI. The lanes below
   # activate only on self-hosted runners labeled cuda/metal (opt-in via the

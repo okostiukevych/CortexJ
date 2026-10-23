@@ -1,10 +1,4 @@
-# CodeQL is SKIPPED for now (issue: the repository is private and
-# "Code scanning" is not enabled in the repository settings - requires
-# GitHub Advanced Security - so every real run failed at the SARIF upload
-# stage with "Code scanning is not enabled for this repository").
-# The job below never executes (if: false) - it shows as skipped on every
-# run, never red. Re-enable by removing the `if: false` line after enabling
-# code scanning in Settings -> Code security -> Code scanning.
+# CodeQL security analysis: pushes, pull requests and a weekly schedule.
 
 name: CodeQL
 
@@ -18,7 +12,6 @@ on:
 jobs:
   analyze:
     name: Analyze (java)
-    if: false
     runs-on: ubuntu-latest
     permissions:
       security-events: write

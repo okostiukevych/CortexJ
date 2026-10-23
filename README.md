@@ -6,7 +6,7 @@ One JVM API. Compatible models. The best available runtime. Production AI from
 Java 8 to Java 25+, without mandatory Python. From legacy Java 8 applications
 to modern Java 25 systems, across interchangeable local and remote runtimes.
 
-> Long-term direction (spec v3.0 §123.2): **CortexJ — the AI development
+> Long-term direction: **CortexJ — the AI development
 > platform for the JVM, from experimentation to production.** The Runtime
 > below is its first production product and stays standalone: no Lab, Data,
 > Train or research dependencies ever leak into the production path.
@@ -48,17 +48,17 @@ execution path was selected.
 </dependency>
 ```
 
-Starters for **every supported LTS line** (§7.1 of the spec): `cortexj-starter-java8`,
+Starters for **every supported LTS line**: `cortexj-starter-java8`,
 `cortexj-starter-java11`, `cortexj-starter-java17`, `cortexj-starter-java21`,
 `cortexj-starter-java25`. The starter matches your JVM at bootstrap: using a starter
-built for a newer JVM fails fast with an actionable diagnostic (AC-JAVA-004), and the
-business code stays identical across all five (AC-JAVA-003).
+built for a newer JVM fails fast with an actionable diagnostic, and the
+business code stays identical across all five.
 
 ### Spring Boot auto-configuration
 
 `cortexj-spring-boot-starter` (Spring Boot 4.x, Java 17+) wires the platform and an
-auto-loaded `ChatModel` from `cortexj.*` properties; see `docs/spring-ai.md` and
-`docs/tool-calling.md` for tool-loop usage:
+auto-loaded `ChatModel` from `cortexj.*` properties; see the [Spring AI guide](https://okostiukevych.github.io/CortexJ-site/integrations/)
+and the [tool-calling guide](https://okostiukevych.github.io/CortexJ-site/tool-calling/) for tool-loop usage:
 
 ```yaml
 cortexj:
@@ -93,21 +93,21 @@ java -jar cli/target/cortexj-cli-*.jar plan Qwen/Qwen3-8B --runtime llamacpp
 java -jar cli/target/cortexj-cli-*.jar pull Qwen/Qwen3-8B
 java -jar cli/target/cortexj-cli-*.jar run Qwen/Qwen3-8B --prompt "Explain MVCC"
 
-# reproducible deployments (spec 63/91)
+# reproducible deployments
 java -jar cli/target/cortexj-cli-*.jar plan Qwen/Qwen3-8B --lockfile-out release.lock
 java -jar cli/target/cortexj-cli-*.jar run Qwen/Qwen3-8B --lockfile release.lock
 
-# air-gap bundles (spec 62)
+# air-gap bundles
 java -jar cli/target/cortexj-cli-*.jar bundle create Qwen/Qwen3-8B --out ./bundle
 java -jar cli/target/cortexj-cli-*.jar bundle verify ./bundle
 
-# cache management (spec 59, 33.4)
+# cache management
 java -jar cli/target/cortexj-cli-*.jar cache list
 java -jar cli/target/cortexj-cli-*.jar cache clean
 ```
 
-Guides for every supported runtime, adapter and extension point live under `docs/`
-(spec 101/102).
+Guides for every supported runtime, adapter and extension point live on the
+[project site](https://okostiukevych.github.io/CortexJ-site/).
 
 ## Architecture
 
@@ -156,17 +156,17 @@ Layering rules (enforced by module boundaries):
 | `cortexj-runtime-onnx` | ONNX Runtime provider (probe, session load, Hf tokenizer, embeddings) |
 | `cortexj-runtime-llamacpp` | llama.cpp provider: probe, **managed llama-server process bridge** (blocking + SSE execution), honest diagnostics |
 | `cortexj-runtime-djl` | DJL provider (honest engine probe, ONNX embeddings when engine artifacts are added) |
-| `cortexj-runtime-isolated` | Isolated native worker mode (spec 127): child-JVM runtime host for crash isolation, opt-in per runtime |
+| `cortexj-runtime-isolated` | Isolated native worker mode: child-JVM runtime host for crash isolation, opt-in per runtime |
 | `cortexj-worker` | Worker host main: NDJSON stdio protocol bridging a RuntimeProvider inside a child JVM |
 | `cortexj-observability` | OpenTelemetry adapter: platform events to OTel counters/histograms/spans |
 | `cortexj-streaming-flow` | Java `Flow.Publisher` streaming adapter (Java 11+) |
 | `cortexj-convert-gguf` | Deterministic GGUF F32↔F16 converter (Level C, provenance manifests) |
 | `cortexj-convert-safetensors` | Deterministic Safetensors→GGUF re-containerization (config.json metadata, Level C) |
-| `cortexj-declarative` | Declarative interface API: `@ModelPrompt` + dynamic proxy, `JsonPromptDecoder` (spec 49) |
-| `cortexj-server` | Optional OpenAI-compatible embedded server (spec 60) |
-| `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification (spec 93/94) |
-| `cortexj-examples` | Compilable spec examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin (spec 78-84) |
-| `cortexj-examples-spring-ai` | Spring AI bean wiring example (spec 83, Java 17+) |
+| `cortexj-declarative` | Declarative interface API: `@ModelPrompt` + dynamic proxy, `JsonPromptDecoder` |
+| `cortexj-server` | Optional OpenAI-compatible embedded server |
+| `cortexj-maven-plugin` | `cortexj:verify` build-time deployment verification |
+| `cortexj-examples` | Compilable examples: Java 8 legacy app, plan-before-execution, explicit ONNX, third-party runtime plugin |
+| `cortexj-examples-spring-ai` | Spring AI bean wiring example (Java 17+) |
 | `integrations/spring-ai` | Spring AI 2.0.x adapter: `ChatModel` (call + stream + tool loop), `StreamingChatModel`, `EmbeddingModel`, full message/options/usage mapping (Java 17+) |
 | `starters/spring-boot` | Spring Boot 4.x auto-configuration: `cortexj.*` properties -> platform + `ChatModel` beans, user-overridable (Java 17+) |
 | `integrations/langchain4j` | LangChain4j adapter: `ChatModel`, `StreamingChatModel`, `EmbeddingModel` (Java 17+) |
@@ -175,95 +175,55 @@ Layering rules (enforced by module boundaries):
 | `cortexj-tck` | Technology compatibility kit for runtime/repository providers |
 | `cortexj-cli` | `doctor / runtimes / hardware / inspect / plan / pull / run / server / convert / cache list,clean / bundle create,verify` |
 
-## Status (milestones from the spec)
+## Status
 
-- **M0** — architecture skeleton, API/SPI, module boundaries: done
-- **M1** — model resolution (local + Hugging Face), cache, immutable revisions: done
-- **M4** — execution planner: candidates, hard constraints, scoring, memory estimates,
-  explainable deterministic plans: done
-- **M2** — runtime SPI registry, core platform, OpenAI-compatible remote provider: done
-- **M3** — ONNX provider (probe/load/tokenizer/embeddings); llama.cpp provider with
-  probe + actionable diagnostics and **real local execution** via the managed
-  llama-server process bridge
-- **M5** — platform modules for Java 8/11/17/21/25 + starters for all five LTS lines with
-  wrong-JVM detection
-- **M6** — legacy support: verified by building and testing the full shared core on real
-  JDK 8 and JDK 11 (M6 acceptance: starter-java8/java11 present, the full shared
-  core suite green on both)
-- **M7** — production integration: `ModelLockfile` (PINNED_MODEL/PINNED_PLAN enforcement,
-  `--lockfile-out`/`--lockfile` CLI flags), air-gap bundles (`cortexj bundle create/verify`,
-  sha256 manifests, verified offline re-resolution), OpenTelemetry adapter
-  (`cortexj-observability`), Spring AI adapter, LangChain4j adapter
-- **M8** — extended runtimes: DJL provider (`cortexj-runtime-djl`, honest probe — engine
-  artifacts stay optional per the spec); JInfer verified **absent from Maven Central**
-  (spec DoD §107.5 explicitly requires MVP to work without JInfer — no adapter is possible
-  against a non-published artifact); OpenAI-compatible remote provider covers vendor endpoints
-- **M9** — conversion subsystem (spec §31 Level C, §32): `ConversionStep` in candidates,
-  planner proposes deterministic conversions when no direct artifact is viable, core
-  materializes conversions into the cache with a provenance manifest (§32.4), original
-  artifacts stay immutable; production converters ship: `cortexj-convert-gguf`
-  (deterministic F32↔F16, `cortexj convert` CLI) and `cortexj-convert-safetensors`
-  (Safetensors→GGUF re-containerization with config.json metadata — verified end-to-end
-  through Level C planning); multimodal/task planning (§47): a runtime must support at
-  least one task the model offers; spec 78-84 examples are compilable
-  (`cortexj-examples`); declarative API ships (`cortexj-declarative`)
-- **M10** — future track pulled forward: **enterprise runtime policy** (§128,
-  `enterprise-policy.properties` auto-applied: forbid runtimes/downloads/licenses/
-  unverified artifacts/GPU/remote execution), **benchmark-aware planner hints** (§126,
-  `benchmarks.properties` — deterministic bounded scoring, no learning), **isolated
-  native worker** (§127, `cortexj-runtime-isolated` + `cortexj-worker`: child-JVM
-  runtime host with crash isolation, public API unchanged)
+CortexJ **1.0.0-RC1** is feature-complete for the runtime track: model
+resolution, planning, execution, caching, conversion, observability and the
+integration adapters are implemented and tested. The remaining step is the
+Maven Central publication itself; coordinates, licensing, packaging and the
+release pipeline are ready.
 
-Full spec-conformance passes additionally delivered: cache eviction policies
-(pinned/age-cap/manual + `cache list/clean` CLI), trust policies (TRUSTED_ONLY /
-ALLOW_UNSIGNED_WITH_WARNING / CUSTOM, spec 35.2), a plain HTTP repository provider
-(spec 14.3), the Java Flow streaming adapter (spec 37.3), duration/token metrics
-(PLAN_CREATED / DOWNLOAD_COMPLETED / INFERENCE_COMPLETED + first-token latency and
-queue wait, surfaced through the OTel histogram, spec 57.1), download resume
-(HTTP Range), cancellation and proxy support (spec 34), the documentation set required
-by spec 101/102 under `docs/`, API stability tiers + japicmp `compat` profile
-(spec 73/74), the formal security review record (§108.12, `docs/security-review.md`),
-GPU self-hosted CI lanes (§70) and GraalVM compatibility notes (§96).
+**Delivered**
 
-Current test matrix: **~270 test classes / ~1712 tests green on JDK 25** (58 gated
-skips across the live native lanes are loud assumeTrue, never silent; perf-tagged load/fuzz/throughput tests
-run separately with `mvn test -Pperf`); the full 2026-10-01 audit pass (31 issues
-resolved: concurrency refcount races, carrier pinning, executor bounds, download
-caps/retry/resume validation, parser hardening, server hardening, pinned in-use
-artifacts), the full 2026-10-05 audit pass (issues #89-#128), the 2026-10-07
-follow-up (issues #139-#148) and the 2026-10-08 re-audit (issues #149-#153) are
-regression-tested. GitHub Actions lanes (JDK 8/11/17/21/25 on
-ubuntu/macos/windows, JPMS lanes via `mvn -Pjpms`, SpotBugs + JaCoCo
-coverage lanes per issue #53, gated self-hosted GPU lanes per spec 70) are
-prepared and gated (`if: false`) to conserve Actions minutes - enable a lane
-to verify, disable it again after the run. CodeQL is prepared but gated until
-GitHub Advanced Security is enabled for this private repository. Local full
-verification: `mvn test` green on real JDKs 8/11/17/21/25, `mvn verify
--Pspotbugs` clean, `mvn verify -Pcompat` skips cleanly.
+- Model resolution: local filesystem and Hugging Face repositories, immutable
+  revisions, checksum-verified cache, offline mode, air-gap bundles.
+- Execution planner: deterministic candidates, hard constraints, explainable
+  scoring, memory estimates, benchmark hints and enterprise runtime policy.
+- Runtimes: ONNX Runtime (probe/load/tokenizer/embeddings), llama.cpp with a
+  managed `llama-server` process bridge (blocking + SSE streaming), DJL
+  (honest engine probe), OpenAI-compatible remote endpoints, and an isolated
+  child-JVM native worker for crash containment.
+- Production surface: lockfiles, conversion subsystem (GGUF F32/F16,
+  Safetensors to GGUF), OpenTelemetry adapter, embedded OpenAI-compatible
+  server, Maven plugin, CLI, Spring AI 2.0.x and LangChain4j 1.22.x adapters,
+  and a Spring Boot 4.x starter.
+- Five LTS platform modules (Java 8/11/17/21/25) with wrong-JVM detection and
+  an identical API surface across all of them.
 
-llama.cpp execution is real: the provider manages a `llama-server` process (health
-polling, blocking + SSE streaming, graceful shutdown incl. destroyForcibly escalation
-and orphan-free teardown on Ctrl+C/close/failure) when
-`CORTEXJ_LLAMACPP_SERVER` points at the binary (verified 2026-09-30: issues #14, #15, #29). §95 JPMS is implemented as the
-`jpms` build profile (multi-release module-info jars, verified with
-`jar --describe-module`); §60 server mode ships as `cortexj-server` +
-`cortexj server` CLI; §93/94 ship as `cortexj-maven-plugin` (`cortexj:verify`).
+**Verification**
 
-Everything required by the spec's v1.0 scope (§105) and DoD (§107/108) is implemented,
-and the three locally-tractable future items are pulled forward (M10): enterprise
-runtime policy (§128), benchmark-aware planner hints (§126), isolated native worker
-mode (§127). Remaining items are only what the spec itself marks as impossible,
-optional, or future: JInfer ran without the artifact at spec time - it is now published
-on Maven Central (`com.qxotic:jinfer-chat` 0.3.1, last update 2026-10-07) and the Java 25
-lane consumes it as the optional runtime provider (§107.5's MVP-without-it requirement
-still holds: the platform does not depend on it), GPU CI lanes (require self-hosted
-CUDA/Metal runners — prepared and gated), server multimodal endpoints (§60 "future"),
-and the `cortexj-declarative` evolution beyond prompt+validation (§48/§49).
-Before a public 1.0 release: Maven Central publishing
-(profile + procedure ready in `docs/releasing.md`; account/namespace and GPG key
-are the only external prerequisites), the API stability freeze process
-(§73/74 — tiers documented, `compat` profile ready), and a signed-off production
-security review cycle on top of the recorded one.
+- Real-JDK test matrix: JDK 8 (1154 tests), 11 (1184), 17 (1520), 21 (1634),
+  25 (1712) - all green. Gated native-runtime skips are loud `assumeTrue`
+  assertions, never silent passes.
+- JDK 25 additionally runs SpotBugs (`mvn verify -Pspotbugs`) with zero
+  findings outside the documented excludes.
+- Perf-tagged suites (load, throughput, contention, wide-matrix planning) run
+  separately with `mvn test -Pperf`.
+- GitHub Actions: JDK 8/11/17/21/25 on Linux and macOS, Windows smoke lanes,
+  JPMS lanes, SpotBugs + JaCoCo, and CodeQL. GPU lanes are opt-in on
+  self-hosted CUDA/Metal runners.
+- The `compat` profile is ready for japicmp gating once the first public
+  release exists as a baseline.
+
+**Known limitations**
+
+- llama.cpp and the embedded server currently report tool-call finish reasons
+  without executing the tool loop; the OpenAI-compatible remote runtime and
+  the Spring AI adapter provide the full tool-calling contract.
+- Tool-call streaming through the llama.cpp bridge is partial.
+- DJL engine artifacts and the optional JInfer runtime are not bundled;
+  providers report their absence honestly.
+- GPU execution paths require hardware that is not available on hosted CI.
 
 ## Build
 
