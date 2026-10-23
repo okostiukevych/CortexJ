@@ -8,7 +8,7 @@ import io.cortexj.model.ModelHandle;
 import io.cortexj.model.ModelReference;
 
 /**
- * Spec 78 — Java 8 legacy application.
+ * Java 8 legacy application.
  *
  * <p>Possible execution (chosen by the planner, not the caller): Java 8 → ONNX Runtime
  * provider → CPU; or Java 8 → llama.cpp via the managed llama-server bridge. JInfer is

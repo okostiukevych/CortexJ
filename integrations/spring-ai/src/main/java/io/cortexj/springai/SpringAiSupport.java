@@ -14,7 +14,7 @@ import org.springframework.ai.chat.model.ChatModel;
  * Spring AI 1.x reached EOL together with Spring Boot 3.x (June 30, 2026) and is
  * not supported: no fixes, no test lane. Instead of letting a 1.x classpath fail
  * late with an obscure {@code NoSuchMethodError}, the chat adapters fail fast at
- * construction with an actionable diagnostic (AC-JAVA-004 convention).</p>
+ * construction with an actionable diagnostic naming the required minimum version.</p>
  *
  * <p>The probe is the presence of {@link ChatModel#getOptions()} on the
  * {@code ChatModel} interface the JVM actually loaded - it exists since 2.0.0

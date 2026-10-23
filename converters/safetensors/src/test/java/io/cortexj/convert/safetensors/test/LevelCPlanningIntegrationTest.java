@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spec 31 Level C with a production converter: a safetensors-only model plus a
+ * Level C with a production converter: a safetensors-only model plus a
  * GGUF-only runtime is only executable through the registered deterministic
  * conversion - and the planner says so.
  */

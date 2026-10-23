@@ -11,7 +11,7 @@
   </parent>
   <artifactId>cortexj-worker</artifactId>
   <name>CortexJ Isolated Worker Host</name>
-  <description>Child-JVM host for isolated native execution (spec 127): hosts one RuntimeProvider behind a newline-delimited JSON protocol on stdin/stdout.</description>
+  <description>Child-JVM host for isolated native execution: hosts one RuntimeProvider behind a newline-delimited JSON protocol on stdin/stdout.</description>
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>

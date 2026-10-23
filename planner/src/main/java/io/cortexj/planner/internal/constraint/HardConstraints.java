@@ -31,7 +31,7 @@ public final class HardConstraints {
     }
 
     /**
-     * Spec 47 / M9 multimodal planning: a runtime is only a candidate for a model
+     * Multimodal planning: a runtime is only a candidate for a model
      * when it supports at least one task (or input modality) the model actually
      * offers - an embedding-only runtime must never win a text-generation model.
      */

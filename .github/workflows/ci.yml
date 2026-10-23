@@ -94,7 +94,7 @@ jobs:
           key: jpms-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ubuntu-latest-maven-
-      - name: Build with module-info (spec 95)
+      - name: Build with module-info
         run: mvn -B clean install -Pjpms
 
   # Issue #53: quality lane - SpotBugs static analysis (triage in
@@ -132,13 +132,13 @@ jobs:
             **/target/site/jacoco/
           retention-days: 14
 
-  # Spec 70: GPU test infrastructure is SEPARATE from ordinary CI.
+  # GPU test infrastructure is SEPARATE from ordinary CI.
   # CUDA and Metal lanes require self-hosted runners with the corresponding
   # accelerators; the lanes below are explicitly CPU-only and never silently
   # skip compatibility assertions - provider probes report honestly on any lane.
   cpu-verification:
     if: false
-    name: CPU-only runtime verification (spec 70)
+    name: CPU-only runtime verification
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -159,15 +159,15 @@ jobs:
           mvn -B clean install -DskipTests
           java -jar cli/target/cortexj-cli-0.1.0-SNAPSHOT.jar doctor
 
-  # Spec 70: GPU test infrastructure is SEPARATE from ordinary CI. The lanes below
+  # GPU test infrastructure is SEPARATE from ordinary CI. The lanes below
   # activate only on self-hosted runners labeled cuda/metal (opt-in via the
   # GPU_RUNNERS_ENABLED repository variable) - they never run on hosted runners and
-  # never silently skip compatibility assertions. Profiles per spec 70:
+  # never silently skip compatibility assertions. Profiles:
   #   NVIDIA CUDA -> runners labeled "cuda" (ubuntu + NVIDIA driver)
   #   Apple Metal -> runners labeled "metal" (macos + Apple Silicon)
   #   CPU-only    -> the dedicated cpu-verification lane above
   gpu-cuda:
-    name: GPU CUDA lane (spec 70, self-hosted)
+    name: GPU CUDA lane (self-hosted)
     if: ${{ vars.GPU_RUNNERS_ENABLED == 'true' }}
     runs-on: [self-hosted, cuda]
     steps:
@@ -181,7 +181,7 @@ jobs:
         run: mvn -B clean install
 
   gpu-metal:
-    name: GPU Metal lane (spec 70, self-hosted)
+    name: GPU Metal lane (self-hosted)
     if: ${{ vars.GPU_RUNNERS_ENABLED == 'true' }}
     runs-on: [self-hosted, metal]
     steps:

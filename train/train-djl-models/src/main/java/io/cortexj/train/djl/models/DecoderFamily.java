@@ -8,7 +8,7 @@ import java.util.Map;
  * Supported decoder families. Knobs absent from config.json (attention
  * bias, QK-norm) live in the preset, keyed by the config.json
  * "architectures" value; unknown families fail typed listing the
- * supported ones (spec 140.4: no fake compatibility).
+ * supported ones (no fake compatibility).
  */
 public enum DecoderFamily {
 

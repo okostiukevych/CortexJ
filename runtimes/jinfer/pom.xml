@@ -11,7 +11,7 @@
   </parent>
   <artifactId>cortexj-runtime-jinfer</artifactId>
   <name>CortexJ Runtime JInfer</name>
-  <description>Optional Java 25+ RuntimeProvider over Quixotic JInfer (issue #160). Core never depends on this module.</description>
+  <description>Optional Java 25+ RuntimeProvider over Quixotic JInfer. Core never depends on this module.</description>
   <properties>
     <!-- JInfer 0.3.1 targets Java 25 and needs the incubator Vector API
          plus native access at runtime -->

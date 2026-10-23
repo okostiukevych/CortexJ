@@ -11,7 +11,7 @@
   </parent>
   <artifactId>cortexj-runtime-isolated</artifactId>
   <name>CortexJ Runtime Isolated Worker</name>
-  <description>Parent-side runtime provider that executes a target runtime in an isolated worker child JVM (spec 127, issue #88). Opt-in only: never auto-registered via ServiceLoader.</description>
+  <description>Parent-side runtime provider that executes a target runtime in an isolated worker child JVM. Opt-in only: never auto-registered via ServiceLoader.</description>
   <dependencies>
     <dependency>
       <groupId>io.cortexj</groupId>

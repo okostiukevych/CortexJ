@@ -8,7 +8,7 @@ import io.cortexj.runtime.DeviceType;
 import io.cortexj.runtime.RuntimeDescriptor;
 
 /**
- * Spec 126: locally supplied benchmark hints as an additional deterministic
+ * Locally supplied benchmark hints as an additional deterministic
  * scoring factor. All adjustments are normalized against the file's own
  * extremes (max throughput / min latency / min memory), so the same file
  * always produces the same plan - no learning, no runtime mutation.

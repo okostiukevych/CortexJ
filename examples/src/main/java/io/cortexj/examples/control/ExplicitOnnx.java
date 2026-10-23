@@ -6,7 +6,7 @@ import io.cortexj.model.ModelReference;
 import io.cortexj.planner.ExecutionRequest;
 
 /**
- * Spec 81 — explicit ONNX requirement.
+ * Explicit ONNX requirement.
  *
  * <p>When the ONNX path is impossible the platform returns an actionable
  * {@code PlanningException}; it never silently falls back to another runtime.</p>

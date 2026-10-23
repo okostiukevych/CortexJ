@@ -4,7 +4,7 @@ import io.cortexj.CortexJ;
 import io.cortexj.springai.CortexJChatModel;
 
 /**
- * Spec 83 — Spring AI integration.
+ * Spring AI integration.
  *
  * <p>In a Spring context the adapter is simply a bean; business services keep using the
  * Spring AI API and never touch CortexJ directly:</p>

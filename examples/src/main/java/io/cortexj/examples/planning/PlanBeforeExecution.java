@@ -6,7 +6,7 @@ import io.cortexj.planner.ExecutionPlan;
 import io.cortexj.planner.ExecutionRequest;
 
 /**
- * Spec 82 — plan before execution: one of the main UX scenarios.
+ * Plan before execution: one of the main UX scenarios.
  */
 public final class PlanBeforeExecution {
 

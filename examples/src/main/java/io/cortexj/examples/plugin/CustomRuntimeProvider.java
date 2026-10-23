@@ -18,7 +18,7 @@ import io.cortexj.spi.runtime.RuntimeSupport;
 import java.util.Collections;
 
 /**
- * Spec 84 — runtime plugin implementation: a third-party provider registers via
+ * Runtime plugin implementation: a third-party provider registers via
  * ServiceLoader (see META-INF/services in this module) and requires no core changes.
  */
 public final class CustomRuntimeProvider implements RuntimeProvider {
