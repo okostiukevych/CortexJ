@@ -46,6 +46,18 @@
           <argLine>--add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED</argLine>
         </configuration>
       </plugin>
+      <!-- -Prelease attaches a javadoc jar: the doclet needs the incubator
+           module on its own module graph, same as the compiler uses -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <configuration>
+          <additionalJOptions>
+            <additionalJOption>--add-modules</additionalJOption>
+            <additionalJOption>jdk.incubator.vector</additionalJOption>
+          </additionalJOptions>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 </project>

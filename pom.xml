@@ -23,6 +23,26 @@
     </license>
   </licenses>
 
+  <url>https://github.com/okostiukevych/CortexJ</url>
+
+  <!-- Central publication metadata (validated by the release profile):
+       SCM + developers are required on staged artifacts. -->
+  <scm>
+    <connection>scm:git:https://github.com/okostiukevych/CortexJ.git</connection>
+    <developerConnection>scm:git:ssh://github.com/okostiukevych/CortexJ.git</developerConnection>
+    <url>https://github.com/okostiukevych/CortexJ</url>
+  </scm>
+
+  <developers>
+    <developer>
+      <id>okostiukevych</id>
+      <name>okostiukevych</name>
+      <url>https://github.com/okostiukevych</url>
+      <organization>CortexJ</organization>
+      <organizationUrl>https://github.com/okostiukevych/CortexJ</organizationUrl>
+    </developer>
+  </developers>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
@@ -52,6 +72,9 @@
     <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
     <maven-jar-plugin.version>3.4.1</maven-jar-plugin.version>
     <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+    <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+    <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
+    <central-publishing-plugin.version>0.12.0</central-publishing-plugin.version>
   </properties>
 
   <modules>
@@ -344,6 +367,83 @@
               </goals>
             </execution>
           </executions>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
+
+  <!-- Maven Central publication (explicit: -Prelease).
+       Attaches sources + javadoc jars, signs them (GPG), and hands the
+       bundle to the Central portal. Normal builds are unaffected.
+       Prerequisites: OSSRH account with the io.cortexj namespace verified,
+       a GPG key published to a keyserver, and server credentials in
+       ~/.m2/settings.xml under the id 'central':
+         <server><id>central</id><username>TOKEN-USER</username>
+                 <password>TOKEN</password></server>
+       Full procedure: docs/releasing.md -->
+  <profile>
+    <id>release</id>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>${maven-source-plugin.version}</version>
+          <executions>
+            <execution>
+              <id>attach-sources</id>
+              <goals>
+                <goal>jar-no-fork</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>${maven-javadoc-plugin.version}</version>
+          <configuration>
+            <!-- javadoc links must target the artifact's own language level,
+                 never the building JDK -->
+            <release>${cortexj.shared.release}</release>
+            <doclint>-missing</doclint>
+            <quiet>true</quiet>
+          </configuration>
+          <executions>
+            <execution>
+              <id>attach-javadoc</id>
+              <goals>
+                <goal>jar</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-gpg-plugin</artifactId>
+          <version>${maven-gpg-plugin.version}</version>
+          <executions>
+            <execution>
+              <id>sign-artifacts</id>
+              <phase>verify</phase>
+              <goals>
+                <goal>sign</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.sonatype.central</groupId>
+          <artifactId>central-publishing-maven-plugin</artifactId>
+          <version>${central-publishing-plugin.version}</version>
+          <extensions>true</extensions>
+          <configuration>
+            <publishingServerId>central</publishingServerId>
+            <!-- first releases land in the portal waiting room: a human
+                 reviews and hits publish; never auto-release unattended -->
+            <autoPublish>false</autoPublish>
+            <waitUntil>validated</waitUntil>
+          </configuration>
         </plugin>
       </plugins>
     </build>

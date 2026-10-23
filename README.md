@@ -259,9 +259,11 @@ lane consumes it as the optional runtime provider (§107.5's MVP-without-it requ
 still holds: the platform does not depend on it), GPU CI lanes (require self-hosted
 CUDA/Metal runners — prepared and gated), server multimodal endpoints (§60 "future"),
 and the `cortexj-declarative` evolution beyond prompt+validation (§48/§49).
-Before a public 1.0 release: Maven Central publishing,
-the API stability freeze process (§73/74 — tiers documented, `compat` profile ready),
-and a signed-off production security review cycle on top of the recorded one.
+Before a public 1.0 release: Maven Central publishing
+(profile + procedure ready in `docs/releasing.md`; account/namespace and GPG key
+are the only external prerequisites), the API stability freeze process
+(§73/74 — tiers documented, `compat` profile ready), and a signed-off production
+security review cycle on top of the recorded one.
 
 ## Build
 
