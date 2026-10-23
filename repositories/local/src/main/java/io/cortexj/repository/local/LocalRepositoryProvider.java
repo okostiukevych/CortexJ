@@ -92,12 +92,24 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
 
     private Path toPath(ModelReference reference) {
         String value = reference.value();
-        String raw = value.startsWith("file:") ? value.substring("file:".length()) : value;
-        if (raw.startsWith("~")) {
-            String home = System.getProperty("user.home", ".");
-            raw = home + raw.substring(1);
+        if (value.startsWith("file:")) {
+            try {
+                URI uri = URI.create(value);
+                if ("file".equalsIgnoreCase(uri.getScheme()) && !uri.isOpaque()) {
+                    // file:///C:/... and file:/tmp/... carry the path in the URI itself;
+                    // stripping the scheme would leave ///C:/... (invalid on Windows)
+                    return Paths.get(uri).toAbsolutePath().normalize();
+                }
+            } catch (IllegalArgumentException legacyForm) {
+                // fall through: old "file:C:\..." and "file:relative" forms
+            }
+            value = value.substring("file:".length());
         }
-        return Paths.get(raw).toAbsolutePath().normalize();
+        if (value.startsWith("~")) {
+            String home = System.getProperty("user.home", ".");
+            value = home + value.substring(1);
+        }
+        return Paths.get(value).toAbsolutePath().normalize();
     }
 
     private ResolvedModel resolveDirectory(ModelReference reference, Path directory) {
