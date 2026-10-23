@@ -15,7 +15,7 @@
     <cortexj.shared.release>17</cortexj.shared.release>
     <!-- Spring AI 2.0.x line: Spring Boot 4 / Framework 7 / Jackson 3 baseline.
          The 1.0.x line is EOL together with Spring Boot 3.x (June 30, 2026). -->
-    <spring-ai.version>2.0.1</spring-ai.version>
+    <spring-ai.version>2.0.2</spring-ai.version>
   </properties>
   <dependencies>
     <dependency>

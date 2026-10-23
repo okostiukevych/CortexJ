@@ -16,7 +16,7 @@
   <properties>
     <!-- Spring 7 / Boot 4 generation: the same baseline Spring AI 2.0.x targets -->
     <cortexj.shared.release>17</cortexj.shared.release>
-    <spring-boot.version>4.1.1</spring-boot.version>
+    <spring-boot.version>4.1.2</spring-boot.version>
   </properties>
 
   <dependencies>
