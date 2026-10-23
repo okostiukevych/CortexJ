@@ -12,6 +12,17 @@
   <name>CortexJ Parent</name>
   <description>CortexJ - AI runtime orchestration and model portability platform for the JVM</description>
 
+  <!-- Central publication requires license metadata on every artifact; the
+       parent declaration is inherited by all modules (LICENSE file at the
+       repository root carries the Apache License 2.0 text). -->
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
