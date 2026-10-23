@@ -624,7 +624,18 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 fn.put("description", tool.description());
                 if (!tool.parametersJson().isEmpty()) {
                     // the schema is JSON on the wire: parse it, never re-serialize as a string
-                    fn.put("parameters", client.fromJson(tool.parametersJson(), com.fasterxml.jackson.databind.JsonNode.class));
+                    try {
+                        fn.put("parameters", client.fromJson(tool.parametersJson(),
+                                com.fasterxml.jackson.databind.JsonNode.class));
+                    } catch (IllegalArgumentException malformedSchema) {
+                        // caller-side typo: fail with the tool named and the field
+                        // to fix, not with a response-flavored message
+                        throw new InferenceException(ErrorCode.CONF_INVALID,
+                                "tool schema for '" + tool.name() + "' is not a valid JSON document",
+                                "Fix the ToolDefinition parametersJson: it must be a valid JSON "
+                                        + "document, e.g. {\\\"type\\\":\\\"object\\\"} - the provider "
+                                        + "sends it to the endpoint verbatim as the argument schema.");
+                    }
                 }
                 Map<String, Object> wire = new LinkedHashMap<String, Object>();
                 wire.put("type", "function");

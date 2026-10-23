@@ -282,4 +282,31 @@ class RemoteToolCallTest {
             model.close();
         }
     }
+
+    @Test
+    void malformedToolSchemaFailsTypedNamingTheTool() {
+        // the schema travels as a JSON document: a caller typo must surface as
+        // a typed CORTEXJ- error naming the tool and the field to fix, never
+        // as a response-flavored untyped failure
+        RuntimeModel model = loadModel();
+        try {
+            io.cortexj.inference.TextGenerationCapability generator =
+                    (io.cortexj.inference.TextGenerationCapability) model;
+            io.cortexj.error.CortexJException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    io.cortexj.error.CortexJException.class,
+                    () -> generator.generate(GenerationRequest.builder()
+                            .prompt("weather?")
+                            .tool(ToolDefinition.function("get_weather", "", "{not a schema"))
+                            .build()));
+            assertTrue(failure.code().startsWith("CORTEXJ-"),
+                    "the failure must carry a CORTEXJ- code: " + failure.code());
+            assertTrue(failure.getMessage().contains("get_weather"),
+                    "the message must name the offending tool: " + failure.getMessage());
+            assertTrue(failure.getMessage().contains("schema"),
+                    "the message must say what is wrong: " + failure.getMessage());
+            assertTrue(failure.remediation() != null && !failure.remediation().isEmpty());
+        } finally {
+            model.close();
+        }
+    }
 }
