@@ -103,7 +103,7 @@ jobs:
   # 4.9.8.5 also reads JDK 25 class files, but 21 keeps the lane stable).
   quality:
     if: false
-    name: Static analysis + coverage (issue #53)
+    name: Static analysis + coverage (disabled)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
