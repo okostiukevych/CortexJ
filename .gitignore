@@ -1,3 +1,8 @@
+# Internal documentation - not part of the public repository.
+# README.md and SECURITY.md stay public; everything else is development-only.
+/docs/
+/cortexj-technical-spec-*.md
+
 target/
 *.class
 *.jar
