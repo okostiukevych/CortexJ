@@ -1,9 +1,16 @@
 # JitPack build configuration.
 # Builds the full multi-module reactor on JDK 25 (the highest LTS line the
 # project targets) and installs sources/javadoc alongside the binaries.
+# The container's default Maven is too old for maven-source/javadoc-plugin,
+# so a current Maven is installed through SDKMAN first.
 # Consumers use com.github.okostiukevych.CortexJ:<artifact>:<tag>.
 jdk:
   - openjdk25
+
+before_install:
+  - sdk install maven 3.9.9
+  - sdk use maven 3.9.9
+  - mvn -v | head -3
 
 install:
   - mvn -B install -DskipTests -Ppages
