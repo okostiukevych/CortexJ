@@ -1,0 +1,9 @@
+# JitPack build configuration.
+# Builds the full multi-module reactor on JDK 25 (the highest LTS line the
+# project targets) and installs sources/javadoc alongside the binaries.
+# Consumers use com.github.okostiukevych.CortexJ:<artifact>:<tag>.
+jdk:
+  - openjdk25
+
+install:
+  - mvn -B install -DskipTests -Ppages

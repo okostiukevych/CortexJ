@@ -11,6 +11,7 @@ import org.apache.parquet.example.data.simple.SimpleGroupFactory;
 import org.apache.parquet.hadoop.example.ExampleParquetWriter;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -21,6 +22,18 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ParquetDeterminismTest {
+
+    @BeforeAll
+    static void pointHadoopHome() throws Exception {
+        // parquet-mr on Windows resolves even local file paths through Hadoop
+        // Shell, which throws FileNotFoundException("HADOOP_HOME and
+        // hadoop.home.dir are unset") before any byte is written. Pointing the
+        // property at an existing (empty) home silences the native lookup —
+        // winutils is genuinely absent, so no native behaviour is used.
+        Path home = Files.createTempDirectory("cortexj-hadoop-home");
+        Files.createDirectories(home.resolve("bin"));
+        System.setProperty("hadoop.home.dir", home.toAbsolutePath().toString());
+    }
 
     private static final MessageType SCHEMA = MessageTypeParser.parseMessageType(
             "message reviews {"

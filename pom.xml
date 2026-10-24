@@ -438,7 +438,7 @@
           <version>${central-publishing-plugin.version}</version>
           <extensions>true</extensions>
           <configuration>
-            <publishingServerId>central</publishingServerId>
+            <publishingServerId>cortexj-central</publishingServerId>
             <!-- first releases land in the portal waiting room: a human
                  reviews and hits publish; never auto-release unattended -->
             <autoPublish>false</autoPublish>
@@ -447,6 +447,60 @@
         </plugin>
       </plugins>
     </build>
+  </profile>
+
+  <!-- Static Maven repository for GitHub Pages. Produces the same artifacts as
+       a Central release (sources + javadoc) without GPG or portal validation:
+         mvn clean deploy -Ppages -DskipTests
+       writes a complete Maven layout to target/pages-repo, published to the
+       CortexJ-maven repository. Override the location with
+       -Dcortexj.pages.repo=/absolute/path if needed. -->
+  <profile>
+    <id>pages</id>
+    <properties>
+      <cortexj.pages.repo>${maven.multiModuleProjectDirectory}/target/pages-repo</cortexj.pages.repo>
+    </properties>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>${maven-source-plugin.version}</version>
+          <executions>
+            <execution>
+              <id>attach-sources</id>
+              <goals>
+                <goal>jar-no-fork</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>${maven-javadoc-plugin.version}</version>
+          <configuration>
+            <release>${cortexj.shared.release}</release>
+            <doclint>-missing</doclint>
+            <quiet>true</quiet>
+          </configuration>
+          <executions>
+            <execution>
+              <id>attach-javadoc</id>
+              <goals>
+                <goal>jar</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </build>
+    <distributionManagement>
+      <repository>
+        <id>cortexj-pages</id>
+        <url>file://${cortexj.pages.repo}</url>
+      </repository>
+    </distributionManagement>
   </profile>
 </profiles>
 
