@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CortexJ Maven Repository</title>
+<meta name="description" content="Static Maven repository for CortexJ artifacts, built from the 1.0.0-RC1 release.">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 3rem 1.5rem; background: #0d1117; color: #e6edf3;
+         font: 16px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.05rem; margin: 2rem 0 .5rem; color: #f0a848; text-transform: uppercase;
+       letter-spacing: .08em; }
+  p, li { color: #c9d1d9; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background: #161b22; border: 1px solid #2d333b; border-radius: 8px;
+        padding: 1rem; overflow-x: auto; font-size: .86rem; }
+  .muted { color: #8b949e; font-size: .9rem; }
+  .grid { border: 1px solid #2d333b; border-radius: 8px; padding: .9rem 1.1rem;
+          margin: 1.2rem 0; background: #161b22; }
+</style>
+</head>
+<body>
+<main>
+  <h1>CortexJ Maven Repository</h1>
+  <p class="muted">Static Maven repository for CortexJ &mdash; portable AI execution for the JVM.</p>
+
+  <h2>Use it</h2>
+  <div class="grid">
+  <pre><code>&lt;repositories&gt;
+    &lt;repository&gt;
+        &lt;id&gt;cortexj&lt;/id&gt;
+        &lt;url&gt;https://okostiukevych.github.io/CortexJ-maven/&lt;/url&gt;
+    &lt;/repository&gt;
+&lt;/repositories&gt;
+
+&lt;dependencyManagement&gt;
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;io.cortexj&lt;/groupId&gt;
+            &lt;artifactId&gt;cortexj-bom&lt;/artifactId&gt;
+            &lt;version&gt;1.0.0-RC1&lt;/version&gt;
+            &lt;type&gt;pom&lt;/type&gt;
+            &lt;scope&gt;import&lt;/scope&gt;
+        &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+&lt;/dependencyManagement&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;io.cortexj&lt;/groupId&gt;
+    &lt;artifactId&gt;cortexj-starter-java21&lt;/artifactId&gt;
+&lt;/dependency&gt;</code></pre>
+  </div>
+
+  <h2>What is published</h2>
+  <p>Version <code>1.0.0-RC1</code>: 77 modules (starters for Java 8, 11, 17, 21, 25;
+     core, repositories, runtimes, Spring Boot starter, CLI and more), each with
+     binary, <code>-sources</code> and <code>-javadoc</code> jars plus
+     <code>maven-metadata.xml</code> and <code>.sha1</code>/<code>.md5</code> checksums.
+     Java packages remain <code>io.cortexj.*</code> &mdash; only the repository URL
+     differs from a Maven Central install.</p>
+
+  <h2>Until Central</h2>
+  <p>CortexJ is not yet on Maven Central: the <code>io.cortexj</code> namespace
+     needs a domain the maintainer does not own. This repository and
+     <a href="https://jitpack.io/#okostiukevych/CortexJ">JitPack</a>
+     (<code>com.github.okostiukevych.CortexJ</code>, version named explicitly)
+     serve the same build in the meantime.</p>
+
+  <h2>Links</h2>
+  <ul>
+    <li><a href="https://github.com/okostiukevych/CortexJ">Source repository</a></li>
+    <li><a href="https://okostiukevych.github.io/CortexJ-site/">Documentation site</a></li>
+    <li>Repository layout: <code>io/cortexj/&lt;artifactId&gt;/&lt;version&gt;/&lt;file&gt;</code></li>
+  </ul>
+</main>
+</body>
+</html>
