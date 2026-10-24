@@ -29,7 +29,17 @@ execution path was selected.
 
 ## Quick start
 
+Artifacts are published to the CortexJ Maven repository. Until the platform
+reaches Maven Central, declare the repository once in your `pom.xml`:
+
 ```xml
+<repositories>
+    <repository>
+        <id>cortexj</id>
+        <url>https://okostiukevych.github.io/CortexJ-maven/</url>
+    </repository>
+</repositories>
+
 <dependencyManagement>
     <dependencies>
         <dependency>
@@ -47,6 +57,27 @@ execution path was selected.
     <artifactId>cortexj-starter-java21</artifactId>
 </dependency>
 ```
+
+<details>
+<summary>JitPack instead of the CortexJ repository</summary>
+
+The same artifacts are served by JitPack under the tag coordinates — no extra
+repository block, but a different group id (`com.github.okostiukevych.CortexJ`):
+
+```xml
+<repository>
+    <id>jitpack.io</id>
+    <url>https://jitpack.io</url>
+</repository>
+
+<dependency>
+    <groupId>com.github.okostiukevych.CortexJ</groupId>
+    <artifactId>cortexj-starter-java21</artifactId>
+    <version>1.0.0-RC1</version>
+</dependency>
+```
+
+</details>
 
 Starters for **every supported LTS line**: `cortexj-starter-java8`,
 `cortexj-starter-java11`, `cortexj-starter-java17`, `cortexj-starter-java21`,

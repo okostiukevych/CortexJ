@@ -9,13 +9,16 @@ import io.cortexj.data.Split;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroupFactory;
 import org.apache.parquet.hadoop.example.ExampleParquetWriter;
+import org.apache.parquet.io.OutputFile;
+import org.apache.parquet.io.PositionOutputStream;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
 
@@ -23,16 +26,86 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ParquetDeterminismTest {
 
-    @BeforeAll
-    static void pointHadoopHome() throws Exception {
-        // parquet-mr on Windows resolves even local file paths through Hadoop
-        // Shell, which throws FileNotFoundException("HADOOP_HOME and
-        // hadoop.home.dir are unset") before any byte is written. Pointing the
-        // property at an existing (empty) home silences the native lookup —
-        // winutils is genuinely absent, so no native behaviour is used.
-        Path home = Files.createTempDirectory("cortexj-hadoop-home");
-        Files.createDirectories(home.resolve("bin"));
-        System.setProperty("hadoop.home.dir", home.toAbsolutePath().toString());
+    /**
+     * NIO-backed {@link OutputFile}. Writing through Hadoop's
+     * {@code LocalFileSystem} would shell out to {@code chgrp} on POSIX and to
+     * {@code winutils.exe} on Windows (a native binary this project cannot ship),
+     * so the writer is pointed straight at the file.
+     */
+    private static final class NioOutputFile implements OutputFile {
+
+        private final Path path;
+
+        private NioOutputFile(Path path) {
+            this.path = path;
+        }
+
+        @Override
+        public PositionOutputStream create(long blockSizeHint) throws java.io.IOException {
+            return new NioPositionOutputStream(
+                    Files.newOutputStream(path,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE));
+        }
+
+        @Override
+        public PositionOutputStream createOrOverwrite(long blockSizeHint)
+                throws java.io.IOException {
+            return create(blockSizeHint);
+        }
+
+        @Override
+        public boolean supportsBlockSize() {
+            return false;
+        }
+
+        @Override
+        public long defaultBlockSize() {
+            return 0L;
+        }
+
+        @Override
+        public String getPath() {
+            return path.toString();
+        }
+    }
+
+    private static final class NioPositionOutputStream extends PositionOutputStream {
+
+        private final OutputStream delegate;
+        private long position;
+
+        private NioPositionOutputStream(OutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public long getPos() {
+            return position;
+        }
+
+        @Override
+        public void write(int b) throws java.io.IOException {
+            delegate.write(b);
+            position++;
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws java.io.IOException {
+            delegate.write(b, off, len);
+            position += len;
+        }
+
+        @Override
+        public void flush() throws java.io.IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws java.io.IOException {
+            delegate.close();
+        }
     }
 
     private static final MessageType SCHEMA = MessageTypeParser.parseMessageType(
@@ -47,8 +120,7 @@ class ParquetDeterminismTest {
         Path file = Files.createTempFile("reviews", ".parquet");
         // ParquetWriter refuses to overwrite: remove the empty temp file
         Files.deleteIfExists(file);
-        org.apache.hadoop.fs.Path path = new org.apache.hadoop.fs.Path(file.toUri());
-        ExampleParquetWriter.Builder builder = ExampleParquetWriter.builder(path)
+        ExampleParquetWriter.Builder builder = ExampleParquetWriter.builder(new NioOutputFile(file))
                 .withType(SCHEMA);
         org.apache.parquet.hadoop.ParquetWriter<Group> writer = builder.build();
         try {
