@@ -213,7 +213,10 @@ CortexJ **1.0.0-RC1** is feature-complete for the runtime track: model
 resolution, planning, execution, caching, conversion, observability and the
 integration adapters are implemented and tested. The remaining step is the
 Maven Central publication itself; coordinates, licensing, packaging and the
-release pipeline are ready.
+release pipeline are ready. Release notes:
+[1.0.0-RC1](https://github.com/okostiukevych/CortexJ/releases/tag/1.0.0-RC1) ·
+artifacts in the [CortexJ Maven repository](https://okostiukevych.github.io/CortexJ-maven/)
+and on [JitPack](https://jitpack.io/#okostiukevych/CortexJ).
 
 **Delivered**
 
