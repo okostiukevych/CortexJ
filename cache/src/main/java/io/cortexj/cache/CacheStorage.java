@@ -409,42 +409,38 @@ public final class CacheStorage {
                             .detail("usableBytes", String.valueOf(usableSpace));
                 }
             }
-            // audit 2026-10-10 (SpotBugs SWL): the scanner-contention retry
-            // ladder (with sleeps) runs under the per-key lock only, NOT
-            // under the global evictionLock - a 5x20ms backoff must not
-            // stall every other put/clear in the cache. A pre-move outside
-            // the critical section keeps the no-missing-window guarantee
-            // (atomic replace); the manifest pairing below still happens
-            // atomically with the (possible) final move under both locks.
+            // audit 2026-10-24 (macOS JDK 8 CI flake, CacheClearProtectionTest):
+            // the scanner-contention ladder used to run under the per-key lock
+            // only, so a clear()/purge() holding the eviction lock could walk
+            // the tree between the pre-move and the size credit: the credit
+            // then counted an entry the clear had already swept, or a second
+            // walk counted a committed-but-not-yet-credited entry twice.
+            // The move, the manifest and the credit are one critical section
+            // now - lock order evictionLock -> keyLock stays what eviction
+            // itself takes, and get() (keyLock only) still never deadlocks.
             boolean moved = false;
-            synchronized (keyLock(target)) {
-                try {
-                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                    moved = true;
-                } catch (IOException atomicReplaceUnsupported) {
-                    // fall through to the retry ladder
-                }
-                for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
-                    try {
-                        Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+            synchronized (evictionLock) {
+                synchronized (keyLock(target)) {
                     try {
                         Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                         moved = true;
-                    } catch (IOException retryFailed) {
-                        // scanner still holding the file; keep backing off
+                    } catch (IOException atomicReplaceUnsupported) {
+                        // fall through to the retry ladder
                     }
-                }
-            }
-            synchronized (evictionLock) {
-                synchronized (keyLock(target)) {
-                    // final attempt (no sleep) when the pre-ladder did not land;
-                    // move + manifest stay adjacent under the key lock so a
-                    // concurrent get() can never pair the new artifact with the
-                    // stale manifest and verify-and-delete it (audit M-5b)
+                    for (int attempt = 0; attempt < ATOMIC_REPLACE_RETRIES && !moved; attempt++) {
+                        try {
+                            Thread.sleep(ATOMIC_REPLACE_BACKOFF_MILLIS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        try {
+                            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                            moved = true;
+                        } catch (IOException retryFailed) {
+                            // scanner still holding the file; keep backing off
+                        }
+                    }
                     if (!moved) {
                         // replace-on-rename without an explicit delete: rename(2)
                         // atomically replaces an existing target on POSIX, and the
