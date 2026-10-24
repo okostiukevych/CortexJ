@@ -61,8 +61,9 @@ reaches Maven Central, declare the repository once in your `pom.xml`:
 <details>
 <summary>JitPack instead of the CortexJ repository</summary>
 
-The same artifacts are served by JitPack under the tag coordinates — no extra
-repository block, but a different group id (`com.github.okostiukevych.CortexJ`):
+The same tag is built by JitPack under its own group id. There the BOM does
+not apply (JitPack rewrites each module's coordinates but not the BOM's
+managed entries), so name the version explicitly:
 
 ```xml
 <repository>
