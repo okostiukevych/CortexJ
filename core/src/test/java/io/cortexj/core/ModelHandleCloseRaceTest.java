@@ -84,7 +84,11 @@ class ModelHandleCloseRaceTest {
     static class CountingRuntimeProvider implements RuntimeProvider {
 
         final RuntimeId id = RuntimeId.of("close-race-runtime");
-        final List<CountingRuntimeModel> models = new ArrayList<CountingRuntimeModel>();
+        // a close-race test can have a gated load and a queued load inside
+        // runtime.load() at the same time; a plain ArrayList corrupts its size
+        // counter then (JDK 11 ubuntu lane: ArrayIndexOutOfBoundsException)
+        final List<CountingRuntimeModel> models =
+                Collections.synchronizedList(new ArrayList<CountingRuntimeModel>());
         final AtomicInteger runtimeCloseCount = new AtomicInteger();
 
         @Override
