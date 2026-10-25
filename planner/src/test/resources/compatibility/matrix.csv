@@ -1,0 +1,40 @@
+# Curated compatibility matrix - CortexJ Runtime (spec §124.3).
+#
+# The planner valid-plan-rate KPI is measured by
+# io.cortexj.planner.test.CuratedCompatibilityMatrixTest over this exact file.
+#
+# Columns:
+#   model,artifact,viable_runtimes
+#
+# model/artifact describe a REAL published model family + artifact flavour.
+# viable_runtimes lists every runtime in the platform harness that can serve
+# this combination (availability further bounded by each runtime's documented
+# Java floor: jinfer=25, libtorch=21). An EMPTY field means the platform must
+# fail LOUDLY (explainable rejection), never silently plan something odd.
+#
+# The harness mirrors the shipped runtimes' declared descriptors:
+#   llamacpp     GGUF    text-generation + embeddings, minJava 8
+#   onnx         ONNX    text-generation,              minJava 8
+#   jinfer       GGUF    text-generation + embedding + reranking, minJava 25
+#   remote-openai REMOTE chat/completions over HTTP, minJava 8
+#   libtorch    SAFETENSORS, minJava 21
+qwen3-8b.gguf.q4_k,GGUF,llamacpp|jinfer
+qwen3-8b.gguf.q8_0,GGUF,llamacpp|jinfer
+qwen3-0.6b.gguf.q4_k,GGUF,llamacpp|jinfer
+mistral-7b.gguf.q4_k,GGUF,llamacpp|jinfer
+llama3.2-1b.gguf.q4_k,GGUF,llamacpp|jinfer
+bge-m3.gguf.q8_0,GGUF,llamacpp|jinfer
+codestral.gguf.q4_k,GGUF,llamacpp|jinfer
+qwen3-8b.onnx.int8,ONNX,onnx
+qwen3-0.6b.onnx.fp16,ONNX,onnx
+mistral-7b.onnx.int8,ONNX,onnx
+llama3.2-1b.onnx.fp32,ONNX,onnx
+nomic-embed.onnx.fp16,ONNX,onnx
+phi3-vision.onnx.int8,ONNX,onnx
+starcoder2.onnx.int8,ONNX,onnx
+gpt-oss-safeguard.remote,REMOTE,remote-openai
+deepseek-v3.remote,REMOTE,remote-openai
+qwen3-8b.safetensors,SAFETENSORS,libtorch
+llama3.1-8b.safetensors,SAFETENSORS,libtorch
+qwen3-8b.gguf.q9_unsupported,GGUF,
+qwen3-8b.tokenizer-only,TOKENIZER,
