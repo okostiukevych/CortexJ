@@ -27,7 +27,32 @@ revision to use, which artifacts are compatible, which runtimes are installed, w
 is available, whether memory suffices, what the fallback is — and *why* the chosen
 execution path was selected.
 
+![cortexj plan — a real, explainable execution plan for Qwen/Qwen3-8B-GGUF](assets/cortexj-plan.gif)
+
+> **Status: 1.0.0-RC1.** Feature-complete for the runtime track; artifacts are published
+> to the [CortexJ Maven repository](https://okostiukevych.github.io/CortexJ-maven/) and to
+> [JitPack](https://jitpack.io/#okostiukevych/CortexJ). Maven Central publication is still
+> ahead (namespace verification), GPU CI lanes need self-hosted runners, and the
+> dependency set below matches the versions CI runs against. Limitations are stated in the
+> [docs](https://okostiukevych.github.io/CortexJ-site/), not hidden.
+
 ## Quick start
+
+**60 seconds, nothing to download.** The CLI reports what it *would* do on your
+machine — runtime probes, hard constraints, memory headroom, the reasons and the
+fallback chain — before a single byte is fetched:
+
+```bash
+# one jar, any JVM 8 → 25
+curl -L -o cortexj.jar https://okostiukevych.github.io/CortexJ-maven/io/cortexj/cortexj-cli/1.0.0-RC1/cortexj-cli-1.0.0-RC1.jar
+
+java -jar cortexj.jar doctor               # environment, runtimes, recommendations
+java -jar cortexj.jar plan Qwen/Qwen3-8B-GGUF   # the explainable plan (shown above)
+java -jar cortexj.jar pull Qwen/Qwen3-8B-GGUF   # download exactly the planned artifact
+java -jar cortexj.jar run Qwen/Qwen3-8B-GGUF --prompt "Explain CQRS in one sentence"
+```
+
+### From your build
 
 Artifacts are published to the CortexJ Maven repository. Until the platform
 reaches Maven Central, declare the repository once in your `pom.xml`:
@@ -89,8 +114,8 @@ business code stays identical across all five.
 ### Spring Boot auto-configuration
 
 `cortexj-spring-boot-starter` (Spring Boot 4.x, Java 17+) wires the platform and an
-auto-loaded `ChatModel` from `cortexj.*` properties; see the [Spring AI guide](https://okostiukevych.github.io/CortexJ-site/integrations/)
-and the [tool-calling guide](https://okostiukevych.github.io/CortexJ-site/tool-calling/) for tool-loop usage:
+auto-loaded `ChatModel` from `cortexj.*` properties; see the [Spring AI guide](https://okostiukevych.github.io/CortexJ-site/docs/integrations/)
+and the [tool-calling guide](https://okostiukevych.github.io/CortexJ-site/docs/tool-calling/) for tool-loop usage:
 
 ```yaml
 cortexj:
