@@ -29,7 +29,7 @@ execution path was selected.
 
 ![cortexj plan — a real, explainable execution plan for Qwen/Qwen3-8B-GGUF](assets/cortexj-plan.gif)
 
-> **Status: 1.0.0-RC1.** Feature-complete for the runtime track; artifacts are published
+> **Status: 1.0.0.** Feature-complete for the runtime track; artifacts are published
 > to the [CortexJ Maven repository](https://okostiukevych.github.io/CortexJ-maven/) and to
 > [JitPack](https://jitpack.io/#okostiukevych/CortexJ). Maven Central publication is still
 > ahead (namespace verification), GPU CI lanes need self-hosted runners, and the
@@ -44,7 +44,7 @@ fallback chain — before a single byte is fetched:
 
 ```bash
 # one jar, any JVM 8 → 25
-curl -L -o cortexj.jar https://okostiukevych.github.io/CortexJ-maven/io/cortexj/cortexj-cli/1.0.0-RC1/cortexj-cli-1.0.0-RC1.jar
+curl -L -o cortexj.jar https://okostiukevych.github.io/CortexJ-maven/io/cortexj/cortexj-cli/1.0.0/cortexj-cli-1.0.0.jar
 
 java -jar cortexj.jar doctor               # environment, runtimes, recommendations
 java -jar cortexj.jar plan Qwen/Qwen3-8B-GGUF   # the explainable plan (shown above)
@@ -70,7 +70,7 @@ reaches Maven Central, declare the repository once in your `pom.xml`:
         <dependency>
             <groupId>io.cortexj</groupId>
             <artifactId>cortexj-bom</artifactId>
-            <version>1.0.0-RC1</version>
+            <version>1.0.0</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
@@ -99,7 +99,7 @@ managed entries), so name the version explicitly:
 <dependency>
     <groupId>com.github.okostiukevych.CortexJ</groupId>
     <artifactId>cortexj-starter-java21</artifactId>
-    <version>1.0.0-RC1</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
@@ -234,12 +234,12 @@ Layering rules (enforced by module boundaries):
 
 ## Status
 
-CortexJ **1.0.0-RC1** is feature-complete for the runtime track: model
+CortexJ **1.0.0** is feature-complete for the runtime track: model
 resolution, planning, execution, caching, conversion, observability and the
 integration adapters are implemented and tested. The remaining step is the
 Maven Central publication itself; coordinates, licensing, packaging and the
 release pipeline are ready. Release notes:
-[1.0.0-RC1](https://github.com/okostiukevych/CortexJ/releases/tag/1.0.0-RC1) ·
+[1.0.0](https://github.com/okostiukevych/CortexJ/releases/tag/1.0.0) ·
 artifacts in the [CortexJ Maven repository](https://okostiukevych.github.io/CortexJ-maven/)
 and on [JitPack](https://jitpack.io/#okostiukevych/CortexJ).
 
