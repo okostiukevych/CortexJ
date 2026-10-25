@@ -194,6 +194,7 @@
         <module>research/research</module>
         <module>benchmarks</module>
         <module>train/train-multinode</module>
+        <module>examples/java21</module>
       </modules>
     </profile>
     <profile>
@@ -207,6 +208,7 @@
         <module>runtimes/jinfer</module>
         <module>tensor/tensor-libtorch</module>
         <module>cli</module>
+        <module>examples/java25-jinfer</module>
       </modules>
     </profile>
   
