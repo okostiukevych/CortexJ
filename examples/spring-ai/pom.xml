@@ -6,7 +6,7 @@
   <parent>
     <groupId>io.cortexj</groupId>
     <artifactId>cortexj-parent</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <relativePath>../../pom.xml</relativePath>
   </parent>
   <artifactId>cortexj-examples-spring-ai</artifactId>
