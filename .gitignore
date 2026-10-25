@@ -1,6 +1,8 @@
-# Internal documentation - not part of the public repository.
-# README.md and SECURITY.md stay public; everything else is development-only.
-/docs/
+# Public decision records: ADRs are part of the product contract and ship in the
+# repository (spec §101 / §119). Everything else under docs/ stays internal.
+/docs/*
+!/docs/adr/
+!/docs/adr/**
 /cortexj-technical-spec-*.md
 
 target/
