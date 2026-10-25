@@ -33,6 +33,21 @@
     </dependency>
     <dependency>
       <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-runtime-llamacpp</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-repository-local</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
+      <artifactId>cortexj-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.cortexj</groupId>
       <artifactId>cortexj-data-api</artifactId>
       <version>${project.version}</version>
     </dependency>
