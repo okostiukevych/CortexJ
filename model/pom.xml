@@ -25,9 +25,13 @@
       <artifactId>cortexj-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- test-scope only: the equivalence tests use Jackson as the external
+         reference implementation. Production code parses with the internal
+         io.cortexj.model.json reader (house rule: no Jackson in shared tiers). -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

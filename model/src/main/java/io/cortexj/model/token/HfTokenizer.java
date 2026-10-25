@@ -1,7 +1,7 @@
 package io.cortexj.model.token;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortexj.model.json.Json;
+import io.cortexj.model.json.JsonReader;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -28,18 +28,16 @@ public final class HfTokenizer {
         if (size > 100L * 1024L * 1024L) {
             throw new IOException("tokenizer.json is unreasonably large (" + size + " bytes, cap 100MB)");
         }
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.getFactory().setStreamReadConstraints(
-                com.fasterxml.jackson.core.StreamReadConstraints.builder()
-                        .maxNestingDepth(50)
-                        .maxNumberLength(10000)
-                        .maxStringLength(20 * 1024 * 1024)
-                        .build());
-        JsonNode root;
+        Json root;
         try (java.io.InputStream input = Files.newInputStream(tokenizerJson)) {
-            root = mapper.readTree(input);
+            try {
+                root = JsonReader.parse(input, new Json.Limits(
+                        50, 10000L, 20L * 1024L * 1024L));
+            } catch (Json.JsonParseException malformed) {
+                throw new IOException("tokenizer.json is not valid JSON: " + malformed.getMessage());
+            }
         }
-        JsonNode model = root.path("model");
+        Json model = root.path("model");
         String type = model.path("type").asText("");
         if (type.equals("WordPiece") || type.equals("BertWordPiece")) {
             return new WordPiece(model);
@@ -90,7 +88,7 @@ public final class HfTokenizer {
         private final Map<String, Integer> vocab;
         private final int longest;
 
-        WordPiece(JsonNode model) throws java.io.IOException {
+        WordPiece(Json model) throws java.io.IOException {
             this.vocab = readVocab(model);
             int longest = 1;
             for (String token : vocab.keySet()) {
@@ -143,10 +141,10 @@ public final class HfTokenizer {
         private final Map<String, Integer> vocab;
         private final List<String[]> merges;
 
-        Bpe(JsonNode model) throws java.io.IOException {
+        Bpe(Json model) throws java.io.IOException {
             this.vocab = readVocab(model);
             this.merges = new ArrayList<String[]>();
-            for (JsonNode merge : model.path("merges")) {
+            for (Json merge : model.path("merges")) {
                 String[] parts = merge.asText("").split(" ");
                 if (parts.length == 2) {
                     merges.add(new String[]{parts[0], parts[1]});
@@ -258,9 +256,9 @@ public final class HfTokenizer {
         private final Map<Character, List<String>> piecesByFirstChar;
         private final Map<String, Integer> vocab;
 
-        Unigram(JsonNode model) throws java.io.IOException {
+        Unigram(Json model) throws java.io.IOException {
             List<String[]> sortable = new ArrayList<String[]>();
-            for (JsonNode entry : model.path("vocab")) {
+            for (Json entry : model.path("vocab")) {
                 if (entry.isArray() && entry.size() == 2) {
                     sortable.add(new String[]{entry.get(0).asText(), entry.get(1).asText()});
                 }
@@ -337,10 +335,10 @@ public final class HfTokenizer {
         return parts;
     }
 
-    private static Map<String, Integer> readVocab(JsonNode model) throws IOException {
+    private static Map<String, Integer> readVocab(Json model) throws IOException {
         Map<String, Integer> vocab = new LinkedHashMap<String, Integer>();
         if (model.path("vocab").isObject()) {
-            JsonNode vocabNode = model.path("vocab");
+            Json vocabNode = model.path("vocab");
             java.util.Iterator<String> fields = vocabNode.fieldNames();
             int index = 0;
             while (fields.hasNext()) {
@@ -354,7 +352,7 @@ public final class HfTokenizer {
                 // them. Assigning positional indices silently mis-tokenizes
                 // any vocab serialized out of id order.
                 String name = fields.next();
-                JsonNode idNode = vocabNode.get(name);
+                Json idNode = vocabNode.get(name);
                 int id = idNode != null && idNode.isInt() ? idNode.asInt() : index;
                 // audit 2026-10-10: ids flow straight into ORT Gather - a
                 // negative or absurd id must fail the tokenizer load, not
@@ -368,7 +366,7 @@ public final class HfTokenizer {
             }
         } else {
             int index = 0;
-            for (JsonNode token : model.path("vocab")) {
+            for (Json token : model.path("vocab")) {
                 // audit #128: a scalar entry inside an array vocab (malformed
                 // tokenizer.json) must produce a skipped entry, not an NPE
                 if (!token.isArray() || token.size() == 0 || !token.get(0).isTextual()) {

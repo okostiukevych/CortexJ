@@ -1,7 +1,7 @@
 package io.cortexj.model.artifact;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cortexj.model.json.Json;
+import io.cortexj.model.json.JsonReader;
 import io.cortexj.model.ArtifactFormat;
 import io.cortexj.spi.artifact.ArtifactInspection;
 import io.cortexj.spi.artifact.ArtifactInspector;
@@ -22,20 +22,10 @@ public final class SafetensorsInspector implements ArtifactInspector {
     // bound on hostile headers
     private static final int MAX_TENSOR_ENTRIES = 10_000_000;
 
-    private final ObjectMapper mapper = constrainedMapper();
+    /** Hostile-header budget: nesting depth, number and string length caps. */
+    static final Json.Limits HEADER_LIMITS = new Json.Limits(
+            50, 10000L, 10L * 1024L * 1024L);
 
-    static ObjectMapper constrainedMapper() {
-        // audit 2026-10-07: hostile headers must not StackOverflow the
-        // inspector - cap nesting depth and total token/string budget
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.getFactory().setStreamReadConstraints(
-                com.fasterxml.jackson.core.StreamReadConstraints.builder()
-                        .maxNestingDepth(50)
-                        .maxNumberLength(10000)
-                        .maxStringLength(10 * 1024 * 1024)
-                        .build());
-        return mapper;
-    }
 
     @Override
     public boolean supports(ArtifactFormat format) {
@@ -74,7 +64,13 @@ public final class SafetensorsInspector implements ArtifactInspector {
         }
         byte[] headerBytes = new byte[(int) headerLength];
         readFully(input, headerBytes);
-        JsonNode header = mapper.readTree(headerBytes);
+        Json header;
+        try {
+            header = JsonReader.parse(headerBytes, HEADER_LIMITS);
+        } catch (Json.JsonParseException malformed) {
+            throw new MalformedArtifactException(
+                    "Safetensors header is not valid JSON: " + malformed.getMessage());
+        }
 
         ArtifactInspection.Builder builder = ArtifactInspection.builder(ArtifactFormat.SAFETENSORS);
         String architecture = null;
@@ -82,7 +78,7 @@ public final class SafetensorsInspector implements ArtifactInspector {
         int tensorCount = 0;
         long parameterCount = 0;
 
-        JsonNode metadata = header.get("__metadata__");
+        Json metadata = header.get("__metadata__");
         if (metadata != null && metadata.isObject()) {
             Iterator<String> fields = metadata.fieldNames();
             while (fields.hasNext()) {
@@ -104,7 +100,7 @@ public final class SafetensorsInspector implements ArtifactInspector {
             if (name.equals("__metadata__")) {
                 continue;
             }
-            JsonNode tensor = header.get(name);
+            Json tensor = header.get(name);
             // audit 2026-10-08: unknown non-tensor entries must not NPE the
             // inspector (nor inflate the tensor count)
             if (tensor == null || !tensor.isObject() || !tensor.has("dtype")) {
@@ -117,7 +113,7 @@ public final class SafetensorsInspector implements ArtifactInspector {
                 throw new MalformedArtifactException(
                         "Safetensors header declares too many tensors (cap " + MAX_TENSOR_ENTRIES + ")");
             }
-            JsonNode dtype = tensor.get("dtype");
+            Json dtype = tensor.get("dtype");
             long[] shape = parseShape(tensor.get("shape"));
             // audit 2026-10-07: multiplyExact turns hostile dims into a typed
             // failure instead of a wrapped parameterCount that would
@@ -152,7 +148,7 @@ public final class SafetensorsInspector implements ArtifactInspector {
         return builder.build();
     }
 
-    private static long[] parseShape(JsonNode shapeNode) {
+    private static long[] parseShape(Json shapeNode) {
         if (shapeNode == null || !shapeNode.isArray()) {
             return new long[0];
         }
