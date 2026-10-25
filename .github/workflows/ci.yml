@@ -190,3 +190,45 @@ jobs:
           java-version: '25'
       - name: Build and test (GPU runtimes probed honestly on the accelerator)
         run: mvn -B clean install
+
+  # Supply-chain lane (spec §100/§99): every build produces CycloneDX SBOMs
+  # for all modules (collected as an artifact) and a dependency hygiene report
+  # (dependency:analyze). The SBOM attaches with classifier "cyclonedx" when
+  # packaged under -Prelease - the gate flips to hard-fail once the first
+  # release publishes with it (tracked in the runtime-hardening epic).
+  supply-chain:
+    name: Supply chain (SBOM + dependency hygiene)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Cache Maven repository
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2
+          key: ubuntu-latest-maven-sbom-${{ hashFiles('**/pom.xml') }}
+      - name: Generate SBOMs (CycloneDX)
+        run: mvn -B clean install -DskipTests -Psbom
+      - name: Collect SBOMs
+        run: |
+          mkdir -p sbom-artifacts
+          find . -path '*/target/bom.json' | while read -r f; do
+            cp "$f" "sbom-artifacts/$(echo "$f" | sed 's#^\./##; s#/#_#g')"
+          done
+          ls sbom-artifacts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cyclonedx-sbom
+          path: sbom-artifacts
+      - name: Dependency hygiene report (findings triage, not a gate yet)
+        run: mvn -B dependency:analyze -DskipTests > dependency-analyze.log 2>&1 || true
+        continue-on-error: true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: dependency-hygiene-report
+          path: dependency-analyze.log
