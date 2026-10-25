@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP dependency-check suppression file (Audit-2, issue #242).
+
+  Rules in this file must carry a reason and a review date. A suppression is an
+  explicit, dated acceptance of risk - never a way to silence noise. Each entry
+  is re-reviewed at least every 90 days; stale entries fail the CI gate via
+  the unused/expired rules check.
+
+  Schema: https://jeremylong.github.io/DependencyCheck/dependency-check-maven/
+          configuration.html (suppressionFiles)
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+      FALSE POSITIVE (verified 2026-10-25): CVE-2024-7776 is a path-traversal
+      flaw in the PYTHON `onnx` CLI's download_model function (onnx<=1.16.1).
+      The OWASP CPE heuristic matched our JVM artifact `cortexj-runtime-onnx`
+      by name alone. The jar contains only Java classes + onnxruntime natives
+      (no python, no download_model path), and Java consumers never invoke the
+      affected code. Suppressed per dependency + CVE; review 2027-01-25.
+    -->
+    <suppress>
+        <notes>False positive: Python onnx CLI CVE matched our JVM onnx runtime by CPE name</notes>
+        <packageUrl regex="true">^pkg:maven/io\.cortexj/cortexj-runtime-onnx@.*$</packageUrl>
+        <cve>CVE-2024-7776</cve>
+    </suppress>
+
+    <!--
+      ACCEPTED RISK (reviewed 2026-10-25): CVE-2026-0994 (protobuf-java
+      3.25.6, CVSS 7.5) arrives through tribuo-core 4.3.2 (the latest
+      release), which is the last generator of the protobuf 3.x line; upstream
+      tribuo has not adopted protobuf 4.x. Exposure is limited to parsing
+      Tribuo-internal files produced by this project (no untrusted input
+      reaches protobuf parsing on the data path). Upstream tracking:
+      org.tribuo protobuf 4 migration. Review 2027-01-25.
+    -->
+    <suppress>
+        <notes>Tribuo 4.3.2 (latest) pins protobuf-java 3.25.6 (no fixed 3.x); internal-only parsing surface</notes>
+        <packageUrl regex="true">^pkg:maven/com\.google\.protobuf/protobuf-java@3\.25\.6$</packageUrl>
+        <cve>CVE-2026-0994</cve>
+    </suppress>
+
+</suppressions>

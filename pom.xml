@@ -75,7 +75,8 @@
     <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
     <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
     <central-publishing-plugin.version>0.12.0</central-publishing-plugin.version>
-    <cyclonedx-maven-plugin.version>2.9.1</cyclonedx-maven-plugin.version>
+    <netty.bom.version>4.1.139.Final</netty.bom.version>
+        <cyclonedx-maven-plugin.version>2.9.1</cyclonedx-maven-plugin.version>
   </properties>
 
   <modules>
@@ -553,6 +554,48 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- Dependency hygiene (Audit-2/#242): netty arrives transitively
+           (hadoop/avro via data-parquet, arrow-memory-netty via data-arrow)
+           at different 4.1.x patch levels. Importing the netty BOM pins the
+           whole reactor to one patched line, so CVEs in one transitive path
+           cannot survive behind another module's own resolution. -->
+      <!-- Dependency hygiene (Audit-2/#242): transitive versions pinned to
+           patched releases. tools.jackson 3.0.3 (spring-ai transitive) has
+           CVE-2026-29062 (7.5); icu4j 74.2 (arrow/tablesaw transitive) has
+           CVE-2025-5222; jline-style 3.27.1 (tribuo transitive) has
+           CVE-2026-56740/56741. -->
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>3.2.4</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>3.2.4</version>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>3.2.4</version>
+      </dependency>
+      <dependency>
+        <groupId>com.ibm.icu</groupId>
+        <artifactId>icu4j</artifactId>
+        <version>79.1</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jline</groupId>
+        <artifactId>jline-style</artifactId>
+        <version>3.29.0</version>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>${netty.bom.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
         <artifactId>jackson-databind</artifactId>
