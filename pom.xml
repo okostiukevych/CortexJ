@@ -535,6 +535,22 @@
   </profile>
 </profiles>
 
+  <!-- Baseline repository for the japicmp compat profile (spec §74): the
+       GitHub Pages Maven repository publishes released versions; resolution
+       requires this declaration (Central remains a future channel). -->
+  <repositories>
+    <repository>
+      <id>cortexj-maven</id>
+      <url>https://okostiukevych.github.io/CortexJ-maven/</url>
+      <releases>
+        <enabled>true</enabled>
+      </releases>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
+
   <dependencyManagement>
     <dependencies>
       <dependency>

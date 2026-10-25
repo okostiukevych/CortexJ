@@ -191,6 +191,28 @@ jobs:
       - name: Build and test (GPU runtimes probed honestly on the accelerator)
         run: mvn -B clean install
 
+  # Binary compatibility gate (spec §74): after the 1.0.0 release the baseline
+  # lives in the cortexj-maven repository (declared in the parent POM). This job
+  # fails the build on any binary-incompatible change to the Public API /
+  # Stable SPI tiers without a major bump.
+  compat:
+    name: Binary compatibility (japicmp vs 1.0.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Cache Maven repository
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2
+          key: ubuntu-latest-maven-compat-${{ hashFiles('**/pom.xml') }}
+      - name: japicmp against the 1.0.0 baseline
+        run: mvn -B verify -Pcompat -Dcortexj.api.baseline=1.0.0 -Dcortexj.compat.skip=false -DskipTests
+
   # Supply-chain lane (spec §100/§99): every build produces CycloneDX SBOMs
   # for all modules (collected as an artifact) and a dependency hygiene report
   # (dependency:analyze). The SBOM attaches with classifier "cyclonedx" when
