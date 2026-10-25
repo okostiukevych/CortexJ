@@ -69,7 +69,7 @@ class PlatformOverheadTest {
     }
 
     /**
-     * Spec §124.2: framework memory overhead without the model - the JVM heap
+     * KPI target - framework memory overhead without the model: the JVM heap
      * the platform itself (discovery, descriptors, planner, telemetry wiring)
      * costs once fully warm. The fake engine keeps this number free of model
      * weights, so the measurement is framework-own allocation only.

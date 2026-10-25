@@ -1,6 +1,6 @@
 # ADR-019: Dataset abstraction vs adapters
 
-Date: 2026-10-08. Status: accepted (0.x slice). Spec: v3.0 §§137, 151.
+Date: 2026-10-08. Status: accepted (0.x slice).
 
 ## Context
 
@@ -12,24 +12,24 @@ bloat every consumer.
 ## Decision
 
 - Own thin contracts in `data-api` (`DataSource/Dataset/Frame/Column/
-  Schema/Split/Fingerprint`) — immutable-by-default, Java 17, no IO
-  dependencies.
+ Schema/Split/Fingerprint`) — immutable-by-default, Java 17, no IO
+ dependencies.
 - File formats via dedicated adapters (`data-csv`, `data-parquet`
-  first) over mature libraries (Parquet via `parquet-hadoop`; the
-  library never leaks into `data-api` signatures).
+ first) over mature libraries (Parquet via `parquet-hadoop`; the
+ library never leaks into `data-api` signatures).
 - Tablesaw/Tribuo/Arrow/JDBC/DJL adapters are follow-ups behind the
-  same `DataSource` SPI, each its own module and dependency.
+ same `DataSource` SPI, each its own module and dependency.
 - Fingerprint = SHA-256 over schema + canonical cells; split/shuffle
-  are seed-deterministic. Lazy/streaming datasets arrive with the
-  first adapter that needs them, not upfront.
+ are seed-deterministic. Lazy/streaming datasets arrive with the
+ first adapter that needs them, not upfront.
 
-Scope-gate §159 answers: problem = one dataset identity from file to
+Scope-gate answers: problem = one dataset identity from file to
 training provenance; existing libs insufficient alone at the identity/
 provenance layer (their objects carry no CortexJ fingerprint);
-minimal solution = this slice; acceptance = spike G + KPI §124.4 file
+minimal solution = this slice; acceptance = spike G + KPI file
 coverage for CSV/Parquet now, rest per-adapter later; Runtime impact
 = none; native/support cost = Parquet's transitive Hadoop client,
-  isolated in `data-parquet`.
+ isolated in `data-parquet`.
 
 ## Consequences
 

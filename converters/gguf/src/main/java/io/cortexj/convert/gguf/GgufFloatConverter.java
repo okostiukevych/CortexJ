@@ -141,7 +141,7 @@ public final class GgufFloatConverter implements ModelConverter {
                 document.upsert("cortexj.converted_by", GgufBinaryReader.Types.STRING,
                         "cortexj-convert-gguf/" + direction.label);
                 // real-model verification 2026-10-10: general.file_type is
-                // UINT32 per the spec and llama.cpp rejects anything else -
+                // UINT32 per the GGUF file-format spec, and llama.cpp rejects anything else -
                 // stamping INT32 produced files no runtime would load.
                 // Preserve the source declaration, defaulting to UINT32.
                 document.upsert("general.file_type", fileTypeTypeOf(document),

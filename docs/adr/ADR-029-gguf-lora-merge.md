@@ -12,21 +12,21 @@ must say so, and unsupported combinations must fail typed.
 ## Decision
 
 - Offline merge first (`cortexj-convert-lora`): read base GGUF
-  tensors, dequantize, apply `W + (alpha/rank)·B·A`, requantize,
-  write a new GGUF plus the conversion manifest (base revision,
-  adapter checksum, converter id). Runtime composition stays a
-  follow-up.
+ tensors, dequantize, apply `W + (alpha/rank)·B·A`, requantize,
+ write a new GGUF plus the conversion manifest (base revision,
+ adapter checksum, converter id). Runtime composition stays a
+ follow-up.
 - Dequant coverage 0.x: F32/F16/BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1
-  (unambiguous block layouts, hand-verified). K-quants and anything
-  else fail typed with the type id — no guessed layouts, ever.
+ (unambiguous block layouts, hand-verified). K-quants and anything
+ else fail typed with the type id — no guessed layouts, ever.
 - Requant policy (`--quant`): `same` (default, round-trip to the base
-  tensor's quant where supported), `f32`, `f16`, `q8_0`, `q4_0`.
-  K-quant output fails typed — no silent precision claims.
+ tensor's quant where supported), `f32`, `f16`, `q8_0`, `q4_0`.
+ K-quant output fails typed — no silent precision claims.
 - Tensor mapping is explicit: the request carries (ggufTensorName,
-  adapterModule) pairs. A llama-family convention helper
-  (`blk.N.attn_q.weight` ↔ `q_proj`, etc.) is convenience only and
-  never guesses silently: unmapped tensors pass through untouched,
-  unmapped adapters fail typed.
+ adapterModule) pairs. A llama-family convention helper
+ (`blk.N.attn_q.weight` ↔ `q_proj`, etc.) is convenience only and
+ never guesses silently: unmapped tensors pass through untouched,
+ unmapped adapters fail typed.
 - Original artifacts are immutable; the merged file is separate.
 
 ## Consequences
@@ -39,12 +39,12 @@ must say so, and unsupported combinations must fail typed.
 The deferred follow-up is implemented for the llama.cpp path:
 
 - `cortexj-convert-lora/LoraAdapterGguf` exports ADR-022 safetensors
-  adapters as one llama.cpp adapter GGUF (general.type=adapter,
-  adapter.type=lora, adapter.lora.alpha, `<base>.lora_a/.lora_b`
-  tensors; embedding targets and rank/alpha disagreement fail typed).
+ adapters as one llama.cpp adapter GGUF (general.type=adapter,
+ adapter.type=lora, adapter.lora.alpha, `<base>.lora_a/.lora_b`
+ tensors; embedding targets and rank/alpha disagreement fail typed).
 - `runtimes/llamacpp` accepts a `lora` option (`path` or `path:scale`,
-  a list for several adapters) passed as repeated `--lora` flags to
-  the managed llama-server; adapter files are part of the endpoint
-  cache key, so handles with different adapters never share a process.
+ a list for several adapters) passed as repeated `--lora` flags to
+ the managed llama-server; adapter files are part of the endpoint
+ cache key, so handles with different adapters never share a process.
 - Pure-Java inference-side composition remains out of scope (ADR-016
-  guard: runtimes must not depend on train/tensor).
+ guard: runtimes must not depend on train/tensor).

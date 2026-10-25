@@ -1,6 +1,6 @@
 # ADR-014: Model lockfile
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§63, 30.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 

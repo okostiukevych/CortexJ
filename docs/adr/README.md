@@ -1,35 +1,35 @@
 # CortexJ ADRs
 
 Architecture Decision Records are part of the public product contract
-(spec §101/§119). New ADRs follow the house style of ADR-016..029
+(spec /). New ADRs follow the house style of ADR-016..029
 (context / decision / consequences), cite the spec section they serve,
 and carry an explicit status.
 
-## Required-before-coding set (spec §119)
+## Required-before-coding set (spec)
 
 | Spec | ADR | Title |
 |---|---|---|
-| §119.1 | [ADR-001](ADR-001-public-api-java-baseline.md) | Public API Java baseline |
-| §119.2 | [ADR-002](ADR-002-lts-starter-strategy.md) | LTS starter strategy |
-| §119.3 | [ADR-003](ADR-003-runtimeprovider-spi.md) | RuntimeProvider SPI |
-| §119.4 | [ADR-004](ADR-004-planner-scoring.md) | Execution Planner scoring |
-| §119.5 | [ADR-005](ADR-005-native-binary-packaging.md) | Native binary packaging |
-| §119.6 | [ADR-006](ADR-006-streaming-abstraction.md) | Streaming abstraction |
-| §119.7 | [ADR-007](ADR-007-model-artifact-identity.md) | Model artifact identity |
-| §119.8 | [ADR-008](ADR-008-cache-layout.md) | Cache layout |
-| §119.9 | [ADR-009](ADR-009-hugging-face-resolution.md) | Hugging Face resolution |
-| §119.10 | [ADR-010](ADR-010-onnx-provider-architecture.md) | ONNX provider architecture |
-| §119.11 | [ADR-011](ADR-011-llamacpp-binding-approach.md) | llama.cpp binding approach |
-| §119.12 | [ADR-012](ADR-012-framework-integration-boundary.md) | Framework integration boundary |
-| §119.13 | [ADR-013](ADR-013-security-trust-model.md) | Security/trust model |
-| §119.14 | [ADR-014](ADR-014-model-lockfile.md) | Model lockfile |
-| §119.15 | [ADR-015](ADR-015-runtime-fallback-semantics.md) | Runtime fallback semantics |
+| | [ADR-001](ADR-001-public-api-java-baseline.md) | Public API Java baseline |
+| | [ADR-002](ADR-002-lts-starter-strategy.md) | LTS starter strategy |
+| | [ADR-003](ADR-003-runtimeprovider-spi.md) | RuntimeProvider SPI |
+| | [ADR-004](ADR-004-planner-scoring.md) | Execution Planner scoring |
+| | [ADR-005](ADR-005-native-binary-packaging.md) | Native binary packaging |
+| | [ADR-006](ADR-006-streaming-abstraction.md) | Streaming abstraction |
+| | [ADR-007](ADR-007-model-artifact-identity.md) | Model artifact identity |
+| | [ADR-008](ADR-008-cache-layout.md) | Cache layout |
+| | [ADR-009](ADR-009-hugging-face-resolution.md) | Hugging Face resolution |
+| | [ADR-010](ADR-010-onnx-provider-architecture.md) | ONNX provider architecture |
+| | [ADR-011](ADR-011-llamacpp-binding-approach.md) | llama.cpp binding approach |
+| | [ADR-012](ADR-012-framework-integration-boundary.md) | Framework integration boundary |
+| | [ADR-013](ADR-013-security-trust-model.md) | Security/trust model |
+| | [ADR-014](ADR-014-model-lockfile.md) | Model lockfile |
+| | [ADR-015](ADR-015-runtime-fallback-semantics.md) | Runtime fallback semantics |
 
 ADR-001..015 were ratified retroactively (2026-10-25) from the implemented
 state: each record cites the modules, TCK contracts and tests that pin the
 decision.
 
-## v3.0 track set (spec §151)
+## v3.0 track set (spec)
 
 | ADR | Title |
 |---|---|

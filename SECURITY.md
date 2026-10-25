@@ -17,7 +17,7 @@ with production seriousness on all supported lines.
 
 Please include:
 
-- the affected module and version (`cortexj-*`, `1.0.0-RC1` + commit),
+- the affected module and version (`cortexj-*` and the released version + the commit),
 - a minimal reproducer (code, model reference, or CLI invocation),
 - the impact you see (RCE, SSRF, path traversal, secret leak, DoS, …),
 - whether it needs local model files, network, or a specific JDK.

@@ -1,6 +1,6 @@
 # ADR-017: Java baselines per product track
 
-Date: 2026-10-08. Status: accepted. Spec: v3.0 §§7, 134.
+Date: 2026-10-08. Status: accepted.
 
 ## Context
 
@@ -23,17 +23,17 @@ not per platform.
 Rules:
 
 1. Shared public signatures stay Java 8-loadable: no records, sealed
-   classes, `Flow`, virtual threads or FFM in `api/spi/model` and the
-   new shared contracts. Modern features live in LTS/track modules
-   behind SPI (AP-010, AC-JAVA-005).
-2. Capability-first internals (§7.5): version checks are distribution
-   boundaries, never planner logic.
+ classes, `Flow`, virtual threads or FFM in `api/spi/model` and the
+ new shared contracts. Modern features live in LTS/track modules
+ behind SPI (AP-010, AC-JAVA-005).
+2. Capability-first internals: version checks are distribution
+ boundaries, never planner logic.
 3. Starter/JVM mismatch fails fast with an actionable diagnostic
-   (AC-JAVA-004), never a `NoSuchMethodError`.
+ (AC-JAVA-004), never a `NoSuchMethodError`.
 
 ## Consequences
 
-- CI matrix (§68) grows per track baseline; a module built for 17+
-  never runs on the Java 8 lane.
+- CI matrix grows per track baseline; a module built for 17+
+ never runs on the Java 8 lane.
 - Tensor/Autograd/Research may use records/sealed/FFM freely inside
-  their modules once their own ADR lands.
+ their modules once their own ADR lands.

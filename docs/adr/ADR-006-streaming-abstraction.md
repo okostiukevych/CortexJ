@@ -1,6 +1,6 @@
 # ADR-006: Streaming abstraction
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§37, 7.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
@@ -20,6 +20,6 @@ are typed as `streamingSupported` in descriptors, not by adapter class.
 
 - Java 8 code streams with no reactive dependency.
 - Reactor users are one module away; core releases decouple from adapter
-  releases.
+ releases.
 - Backpressure/termination edge cases are contract-tested once in the shared
-  tier, not per adapter.
+ tier, not per adapter.

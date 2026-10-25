@@ -1,6 +1,6 @@
 # ADR-007: Model artifact identity
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§15, 30, 63.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
@@ -13,7 +13,7 @@ are different artifacts that must not be conflated.
 Artifacts are addressed by **immutable revision + content fingerprint**
 (`ModelArtifact` identity, `Fingerprint` in the Data track; content-derived by
 the cross-adapter contract). Resolution maps a `ModelReference` to
-`ResolvedModel(s)` with pinned revisions; the lockfile (§ADR-014) then binds
+`ResolvedModel(s)` with pinned revisions; the lockfile (ADR-014) then binds
 deployments to those fingerprints. Identity is independent of repository URL
 and cache layout.
 

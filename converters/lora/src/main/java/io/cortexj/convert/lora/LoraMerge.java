@@ -188,7 +188,7 @@ public final class LoraMerge {
         merged.upsert("cortexj.lora.merged", GgufType.STRING, "true");
         merged.upsert("cortexj.lora.converter", GgufType.STRING, "cortexj-convert-lora/0.1.0");
         // the writer pads tensor data to 64: declare it so any reader
-        // (including ours, defaulting to the 32 spec default) lands right
+        // (including ours, defaulting to the 32-bit file-format default) lands right
         merged.upsert("general.alignment", 4, 64);
 
         Path output = request.outputModel();

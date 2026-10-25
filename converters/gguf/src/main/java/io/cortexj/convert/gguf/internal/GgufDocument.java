@@ -126,7 +126,7 @@ public final class GgufDocument {
      *
      * <p>The writer pads tensor data to 64 and declares it via
      * {@code general.alignment}, so any reader honoring the declaration
-     * (including ours, defaulting to the 32 spec default) lands right.</p>
+     * (including ours, defaulting to the 32-bit file-format default) lands right.</p>
      */
     public long writeHeader(GgufBinaryWriter writer) throws IOException {
         upsert("general.alignment", 4, 64);

@@ -40,7 +40,7 @@ import java.util.concurrent.ExecutorService;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The spec §124.3 KPI, measured on the curated compatibility matrix:
+ * The compatibility-matrix KPI, measured on the curated compatibility matrix:
  * "planner valid-plan rate on curated compatibility matrix: ≥ 99%".
  *
  * <p>The matrix lives in {@code compatibility/matrix.csv} (a versioned repo
@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>a viable combination MUST produce a plan selecting a viable runtime;</li>
  *   <li>a combination with no viable runtime (or no resolvable artifact) MUST
  *       fail loudly - never a silent plan with a bogus candidate;</li>
- *   <li>the overall handled rate must be ≥ 99% (the spec's target).
+ *   <li>the overall handled rate must be ≥ 99% (the target).
  * </ul>
  *
  * The measured rate is printed so docs cite a number CI reproduces.

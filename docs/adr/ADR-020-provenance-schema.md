@@ -1,6 +1,6 @@
 # ADR-020: Provenance schema
 
-Date: 2026-10-08. Status: accepted. Spec: v3.0 §§138.2, 148.
+Date: 2026-10-08. Status: accepted.
 
 ## Context
 
@@ -11,22 +11,22 @@ dragging a storage implementation or Jackson into the contract.
 ## Decision
 
 - `cortexj-model-metadata`: `ModelIdentity` — canonical model id
-  (`hf:owner/repo`, `file:...`, ...) plus the resolved immutable
-  revision (null while unresolved).
+ (`hf:owner/repo`, `file:...`,...) plus the resolved immutable
+ revision (null while unresolved).
 - `cortexj-provenance`: `ProvenanceManifest` — immutable value object
-  answering the nine §148 questions: producer (platform version),
-  model revision, dataset fingerprint, code/platform version,
-  parameters, seeds, backend + hardware identity, parent artifacts,
-  checksums. `schemaVersion` is `"1"`; schema evolves independently of
-  any store (§148: versioned separately).
+ answering the nine questions: producer (platform version),
+ model revision, dataset fingerprint, code/platform version,
+ parameters, seeds, backend + hardware identity, parent artifacts,
+ checksums. `schemaVersion` is `"1"`; schema evolves independently of
+ any store (: versioned separately).
 - Both modules: Java 8 bytecode, zero runtime dependencies,
-  Jackson-free (§97 — serialization lives in cli/server adapters).
+ Jackson-free (— serialization lives in cli/server adapters).
 - Missing data is explicit (empty maps / null), never fabricated:
-  no fake compatibility (§140.4 applies by analogy).
+ no fake compatibility (applies by analogy).
 
 ## Consequences
 
-- Experiment store (§138.3), training jobs (§139.3) and the model
-  lockfile all embed this manifest instead of inventing their own.
+- Experiment store, training jobs and the model
+ lockfile all embed this manifest instead of inventing their own.
 - Schema v2 requires a new ADR and a migration note, never a silent
-  field change.
+ field change.

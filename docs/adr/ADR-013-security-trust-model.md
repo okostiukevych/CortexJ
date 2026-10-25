@@ -1,12 +1,12 @@
 # ADR-013: Security/trust model
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§35, 64, 65.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
 An inference platform downloads models and loads natives by design; treating
 all inputs as trusted makes every AI dependency a code-execution vector. The
-research track (§ADR-028 later) legitimately runs user code, which must not
+research track (ADR-028 later) legitimately runs user code, which must not
 dilute Runtime defaults.
 
 ## Decision
@@ -22,7 +22,7 @@ runtime path's job. `SECURITY.md` states supported versions and reporting.
 ## Consequences
 
 - Default posture denies the unknown; enabling more is an explicit, auditable
-  configuration act.
+ configuration act.
 - Research isolation is a separate, stated trust profile (not a Runtime
-  regression).
+ regression).
 - Trust failures never produce silent behaviour (matches ADR-004).

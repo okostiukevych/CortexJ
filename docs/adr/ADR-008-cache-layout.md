@@ -1,6 +1,6 @@
 # ADR-008: Cache layout
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§33, 34.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 

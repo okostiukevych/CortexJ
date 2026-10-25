@@ -1,6 +1,6 @@
 # ADR-011: llama.cpp binding approach
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§18, 36.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 

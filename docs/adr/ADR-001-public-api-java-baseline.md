@@ -1,7 +1,7 @@
 # ADR-001: Public API Java baseline
 
 Date: 2026-10-25. Status: accepted (ratified retroactively — documents the
-implementation already in `main`). Spec: v3.0 §§7, 12, 13.
+implementation already in `main`).
 
 ## Context
 
@@ -22,8 +22,8 @@ which never leak into shared signatures.
 ## Consequences
 
 - Java 8 consumers see zero bytecode or type breakage across Runtime lines.
-- Modern-container features enter only through LTS-scoped modules (§22).
+- Modern-container features enter only through LTS-scoped modules.
 - Cross-module API review is enforced by the JPMS profile (`-Pjpms`) and
-  japicmp once the baseline release exists (see §74).
+ japicmp once the baseline release exists (see).
 - Evidence: `cortexj.shared.release=8` in the parent POM;
-  `streaming/flow`, `platform/java11*…` modules gated by JDK profiles.
+ `streaming/flow`, `platform/java11*…` modules gated by JDK profiles.

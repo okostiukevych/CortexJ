@@ -1,6 +1,6 @@
 # ADR-002: LTS starter strategy
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§7, 8, 22.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
@@ -20,7 +20,7 @@ lane.
 ## Consequences
 
 - Dependency choice is one line in `pom.xml` (starter coordinate), documented
-  per LTS.
-- Java 21/25 examples (spec §§79–80) compile and run with only the starter
-  changed (`examples/java21`, `examples/java25-jinfer`).
+ per LTS.
+- Java 21/25 examples (the version-examples contract) compile and run with only the starter
+ changed (`examples/java21`, `examples/java25-jinfer`).
 - Starter divergence would break AC-JAVA-* acceptance; CI runs the five lanes.

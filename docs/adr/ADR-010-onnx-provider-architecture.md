@@ -1,6 +1,6 @@
 # ADR-010: ONNX provider architecture
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§18, 19.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 

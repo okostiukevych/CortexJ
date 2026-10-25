@@ -1,6 +1,6 @@
 # ADR-005: Native binary packaging
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§35, 36, 62.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 

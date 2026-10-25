@@ -1,6 +1,6 @@
 # ADR-015: Runtime fallback semantics
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§39, 40.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
@@ -22,4 +22,4 @@ fallbacks per request; the strictest setting fails fast.
 - "Why did quality change?" is always answerable from plan + events.
 - Health scoring applies to runtime selection, not just re-selection.
 - Tests pin both behaviours: fallback happens (declared) and never happens
-  silently (strict mode).
+ silently (strict mode).

@@ -1,6 +1,6 @@
 # ADR-003: RuntimeProvider SPI
 
-Date: 2026-10-25. Status: accepted (ratified retroactively). Spec: v3.0 §§16, 17, 20.
+Date: 2026-10-25. Status: accepted (ratified retroactively).
 
 ## Context
 
@@ -20,6 +20,6 @@ expected behaviour every provider must satisfy.
 ## Consequences
 
 - Adding a runtime = one new module + `META-INF/services` entry (demonstrated
-  by `examples/.../plugin/CustomRuntimeProvider`).
+ by `examples/.../plugin/CustomRuntimeProvider`).
 - The planner's inputs stay data-shaped: descriptors, not engine internals.
 - Provider regressions fail in CI via the TCK contract, not in production.

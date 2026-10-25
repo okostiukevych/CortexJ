@@ -536,7 +536,7 @@
   </profile>
 </profiles>
 
-  <!-- Baseline repository for the japicmp compat profile (spec §74): the
+  <!-- Baseline repository for the japicmp compat profile (the binary-compatibility gate): the
        GitHub Pages Maven repository publishes released versions; resolution
        requires this declaration (Central remains a future channel). -->
   <repositories>
