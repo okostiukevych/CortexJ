@@ -840,9 +840,14 @@ public final class DefaultModels implements io.cortexj.Models {
             try {
                 return awaitInFlight(inFlight, cancelFlag);
             } catch (ConcurrentClaimCancelled ownerCancelled) {
-                // audit #97: the claim owner cancelled its own load - the claim is
-                // already gone from the map, so re-claim with this caller's own
-                // supplier instead of failing with somebody else's cancellation
+                // audit #97: the claim owner cancelled its own load - re-claim with
+                // this caller's own supplier instead of failing with somebody else's
+                // cancellation. The cancelled owner's finally-block may not have run
+                // yet, so the stale entry can still sit in the map; drop it first
+                // (value-guarded remove: never touches a newer claim published in
+                // the meantime) or the re-claim would only observe the same dead
+                // claim again and consume its retry.
+                inFlightWork.remove(key, inFlight);
                 if (retries <= 0) {
                     throw new ModelLoadException(ErrorCode.LOAD_FAILED,
                             "A concurrent load of the same artifact was cancelled repeatedly",
