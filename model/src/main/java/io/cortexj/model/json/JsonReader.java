@@ -148,7 +148,6 @@ public final class JsonReader {
         }
         while (true) {
             skipWhitespace(in);
-            array.elements(); // no-op: keeps shape explicit; elements appended below
             Json value = readValue(in, limits, depth + 1);
             appendElement(array, value);
             skipWhitespace(in);

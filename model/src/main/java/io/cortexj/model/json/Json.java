@@ -93,11 +93,11 @@ public final class Json implements Iterable<Json> {
         this.booleanValue = booleanValue;
     }
 
-    private static final Json NULL_VALUE = new Json(Type.NULL, null, null, null,
-            false, 0L, 0.0d, false);
-
     public static Json nullValue() {
-        return NULL_VALUE;
+        // JSON null carries no identity: a fresh immutable instance per call is
+        // semantically identical to a shared singleton and keeps SpotBugs'
+        // EI_EXPOSE_REP / MS_EXPOSE_REP satisfied without suppression.
+        return new Json(Type.NULL, null, null, null, false, 0L, 0.0d, false);
     }
 
     public static Json ofObject() {
@@ -173,10 +173,10 @@ public final class Json implements Iterable<Json> {
     /** Null-safe navigation: missing field yields the null node (never null itself). */
     public Json path(String field) {
         if (type != Type.OBJECT) {
-            return NULL_VALUE;
+            return nullValue();
         }
         Json value = object.get(field);
-        return value == null ? NULL_VALUE : value;
+        return value == null ? nullValue() : value;
     }
 
     public Json get(String field) {
