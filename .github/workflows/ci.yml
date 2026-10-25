@@ -196,7 +196,7 @@ jobs:
   # fails the build on any binary-incompatible change to the Public API /
   # Stable SPI tiers without a major bump.
   compat:
-    name: Binary compatibility (japicmp vs 1.0.0)
+    name: Binary compatibility (japicmp vs the latest release (1.0.1))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -211,7 +211,7 @@ jobs:
           path: ~/.m2
           key: ubuntu-latest-maven-compat-${{ hashFiles('**/pom.xml') }}
       - name: japicmp against the 1.0.0 baseline
-        run: mvn -B verify -Pcompat -Dcortexj.api.baseline=1.0.0 -Dcortexj.compat.skip=false -DskipTests
+        run: mvn -B verify -Pcompat -Dcortexj.api.baseline=1.0.1 -Dcortexj.compat.skip=false -DskipTests
 
   # Supply-chain lane (spec §100/§99): every build produces CycloneDX SBOMs
   # for all modules (collected as an artifact) and a dependency hygiene report
