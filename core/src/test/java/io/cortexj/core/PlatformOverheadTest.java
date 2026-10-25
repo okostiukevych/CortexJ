@@ -67,4 +67,49 @@ class PlatformOverheadTest {
             platform.close();
         }
     }
+
+    /**
+     * Spec §124.2: framework memory overhead without the model - the JVM heap
+     * the platform itself (discovery, descriptors, planner, telemetry wiring)
+     * costs once fully warm. The fake engine keeps this number free of model
+     * weights, so the measurement is framework-own allocation only.
+     */
+    @Test
+    void frameworkHeapWithoutModelStaysBelowBudget() {
+        System.gc();
+        long before = heapUsed();
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new EndToEndLoadTest.FakeRuntimeProvider())
+                .repositoryProvider(new EndToEndLoadTest.FakeRepository())
+                .workingDirectory(workDir)
+                .trustPolicy(TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING)
+                .build();
+        try {
+            ModelHandle handle = platform.models().load(ModelReference.of("e2e/test-model"));
+            try {
+                // warm JIT + framework caches, then settle before the measurement
+                for (int i = 0; i < 300; i++) {
+                    platform.planner().plan(io.cortexj.planner.ExecutionRequest
+                            .forModel(ModelReference.of("e2e/test-model")));
+                }
+            } finally {
+                handle.close();
+            }
+            System.gc();
+            long after = heapUsed();
+            long overheadMb = (after - before) / 1024 / 1024;
+            System.out.println("framework heap overhead without model: " + overheadMb
+                    + " MB (spec §124.2 target: < 100 MB)");
+            assertTrue(overheadMb < 100,
+                    "framework heap overhead without the model must stay under 100 MB, got "
+                            + overheadMb + " MB");
+        } finally {
+            platform.close();
+        }
+    }
+
+    private static long heapUsed() {
+        Runtime runtime = Runtime.getRuntime();
+        return runtime.totalMemory() - runtime.freeMemory();
+    }
 }
