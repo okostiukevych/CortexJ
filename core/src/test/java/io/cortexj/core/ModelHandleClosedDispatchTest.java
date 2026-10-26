@@ -177,6 +177,12 @@ class ModelHandleClosedDispatchTest {
             assertThrows(InferenceException.class,
                     () -> handle.capability(TextGenerationCapability.class));
             assertThrows(InferenceException.class,
+                    () -> handle.capabilityIfSupported(TextGenerationCapability.class));
+            assertThrows(InferenceException.class,
+                    () -> handle.capabilities());
+            assertThrows(InferenceException.class,
+                    () -> handle.supports(TaskCapability.TEXT_GENERATION));
+            assertThrows(InferenceException.class,
                     () -> ((DefaultModelHandle) handle).executeAsync(request));
             assertEquals(0, provider.executeCalls.get(),
                     "no runtime work may be performed on a closed handle");

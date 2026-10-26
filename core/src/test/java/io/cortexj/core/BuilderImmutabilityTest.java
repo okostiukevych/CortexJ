@@ -87,4 +87,35 @@ class BuilderImmutabilityTest {
             platform.close();
         }
     }
+
+    @Test
+    void builderGettersReturnUnmodifiableListsAndFailedBuildPreservesUserExecutor() throws Exception {
+        CortexJBuilder builder = CortexJ.builder()
+                .runtimeProvider(new ModelHandleCloseRaceTest.CountingRuntimeProvider())
+                .repositoryProvider(new EndToEndLoadTest.FakeRepository());
+        assertThrows(UnsupportedOperationException.class, () -> builder.runtimeProviders().clear());
+        assertThrows(UnsupportedOperationException.class, () -> builder.repositoryProviders().clear());
+        assertThrows(UnsupportedOperationException.class, () -> builder.converters().clear());
+        assertThrows(UnsupportedOperationException.class, () -> builder.executionPolicies().clear());
+        assertThrows(UnsupportedOperationException.class, () -> builder.eventListeners().clear());
+
+        java.util.concurrent.ExecutorService userExecutor =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            Path fileNotDir = java.nio.file.Files.write(workDir.resolve("not-a-dir"), new byte[]{1});
+            Path badWorkDir = java.nio.file.Files.createDirectories(workDir.resolve("bad-policy"));
+            // a malformed unicode escape makes Properties.load fail: the platform must
+            // fail closed AND leave the caller-supplied executor alone
+            java.nio.file.Files.write(badWorkDir.resolve("enterprise-policy.properties"),
+                    "key=\\uZZZZ".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            assertThrows(RuntimeException.class, () -> CortexJ.builder()
+                    .executor(userExecutor)
+                    .workingDirectory(badWorkDir)
+                    .build());
+            org.junit.jupiter.api.Assertions.assertFalse(userExecutor.isShutdown(),
+                    "a failed build() must not shut down a user-supplied executor");
+        } finally {
+            userExecutor.shutdownNow();
+        }
+    }
 }

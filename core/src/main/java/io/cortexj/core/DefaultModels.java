@@ -194,6 +194,8 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             final java.util.concurrent.atomic.AtomicBoolean cancelFlag =
                     new java.util.concurrent.atomic.AtomicBoolean();
+            final java.util.concurrent.atomic.AtomicReference<Thread> workerThread =
+                    new java.util.concurrent.atomic.AtomicReference<Thread>();
             final java.util.concurrent.CompletableFuture<ModelHandle> underlying =
                     new java.util.concurrent.CompletableFuture<ModelHandle>();
             try {
@@ -214,6 +216,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         // a handle nobody will ever close
                         loadLock.readLock().lock();
                         try {
+                            workerThread.set(Thread.currentThread());
                             if (closed) {
                                 underlying.completeExceptionally(new ModelLoadException(
                                         ErrorCode.LOAD_FAILED,
@@ -241,6 +244,8 @@ public final class DefaultModels implements io.cortexj.Models {
                         } catch (Throwable failure) {
                             underlying.completeExceptionally(failure);
                         } finally {
+                            workerThread.set(null);
+                            Thread.interrupted();
                             asyncLoads.remove(underlying);
                             loadLock.readLock().unlock();
                         }
@@ -254,7 +259,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Await or cancel an in-flight loadAsync before submitting more, or raise "
                                 + "the load pool width (cortexj.load.width/cortexj.load.queue)."));
             }
-            return new CancellableLoad(underlying, cancelFlag);
+            return new CancellableLoad(underlying, cancelFlag, workerThread);
         } finally {
             loadLock.readLock().unlock();
         }
@@ -264,16 +269,25 @@ public final class DefaultModels implements io.cortexj.Models {
 
         private final java.util.concurrent.CompletableFuture<ModelHandle> underlying;
         private final java.util.concurrent.atomic.AtomicBoolean cancelFlag;
+        private final java.util.concurrent.atomic.AtomicReference<Thread> workerThread;
 
         CancellableLoad(java.util.concurrent.CompletableFuture<ModelHandle> underlying,
-                        java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
+                        java.util.concurrent.atomic.AtomicBoolean cancelFlag,
+                        java.util.concurrent.atomic.AtomicReference<Thread> workerThread) {
             this.underlying = underlying;
             this.cancelFlag = cancelFlag;
+            this.workerThread = workerThread;
         }
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
             cancelFlag.set(true);
+            if (mayInterruptIfRunning) {
+                Thread worker = workerThread.get();
+                if (worker != null) {
+                    worker.interrupt();
+                }
+            }
             return underlying.cancel(mayInterruptIfRunning);
         }
 
@@ -310,7 +324,7 @@ public final class DefaultModels implements io.cortexj.Models {
         ModelLoadException last = null;
         List<ModelLoadException> failures = new ArrayList<ModelLoadException>();
         for (int index = 0; index < chain.size(); index++) {
-            if (cancelFlag != null && cancelFlag.get()) {
+            if ((cancelFlag != null && cancelFlag.get()) || Thread.currentThread().isInterrupted()) {
                 throw new java.util.concurrent.CancellationException(
                         "load cancelled before candidate " + chain.get(index).runtimeId());
             }
@@ -322,6 +336,13 @@ public final class DefaultModels implements io.cortexj.Models {
                 }
                 return handle;
             } catch (RuntimeException e) {
+                if ((cancelFlag != null && cancelFlag.get()) || Thread.currentThread().isInterrupted()
+                        || isCancelledCause(e)) {
+                    throw e instanceof java.util.concurrent.CancellationException
+                            ? e
+                            : new java.util.concurrent.CancellationException(
+                                    "load cancelled during candidate " + candidate.runtimeId());
+                }
                 // audit 2026-10-07 (#147): a trust/license refusal is
                 // provider-independent - retrying the next runtime is
                 // pointless, fail fast with the policy error instead
@@ -343,14 +364,10 @@ public final class DefaultModels implements io.cortexj.Models {
                     last = asLoadFailure(e, candidate);
                     failures.add(last);
                     if (index < chain.size() - 1) {
-                        java.util.Map<String, String> fallbackAttributes =
-                                new java.util.LinkedHashMap<String, String>();
-                        fallbackAttributes.put("model", plan.modelId());
-                        fallbackAttributes.put("runtime", candidate.runtimeId());
                         platform.events().publish(PlatformEvent.Type.FALLBACK_APPLIED,
                                 PlatformEvent.Level.WARNING,
                                 "load failed on " + candidate.runtimeId() + ": " + e.getMessage()
-                                        + "; trying fallback", fallbackAttributes);
+                                        + "; trying fallback", candidateAttributes(plan, candidate));
                     }
                     continue;
                 }
@@ -400,6 +417,18 @@ public final class DefaultModels implements io.cortexj.Models {
             String code = ((CortexJException) e).code();
             return ErrorCode.SEC_POLICY_BLOCKED.equals(code)
                     || ErrorCode.SEC_LICENSE_BLOCKED.equals(code);
+        }
+        return false;
+    }
+
+    private static boolean isCancelledCause(Throwable error) {
+        Throwable cursor = error;
+        int depth = 0;
+        while (cursor != null && depth++ < 16) {
+            if (cursor instanceof java.util.concurrent.CancellationException) {
+                return true;
+            }
+            cursor = cursor.getCause();
         }
         return false;
     }
@@ -496,7 +525,7 @@ public final class DefaultModels implements io.cortexj.Models {
         });
         handle.lifecycleTo(ModelLifecycleState.RESOLVING);
         try {
-            enforceTrustPolicy(resolved);
+            enforceTrustPolicy(plan, resolved, candidate);
 
             Path artifactPath = ensureArtifact(plan, resolved, candidate, handle, cancelFlag);
 
@@ -647,7 +676,7 @@ public final class DefaultModels implements io.cortexj.Models {
                 cached = null;
             }
             if (cached != null) {
-                ensureTokenizerSidecars(resolved, cached, handle, cancelFlag);
+                ensureTokenizerSidecars(plan, candidate, resolved, cached, handle, cancelFlag);
                 return cached;
             }
             if (platform.config().offline) {
@@ -658,7 +687,7 @@ public final class DefaultModels implements io.cortexj.Models {
             }
             Path downloaded = downloadOnce(resolvedArtifact, resolved.repository().value(),
                     resolved.revision(), cache, handle, cancelFlag);
-            ensureTokenizerSidecars(resolved, downloaded, handle, cancelFlag);
+            ensureTokenizerSidecars(plan, candidate, resolved, downloaded, handle, cancelFlag);
             return downloaded;
         }
         throw new ArtifactResolutionException(ErrorCode.ARTIFACT_MISSING,
@@ -694,7 +723,8 @@ public final class DefaultModels implements io.cortexj.Models {
      * CacheStorage API. If the cache cap is hit, the copy is evictable
      * like any unlisted file and the next load re-stages it.
      */
-    private void ensureTokenizerSidecars(ResolvedModel resolved, Path artifactPath,
+    private void ensureTokenizerSidecars(ExecutionPlan plan, ExecutionCandidate candidate,
+                                         ResolvedModel resolved, Path artifactPath,
                                          DefaultModelHandle handle,
                                          java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
         if (resolved == null || resolved.artifacts() == null || artifactPath == null) {
@@ -725,7 +755,8 @@ public final class DefaultModels implements io.cortexj.Models {
             if (source == null) {
                 String note = "tokenizer.json for " + sidecar.artifact().id()
                         + " is not available; the runtime falls back to its built-in tokenizer";
-                platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED, note);
+                platform.events().publish(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
+                        PlatformEvent.Level.WARNING, note, candidateAttributes(plan, candidate));
                 handle.markDegradedTokenizer(note);
                 return;
             }
@@ -754,7 +785,8 @@ public final class DefaultModels implements io.cortexj.Models {
                 String note = "cannot stage tokenizer.json next to " + artifactPath.getFileName()
                         + ": " + copyFailed.getMessage()
                         + "; the runtime falls back to its built-in tokenizer";
-                platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED, note);
+                platform.events().publish(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
+                        PlatformEvent.Level.WARNING, note, candidateAttributes(plan, candidate));
                 handle.markDegradedTokenizer(note);
             }
             return;
@@ -823,12 +855,12 @@ public final class DefaultModels implements io.cortexj.Models {
     }
 
     Path oncePerKey(String key, java.util.function.Supplier<Path> work) {
-        return oncePerKey(key, work, null, 1);
+        return oncePerKey(key, work, null, 3);
     }
 
     Path oncePerKey(String key, java.util.function.Supplier<Path> work,
                     java.util.concurrent.atomic.AtomicBoolean cancelFlag) {
-        return oncePerKey(key, work, cancelFlag, 1);
+        return oncePerKey(key, work, cancelFlag, 3);
     }
 
     private Path oncePerKey(String key, java.util.function.Supplier<Path> work,
@@ -923,7 +955,7 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Retry the model load.");
             } catch (java.util.concurrent.ExecutionException e) {
                 Throwable cause = e.getCause() == null ? e : e.getCause();
-                if (cause instanceof java.util.concurrent.CancellationException) {
+                if (isCancelledCause(cause)) {
                     throw new ConcurrentClaimCancelled();
                 }
                 if (cause instanceof RuntimeException) {
@@ -959,7 +991,7 @@ public final class DefaultModels implements io.cortexj.Models {
         }
     }
 
-    private void enforceTrustPolicy(ResolvedModel resolved) {
+    private void enforceTrustPolicy(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate) {
         io.cortexj.model.TrustPolicy policy = platform.config().trustPolicy;
         String trustNote = resolved.descriptor().trustNote();
         if (trustNote == null || trustNote.isEmpty()) {
@@ -967,12 +999,14 @@ public final class DefaultModels implements io.cortexj.Models {
             // for every provider - but the local provider never sets one, so
             // an unchecked local file bypassed TRUSTED_ONLY entirely. A note
             // stays sufficient for blocking; without one, TRUSTED_ONLY
-            // additionally requires at least one artifact checksum.
-            if (policy == io.cortexj.model.TrustPolicy.TRUSTED_ONLY && !hasAnyChecksum(resolved)) {
+            // additionally requires the selected weight artifact (or conversion
+            // source) to carry a verified strong checksum.
+            if (policy == io.cortexj.model.TrustPolicy.TRUSTED_ONLY
+                    && !hasTrustedCandidateChecksum(resolved, candidate)) {
                 throw new ModelLoadException(io.cortexj.ErrorCode.SEC_POLICY_BLOCKED,
                         "Model " + resolved.descriptor().canonicalId()
-                                + " carries no trust note and no artifact checksum, and the platform "
-                                + "runs with TRUSTED_ONLY.",
+                                + " carries no trust note and no verified artifact checksum on the selected "
+                                + "weight artifact, and the platform runs with TRUSTED_ONLY.",
                         "Record checksums in the local manifest (cortexj-model.json) so the "
                                 + "artifact is verifiable, pin a trusted revision, or relax the "
                                 + "trust policy to ALLOW_UNSIGNED_WITH_WARNING.");
@@ -988,9 +1022,50 @@ public final class DefaultModels implements io.cortexj.Models {
                             + "or relax the trust policy to ALLOW_UNSIGNED_WITH_WARNING.");
         }
         if (policy == io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING) {
-            platform.events().warn(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
-                    "untrusted model loaded (trust policy allows it): " + trustNote);
+            platform.events().publish(PlatformEvent.Type.MODEL_RESOLUTION_COMPLETED,
+                    PlatformEvent.Level.WARNING,
+                    "untrusted model loaded (trust policy allows it): " + trustNote,
+                    candidateAttributes(plan, candidate));
         }
+    }
+
+    private static boolean hasTrustedCandidateChecksum(ResolvedModel resolved, ExecutionCandidate candidate) {
+        if (candidate != null && candidate.artifact() != null
+                && candidate.artifact().format() != io.cortexj.model.ArtifactFormat.REMOTE) {
+            if (candidate.requiresConversion() && candidate.conversion() != null) {
+                String sourceId = candidate.conversion().sourceArtifactId();
+                if (resolved.artifacts() != null && sourceId != null) {
+                    for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
+                        if (resolvedArtifact != null && resolvedArtifact.artifact() != null
+                                && sourceId.equals(resolvedArtifact.artifact().id())) {
+                            return hasTrustedChecksum(resolvedArtifact.artifact());
+                        }
+                    }
+                }
+                return false;
+            }
+            if (hasTrustedChecksum(candidate.artifact())) {
+                return true;
+            }
+            if (resolved.artifacts() != null) {
+                for (ResolvedArtifact resolvedArtifact : resolved.artifacts()) {
+                    if (resolvedArtifact != null && resolvedArtifact.artifact() != null
+                            && candidate.artifact().id().equals(resolvedArtifact.artifact().id())) {
+                        return hasTrustedChecksum(resolvedArtifact.artifact());
+                    }
+                }
+            }
+            return false;
+        }
+        return hasAnyChecksum(resolved);
+    }
+
+    private static boolean hasTrustedChecksum(ModelArtifact artifact) {
+        return artifact != null
+                && artifact.checksum() != null
+                && artifact.checksum().value() != null
+                && !artifact.checksum().value().trim().isEmpty()
+                && isTrustedAlgorithm(artifact.checksum().algorithm());
     }
 
     private static boolean hasAnyChecksum(ResolvedModel resolved) {
@@ -998,14 +1073,7 @@ public final class DefaultModels implements io.cortexj.Models {
             return false;
         }
         for (ResolvedArtifact artifact : resolved.artifacts()) {
-            if (artifact != null && artifact.artifact() != null
-                    && artifact.artifact().checksum() != null
-                    && artifact.artifact().checksum().value() != null
-                    && !artifact.artifact().checksum().value().trim().isEmpty()
-                    // audit 2026-10-08: an MD5 manifest must not satisfy
-                    // TRUSTED_ONLY here only to die later with an untyped
-                    // IllegalArgumentException from verify
-                    && isTrustedAlgorithm(artifact.artifact().checksum().algorithm())) {
+            if (artifact != null && hasTrustedChecksum(artifact.artifact())) {
                 return true;
             }
         }
@@ -1017,7 +1085,9 @@ public final class DefaultModels implements io.cortexj.Models {
             return false;
         }
         String normalized = algorithm.trim().toLowerCase(java.util.Locale.ROOT);
-        return !normalized.equals("md5") && !normalized.equals("sha1") && !normalized.equals("sha-1");
+        return normalized.equals("sha256") || normalized.equals("sha-256")
+                || normalized.equals("sha384") || normalized.equals("sha-384")
+                || normalized.equals("sha512") || normalized.equals("sha-512");
     }
 
     private Path materializeConversion(ExecutionPlan plan, ResolvedModel resolved, ExecutionCandidate candidate,
@@ -1109,26 +1179,11 @@ public final class DefaultModels implements io.cortexj.Models {
                         "Converter " + step.converterId() + " produced no output artifact",
                         "Report the converter failure to the converter maintainer.");
             }
-            String sha256;
-            try (java.io.InputStream input = java.nio.file.Files.newInputStream(outputPath)) {
-                java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    digest.update(buffer, 0, read);
-                }
-                StringBuilder hex = new StringBuilder();
-                for (byte b : digest.digest()) {
-                    hex.append(String.format("%02x", b));
-                }
-                sha256 = hex.toString();
-            }
-            try (java.io.InputStream input = java.nio.file.Files.newInputStream(outputPath)) {
-                cache.put(repositoryId, revision, convertedId, null, input);
-            }
+            String sha256 = io.cortexj.cache.Checksums.sha256Hex(outputPath);
+            Path cachedOutput = cache.adopt(outputPath, repositoryId, revision, convertedId, null);
             writeProvenance(resolved, candidate, step, converter, source, result, sha256);
-            return cache.get(repositoryId, revision, convertedId, null);
-        } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
+            return cachedOutput;
+        } catch (java.io.IOException e) {
             throw new ModelLoadException(ErrorCode.LOAD_FAILED,
                     "Conversion of " + step.sourceArtifactId() + " failed: " + e.getMessage(), e);
         } finally {

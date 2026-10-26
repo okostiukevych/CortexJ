@@ -154,8 +154,12 @@ public final class CacheStorage {
         activePartials.remove(partialFile.toAbsolutePath().normalize());
     }
 
+    public boolean isActivePartial(Path partialFile) {
+        return partialFile != null && activePartials.contains(partialFile.toAbsolutePath().normalize());
+    }
+
     private boolean isActivePartial(CacheEntry entry) {
-        return activePartials.contains(entry.path().toAbsolutePath().normalize());
+        return isActivePartial(entry.path());
     }
 
     /**
@@ -571,6 +575,7 @@ public final class CacheStorage {
                 return false;
             }
             deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".manifest"));
+            deleteSilently(entry.path().resolveSibling(fileNameOf(entry.path()) + ".lock"));
             return true;
         }
     }

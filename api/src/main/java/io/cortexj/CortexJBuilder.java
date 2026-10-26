@@ -20,9 +20,9 @@ public final class CortexJBuilder {
     private final List<ExecutionPolicy> executionPolicies = new ArrayList<ExecutionPolicy>();
     private final List<io.cortexj.spi.conversion.ModelConverter> converters =
             new ArrayList<io.cortexj.spi.conversion.ModelConverter>();
-    private io.cortexj.model.TrustPolicy trustPolicy = io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING;
-    private String proxyHost;
-    private String proxyPort;
+    private volatile io.cortexj.model.TrustPolicy trustPolicy = io.cortexj.model.TrustPolicy.ALLOW_UNSIGNED_WITH_WARNING;
+    private volatile String proxyHost;
+    private volatile String proxyPort;
     private final List<PlatformEventListener> eventListeners = new ArrayList<PlatformEventListener>();
 
     // volatile: the builder may be configured on one thread and consumed by
@@ -185,15 +185,15 @@ public final class CortexJBuilder {
     }
 
     public List<RuntimeProvider> runtimeProviders() {
-        return runtimeProviders;
+        return java.util.Collections.unmodifiableList(runtimeProviders);
     }
 
     public List<ModelRepositoryProvider> repositoryProviders() {
-        return repositoryProviders;
+        return java.util.Collections.unmodifiableList(repositoryProviders);
     }
 
     public List<ExecutionPolicy> executionPolicies() {
-        return executionPolicies;
+        return java.util.Collections.unmodifiableList(executionPolicies);
     }
 
     public CortexJBuilder converter(io.cortexj.spi.conversion.ModelConverter converter) {
@@ -205,7 +205,7 @@ public final class CortexJBuilder {
     }
 
     public List<io.cortexj.spi.conversion.ModelConverter> converters() {
-        return converters;
+        return java.util.Collections.unmodifiableList(converters);
     }
 
     public io.cortexj.model.TrustPolicy trustPolicy() {
@@ -221,7 +221,7 @@ public final class CortexJBuilder {
     }
 
     public List<PlatformEventListener> eventListeners() {
-        return eventListeners;
+        return java.util.Collections.unmodifiableList(eventListeners);
     }
 
     public boolean isOffline() {

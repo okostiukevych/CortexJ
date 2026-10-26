@@ -109,4 +109,37 @@ class TokenStreamTest {
         });
         assertTrue(errored.get());
     }
+
+    @Test
+    void singleAndFailedStreamsEnforceNullConsumerSingleSubscribeAndCancelState() {
+        TokenConsumer noop = new TokenConsumer() {
+            @Override
+            public void onToken(Token token) {
+            }
+
+            @Override
+            public void onComplete(StreamCompletion completion) {
+            }
+
+            @Override
+            public void onError(io.cortexj.error.CortexJException error) {
+            }
+        };
+
+        TokenStream single = TokenStreams.single("tok");
+        assertThrows(IllegalArgumentException.class, () -> single.subscribe(null));
+        StreamSubscription sub1 = single.subscribe(noop);
+        org.junit.jupiter.api.Assertions.assertFalse(sub1.isCancelled());
+        sub1.cancel();
+        assertTrue(sub1.isCancelled());
+        assertThrows(IllegalStateException.class, () -> single.subscribe(noop));
+
+        TokenStream failed = TokenStreams.failed(new InferenceException("CORTEXJ-INFER-9001", "err"));
+        assertThrows(IllegalArgumentException.class, () -> failed.subscribe(null));
+        StreamSubscription sub2 = failed.subscribe(noop);
+        org.junit.jupiter.api.Assertions.assertFalse(sub2.isCancelled());
+        sub2.cancel();
+        assertTrue(sub2.isCancelled());
+        assertThrows(IllegalStateException.class, () -> failed.subscribe(noop));
+    }
 }

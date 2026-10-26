@@ -115,8 +115,8 @@ class DownloadByteCapTest {
 
         assertEquals("CORTEXJ-ARTIFACT-2004", exception.code(),
                 "the stream cap must surface as ARTIFACT_TOO_LARGE");
-        assertEquals(2, bodyRequests.get(),
-                "the cap failure must not be retried: probe + one download only");
+        assertEquals(1, bodyRequests.get(),
+                "the cap failure must not be retried: one download request only");
         Path partial = cache.root().resolve("downloads-partial")
                 .resolve(DownloadManager.partialFileName("cap-repo", "rev1", "model.bin"));
         assertFalse(Files.exists(partial), "the partial must be deleted when the cap is exceeded");
@@ -136,7 +136,7 @@ class DownloadByteCapTest {
 
         assertEquals("CORTEXJ-ARTIFACT-2004", exception.code(),
                 "the declared-size check passes but the stream must still be capped");
-        assertEquals(2, bodyRequests.get(), "the cap failure must not be retried");
+        assertEquals(1, bodyRequests.get(), "the cap failure must not be retried");
         Path partial = cache.root().resolve("downloads-partial")
                 .resolve(DownloadManager.partialFileName("cap-repo", "rev1", "model.bin"));
         assertFalse(Files.exists(partial), "the partial must be deleted when the cap is exceeded");

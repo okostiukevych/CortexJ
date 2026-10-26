@@ -31,17 +31,24 @@ public final class ModelLockfile {
     private final String plannerDigest;
 
     private ModelLockfile(Builder builder) {
-        this.model = builder.model;
+        this.model = sanitizeSingleLine(builder.model);
         this.schemaVersion = builder.schemaVersion == null
                 ? SCHEMA_MAJOR + "." + SCHEMA_MINOR
-                : builder.schemaVersion;
-        this.revision = builder.revision;
-        this.artifactFile = builder.artifactFile;
-        this.artifactSha256 = builder.artifactSha256;
-        this.runtimeId = builder.runtimeId;
-        this.runtimeVersion = builder.runtimeVersion;
-        this.platformVersion = builder.platformVersion;
-        this.plannerDigest = builder.plannerDigest;
+                : sanitizeSingleLine(builder.schemaVersion);
+        this.revision = sanitizeSingleLine(builder.revision);
+        this.artifactFile = sanitizeSingleLine(builder.artifactFile);
+        this.artifactSha256 = sanitizeSingleLine(builder.artifactSha256);
+        this.runtimeId = sanitizeSingleLine(builder.runtimeId);
+        this.runtimeVersion = sanitizeSingleLine(builder.runtimeVersion);
+        this.platformVersion = sanitizeSingleLine(builder.platformVersion);
+        this.plannerDigest = sanitizeSingleLine(builder.plannerDigest);
+    }
+
+    private static String sanitizeSingleLine(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace('\r', ' ').replace('\n', ' ').trim();
     }
 
     public static Builder builder(String model) {

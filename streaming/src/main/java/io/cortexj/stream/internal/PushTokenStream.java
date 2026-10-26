@@ -54,6 +54,7 @@ public final class PushTokenStream implements TokenStream {
     private final AtomicBoolean failed = new AtomicBoolean(false);
     private final AtomicInteger emitted = new AtomicInteger(0);
     private final AtomicReference<Runnable> cancelAction = new AtomicReference<Runnable>();
+    private final AtomicBoolean cancelActionRan = new AtomicBoolean(false);
     // drain-owner guard: at most one thread dispatches at a time, so user code
     // never runs under the monitor and never overlaps (GitHub #57)
     private final AtomicBoolean delivering = new AtomicBoolean(false);
@@ -126,6 +127,7 @@ public final class PushTokenStream implements TokenStream {
             return;
         }
         boolean deliverNow = false;
+        boolean overflowed = false;
         synchronized (lock) {
             if (closed.get() || completed.get() || failed.get()) {
                 return;
@@ -138,8 +140,18 @@ public final class PushTokenStream implements TokenStream {
                 earlyToolCalls.add(new ArrayList<ToolCall>(toolCalls));
                 return;
             }
-            pendingToolCalls.add(new ArrayList<ToolCall>(toolCalls));
-            deliverNow = true;
+            if (pendingToolCalls.size() >= LIVE_TOKEN_BUFFER_LIMIT) {
+                failLocked(liveOverflowError(LIVE_TOKEN_BUFFER_LIMIT));
+                overflowed = true;
+            } else {
+                pendingToolCalls.add(new ArrayList<ToolCall>(toolCalls));
+                deliverNow = true;
+            }
+        }
+        if (overflowed) {
+            close();
+            drain();
+            return;
         }
         if (deliverNow) {
             drain();
@@ -229,6 +241,16 @@ public final class PushTokenStream implements TokenStream {
 
     public void onCancel(Runnable action) {
         this.cancelAction.set(action);
+        if (closed.get()) {
+            runCancelActionOnce();
+        }
+    }
+
+    private void runCancelActionOnce() {
+        Runnable action = cancelAction.get();
+        if (action != null && cancelActionRan.compareAndSet(false, true)) {
+            action.run();
+        }
     }
 
     @Override
@@ -252,7 +274,8 @@ public final class PushTokenStream implements TokenStream {
             earlyTokens.clear();
             pendingToolCalls.addAll(earlyToolCalls);
             earlyToolCalls.clear();
-            if (pending.size() > LIVE_TOKEN_BUFFER_LIMIT) {
+            if (pending.size() > LIVE_TOKEN_BUFFER_LIMIT
+                    || pendingToolCalls.size() > LIVE_TOKEN_BUFFER_LIMIT) {
                 failLocked(liveOverflowError(LIVE_TOKEN_BUFFER_LIMIT));
             }
             consumer.set(tokenConsumer);
@@ -317,25 +340,42 @@ public final class PushTokenStream implements TokenStream {
             // audit 2026-10-08: a throwing consumer must not stall the
             // stream - fail it with a typed error instead of abandoning
             // the remaining tokens and the terminal signal
-            try {
-                if (token != null) {
-                    target.onToken(token);
-                } else if (toolCallBatch != null) {
-                    target.onToolCalls(toolCallBatch);
-                } else if (error != null) {
-                    target.onError(error);
-                } else {
-                    target.onComplete(completion);
-                }
-            } catch (Throwable consumerFailure) {
-                CortexJException typed = consumerError(consumerFailure);
-                fail(typed);
+            if (token != null || toolCallBatch != null) {
                 try {
-                    target.onError(typed);
-                } catch (Throwable ignored) {
-                    // the consumer is gone; the stream is failed, stop here
+                    if (token != null) {
+                        target.onToken(token);
+                    } else {
+                        target.onToolCalls(toolCallBatch);
+                    }
+                } catch (Throwable consumerFailure) {
+                    CortexJException typed = consumerError(consumerFailure);
+                    synchronized (lock) {
+                        pending.clear();
+                        pendingToolCalls.clear();
+                        bufferedCompletion = null;
+                        failLocked(typed);
+                        bufferedError = null;
+                    }
+                    close();
+                    try {
+                        target.onError(typed);
+                    } catch (Throwable ignored) {
+                        // the consumer is gone; the stream is failed, stop here
+                    }
+                    return;
                 }
-                return;
+            } else if (error != null) {
+                try {
+                    target.onError(error);
+                } catch (Throwable ignored) {
+                    // terminal callback threw; do not re-enter onError
+                }
+            } else {
+                try {
+                    target.onComplete(completion);
+                } catch (Throwable ignored) {
+                    // terminal callback threw; do not call onError after onComplete
+                }
             }
         }
     }
@@ -357,10 +397,6 @@ public final class PushTokenStream implements TokenStream {
             public void cancel() {
                 if (cancelled.compareAndSet(false, true)) {
                     self.close();
-                    Runnable action = self.cancelAction.get();
-                    if (action != null) {
-                        action.run();
-                    }
                 }
             }
 
@@ -374,10 +410,7 @@ public final class PushTokenStream implements TokenStream {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            Runnable action = cancelAction.get();
-            if (action != null) {
-                action.run();
-            }
+            runCancelActionOnce();
         }
     }
 }

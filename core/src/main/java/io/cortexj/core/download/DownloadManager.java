@@ -156,7 +156,7 @@ public final class DownloadManager {
         java.nio.file.Path partialsDirectory = cache.root().resolve("downloads-partial");
         java.nio.file.Path resumeFile = partialsDirectory
                 .resolve(partialFileName(repositoryId, revision, artifact.artifact().id()));
-        sweepStalePartials(partialsDirectory);
+        sweepStalePartials(partialsDirectory, cache);
 
         // audit #106: cross-process FileLock - two JVMs sharing CORTEXJ_HOME
         // used to append to the same .part concurrently, splicing bytes that
@@ -165,6 +165,7 @@ public final class DownloadManager {
         // resuming the foreign progress.
         java.nio.channels.FileChannel partialLockChannel = null;
         java.nio.channels.FileLock partialLock = null;
+        java.nio.file.Path lockFile = resumeFile.resolveSibling(resumeFile.getFileName() + ".lock");
         try {
             if (!java.nio.file.Files.isDirectory(partialsDirectory)) {
                 java.nio.file.Files.createDirectories(partialsDirectory);
@@ -175,7 +176,7 @@ public final class DownloadManager {
         }
         try {
             partialLockChannel = java.nio.channels.FileChannel.open(
-                    resumeFile.resolveSibling(resumeFile.getFileName() + ".lock"),
+                    lockFile,
                     java.nio.file.StandardOpenOption.CREATE,
                     java.nio.file.StandardOpenOption.WRITE);
             partialLock = partialLockChannel.tryLock();
@@ -188,6 +189,9 @@ public final class DownloadManager {
             // below already guarantees a file name, fail loudly otherwise
             java.nio.file.Path fileName = resumeFile.getFileName();
             if (fileName == null) {
+                events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
+                        "download failed for " + artifact.artifact().id()
+                                + ": invalid partial file path", attributes);
                 throw new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
                         "Cannot derive a partial-download name from " + resumeFile,
                         "Point the working directory at a regular cache location.");
@@ -200,6 +204,8 @@ public final class DownloadManager {
         // audit M-12: the in-flight partial is registered so LRU/age eviction
         // never deletes an active download's resume file mid-flight
         cache.registerActivePartial(effectivePartial);
+        boolean downloadSucceeded = false;
+        Throwable failureCause = null;
         try {
             for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 try {
@@ -209,6 +215,7 @@ public final class DownloadManager {
                     java.nio.file.Path path = attemptDownload(artifact, repositoryId, revision, cache,
                             declaredSize, limit, effectivePartial, cancelFlag);
                     java.nio.file.Files.deleteIfExists(effectivePartial);
+                    downloadSucceeded = true;
                     Map<String, String> completed = new LinkedHashMap<String, String>(attributes);
                     completed.put("durationMillis",
                             String.valueOf(System.currentTimeMillis() - downloadStartedMillis));
@@ -217,13 +224,7 @@ public final class DownloadManager {
                     return path;
                 } catch (IOException e) {
                     lastError = e;
-                    // audit 2026-10-07 (#142): exception messages may embed the
-                    // raw artifact location (presigned query, userinfo) - the
-                    // event is log-shipped, so redact URL credentials first
-                    events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
-                            "download attempt " + attempt + " failed for " + artifact.artifact().id()
-                                    + ": " + io.cortexj.spi.support.HttpGuards.redactUrlsInText(
-                                    e.getMessage()), attributes);
+                    failureCause = e;
                     if (isTerminal(e)) {
                         break;
                     }
@@ -249,10 +250,12 @@ public final class DownloadManager {
                             } catch (InterruptedException interrupted) {
                                 Thread.currentThread().interrupt();
                                 lastError = new java.io.IOException("download cancelled");
+                                failureCause = lastError;
                                 break;
                             }
                             if (cancelFlag != null && cancelFlag.get()) {
                                 lastError = new java.io.IOException("download cancelled");
+                                failureCause = lastError;
                                 break;
                             }
                             remaining = deadline - System.currentTimeMillis();
@@ -265,7 +268,8 @@ public final class DownloadManager {
                 ArtifactResolutionException cancelled = new ArtifactResolutionException(
                         ErrorCode.ARTIFACT_RESOLUTION_FAILED,
                         "Download of " + artifact.artifact().id() + " was cancelled",
-                        "The partial download is kept for resuming on the next attempt.");
+                        "The partial download is kept for resuming on the next attempt.",
+                        new java.util.concurrent.CancellationException("Download cancelled"));
                 cancelled.detail("artifact", artifact.artifact().id());
                 throw cancelled;
             }
@@ -341,8 +345,21 @@ public final class DownloadManager {
                             : ""), lastError);
             failure.detail("artifact", artifact.artifact().id());
             throw failure;
+        } catch (RuntimeException | Error terminalError) {
+            if (failureCause == null) {
+                failureCause = terminalError;
+            }
+            throw terminalError;
         } finally {
+            if (!downloadSucceeded) {
+                String msg = failureCause == null ? "download failed" : failureCause.getMessage();
+                events.publish(PlatformEvent.Type.DOWNLOAD_FAILED, PlatformEvent.Level.WARNING,
+                        "download failed for " + artifact.artifact().id()
+                                + ": " + io.cortexj.spi.support.HttpGuards.redactUrlsInText(msg),
+                        attributes);
+            }
             cache.unregisterActivePartial(effectivePartial);
+            boolean hadLock = partialLock != null;
             if (partialLock != null) {
                 try {
                     partialLock.release();
@@ -354,8 +371,12 @@ public final class DownloadManager {
                 try {
                     partialLockChannel.close();
                 } catch (java.io.IOException ignored) {
-                    // the lock file itself stays (invisible to list()); deleting
-                    // it under contention is racy
+                }
+            }
+            if (hadLock && !java.nio.file.Files.exists(effectivePartial)) {
+                try {
+                    java.nio.file.Files.deleteIfExists(lockFile);
+                } catch (java.io.IOException ignored) {
                 }
             }
         }
@@ -382,7 +403,7 @@ public final class DownloadManager {
      * the JVM that owned it is long gone) are swept at download start; they
      * used to be cleaned only by cache pressure or a manual cache clean.
      */
-    private static void sweepStalePartials(java.nio.file.Path partialsDirectory) {
+    private static void sweepStalePartials(java.nio.file.Path partialsDirectory, CacheStorage cache) {
         try {
             if (!java.nio.file.Files.isDirectory(partialsDirectory)) {
                 return;
@@ -391,8 +412,35 @@ public final class DownloadManager {
             try (java.nio.file.DirectoryStream<java.nio.file.Path> stream =
                          java.nio.file.Files.newDirectoryStream(partialsDirectory, "*.part")) {
                 for (java.nio.file.Path candidate : stream) {
+                    if (cache != null && cache.isActivePartial(candidate)) {
+                        continue;
+                    }
                     if (java.nio.file.Files.getLastModifiedTime(candidate).toMillis() < cutoff) {
                         java.nio.file.Files.deleteIfExists(candidate);
+                        java.nio.file.Path candidateName = candidate.getFileName();
+                        if (candidateName != null) {
+                            java.nio.file.Files.deleteIfExists(
+                                    candidate.resolveSibling(candidateName + ".lock"));
+                        }
+                    }
+                }
+            }
+            try (java.nio.file.DirectoryStream<java.nio.file.Path> lockStream =
+                         java.nio.file.Files.newDirectoryStream(partialsDirectory, "*.part.lock")) {
+                for (java.nio.file.Path lockCandidate : lockStream) {
+                    java.nio.file.Path lockName = lockCandidate.getFileName();
+                    if (lockName == null) {
+                        continue;
+                    }
+                    String nameStr = lockName.toString();
+                    java.nio.file.Path partFile = lockCandidate.resolveSibling(
+                            nameStr.substring(0, nameStr.length() - ".lock".length()));
+                    if (java.nio.file.Files.exists(partFile)
+                            || (cache != null && cache.isActivePartial(partFile))) {
+                        continue;
+                    }
+                    if (java.nio.file.Files.getLastModifiedTime(lockCandidate).toMillis() < cutoff) {
+                        java.nio.file.Files.deleteIfExists(lockCandidate);
                     }
                 }
             }
@@ -422,9 +470,6 @@ public final class DownloadManager {
                                                long limit,
                                                java.nio.file.Path resumeFile,
                                                java.util.concurrent.atomic.AtomicBoolean cancelFlag) throws IOException {
-        RedirectTarget target = resolveRedirectTarget(artifact.location(), artifact.downloadHeaders());
-        URL url = target.url;
-        Map<String, String> effectiveHeaders = target.headers;
         long alreadyDownloaded = 0L;
         java.nio.file.Path partialDirectory = resumeFile.getParent();
         if (partialDirectory != null) {
@@ -432,36 +477,42 @@ public final class DownloadManager {
         }
         if (java.nio.file.Files.exists(resumeFile)) {
             alreadyDownloaded = java.nio.file.Files.size(resumeFile);
-        } else {
-            java.nio.file.Files.createFile(resumeFile);
-        }
-
-        HttpURLConnection connection = open(url);
-        connection.setConnectTimeout(CONNECT_TIMEOUT);
-        connection.setReadTimeout(READ_TIMEOUT);
-        // audit #128: auto-follow stays off on the final connection too - if a
-        // "resolved" URL answers a redirect, the JDK would follow it with the
-        // current headers (its same-host logic is looser than sameOrigin);
-        // credential stripping must be the only path that sets headers
-        connection.setInstanceFollowRedirects(false);
-        for (Map.Entry<String, String> header : effectiveHeaders.entrySet()) {
-            connection.setRequestProperty(header.getKey(), header.getValue());
         }
         if (alreadyDownloaded > 0L
                 && ((declaredSize > 0 && alreadyDownloaded >= declaredSize) || alreadyDownloaded > limit)) {
             // stale/oversized partial from a different content version: start over
             java.nio.file.Files.deleteIfExists(resumeFile);
-            java.nio.file.Files.createFile(resumeFile);
             alreadyDownloaded = 0L;
         }
-        if (alreadyDownloaded > 0L) {
-            connection.setRequestProperty("Range", "bytes=" + alreadyDownloaded + "-");
-        }
+
+        HttpURLConnection connection;
         try {
-            int status = connection.getResponseCode();
-            if (status != 200 && status != 206) {
-                throw statusFailure(status, connection, "while downloading " + artifact.artifact().id());
+            connection = openFollowingRedirects(artifact.location(), artifact.downloadHeaders(),
+                    alreadyDownloaded, artifact.artifact().id());
+        } catch (java.io.IOException openFailure) {
+            if (openFailure instanceof DownloadStatusException
+                    && ((DownloadStatusException) openFailure).deletePartial) {
+                try {
+                    java.nio.file.Files.deleteIfExists(resumeFile);
+                } catch (IOException ignored) {
+                    // best effort cleanup
+                }
             }
+            throw openFailure;
+        } catch (RuntimeException openFailure) {
+            try {
+                java.nio.file.Files.deleteIfExists(resumeFile);
+            } catch (IOException ignored) {
+                // best effort cleanup
+            }
+            throw openFailure;
+        }
+
+        try {
+            if (!java.nio.file.Files.exists(resumeFile)) {
+                java.nio.file.Files.createFile(resumeFile);
+            }
+            int status = connection.getResponseCode();
             boolean append = false;
             if (status == 206) {
                 append = validateContentRange(connection, artifact, declaredSize, alreadyDownloaded,
@@ -656,20 +707,28 @@ public final class DownloadManager {
         }
     }
 
-    private RedirectTarget resolveRedirectTarget(URI location, Map<String, String> headers) throws IOException {
+    private HttpURLConnection openFollowingRedirects(URI location,
+                                                     Map<String, String> headers,
+                                                     long alreadyDownloaded,
+                                                     String artifactId) throws IOException {
         URI current = location;
-        Map<String, String> hopHeaders = headers;
+        Map<String, String> hopHeaders = headers == null
+                ? java.util.Collections.<String, String>emptyMap()
+                : headers;
         for (int hop = 0; hop < MAX_REDIRECTS; hop++) {
             HttpURLConnection probe = open(current.toURL());
-            // audit L-7: the probe is disconnected on EVERY exit path - an
-            // exception from getResponseCode() must not leave the socket
-            // lingering in the keep-alive cache
+            boolean keepOpen = false;
+            // audit L-7: the connection is disconnected on EVERY exit path
+            // unless it is the final 200/206 response handed to attemptDownload
             try {
                 probe.setConnectTimeout(CONNECT_TIMEOUT);
                 probe.setReadTimeout(READ_TIMEOUT);
                 probe.setInstanceFollowRedirects(false);
                 for (Map.Entry<String, String> header : hopHeaders.entrySet()) {
                     probe.setRequestProperty(header.getKey(), header.getValue());
+                }
+                if (alreadyDownloaded > 0L) {
+                    probe.setRequestProperty("Range", "bytes=" + alreadyDownloaded + "-");
                 }
                 int status = probe.getResponseCode();
                 if (status >= 300 && status < 400) {
@@ -716,12 +775,15 @@ public final class DownloadManager {
                     current = next;
                     continue;
                 }
-                if (status == 200) {
-                    return new RedirectTarget(current.toURL(), hopHeaders);
+                if (status == 200 || status == 206) {
+                    keepOpen = true;
+                    return probe;
                 }
-                throw statusFailure(status, probe, "while resolving " + location);
+                throw statusFailure(status, probe, "while downloading " + artifactId);
             } finally {
-                probe.disconnect();
+                if (!keepOpen) {
+                    probe.disconnect();
+                }
             }
         }
         throw new IOException("Too many redirects while downloading " + location);
@@ -753,16 +815,6 @@ public final class DownloadManager {
                             + " bytes (limit " + limitBytes + " bytes)");
             this.streamedBytes = streamedBytes;
             this.limitBytes = limitBytes;
-        }
-    }
-
-    private static final class RedirectTarget {
-        final URL url;
-        final Map<String, String> headers;
-
-        RedirectTarget(URL url, Map<String, String> headers) {
-            this.url = url;
-            this.headers = headers;
         }
     }
 

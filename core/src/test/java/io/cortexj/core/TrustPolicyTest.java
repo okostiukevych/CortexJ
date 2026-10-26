@@ -160,4 +160,102 @@ class TrustPolicyTest {
             platform.close();
         }
     }
+
+    @Test
+    void trustedOnlyBlocksUnverifiedWeightsEvenWhenTokenizerSidecarHasChecksum() {
+        RecordingListener listener = new RecordingListener();
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new io.cortexj.core.EndToEndLoadTest.FakeRuntimeProvider())
+                .repositoryProvider(new SidecarOnlyChecksumRepository("sha256"))
+                .eventListener(listener)
+                .trustPolicy(TrustPolicy.TRUSTED_ONLY)
+                .build();
+        try {
+            ModelLoadException failure = assertThrows(ModelLoadException.class,
+                    () -> platform.models().load(ModelReference.of("local/sidecar-only")));
+            assertEquals(ErrorCode.SEC_POLICY_BLOCKED, failure.code());
+        } finally {
+            platform.close();
+        }
+    }
+
+    @Test
+    void trustedOnlyBlocksWeakChecksumAlgorithmOnWeights() {
+        RecordingListener listener = new RecordingListener();
+        CortexJ platform = CortexJ.builder()
+                .runtimeProvider(new io.cortexj.core.EndToEndLoadTest.FakeRuntimeProvider())
+                .repositoryProvider(new SidecarOnlyChecksumRepository("md5"))
+                .eventListener(listener)
+                .trustPolicy(TrustPolicy.TRUSTED_ONLY)
+                .build();
+        try {
+            ModelLoadException failure = assertThrows(ModelLoadException.class,
+                    () -> platform.models().load(ModelReference.of("local/weak-algo")));
+            assertEquals(ErrorCode.SEC_POLICY_BLOCKED, failure.code());
+        } finally {
+            platform.close();
+        }
+    }
+
+    static final class SidecarOnlyChecksumRepository implements io.cortexj.spi.repository.ModelRepositoryProvider {
+        private final String mode;
+
+        SidecarOnlyChecksumRepository(String mode) {
+            this.mode = mode;
+        }
+
+        @Override
+        public io.cortexj.spi.repository.RepositoryId id() {
+            return io.cortexj.spi.repository.RepositoryId.of("sidecar-repo");
+        }
+
+        @Override
+        public boolean supports(io.cortexj.model.ModelReference reference) {
+            return true;
+        }
+
+        @Override
+        public io.cortexj.spi.repository.ResolvedModel resolve(
+                io.cortexj.model.ModelReference reference,
+                io.cortexj.spi.repository.ResolutionContext context) {
+            io.cortexj.model.Checksum weightChecksum = "md5".equals(mode)
+                    ? io.cortexj.model.Checksum.of("md5", "d41d8cd98f00b204e9800998ecf8427e")
+                    : null;
+            final io.cortexj.model.ModelArtifact weights =
+                    new io.cortexj.model.ModelArtifact.Abstract(
+                            "model.gguf",
+                            io.cortexj.model.ArtifactFormat.GGUF,
+                            1_000_000L,
+                            weightChecksum,
+                            java.util.Collections.<String, String>emptyMap()) {
+                    };
+            final io.cortexj.model.ModelArtifact tokenizer =
+                    new io.cortexj.model.ModelArtifact.Abstract(
+                            "tokenizer.json",
+                            io.cortexj.model.ArtifactFormat.TOKENIZER,
+                            1024L,
+                            io.cortexj.model.Checksum.sha256(
+                                    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
+                            java.util.Collections.<String, String>emptyMap()) {
+                    };
+            io.cortexj.model.ModelDescriptor descriptor = io.cortexj.model.ModelDescriptor
+                    .builder(reference.value())
+                    .revision("rev1")
+                    .architecture("llama")
+                    .task(io.cortexj.model.TaskCapability.TEXT_GENERATION)
+                    .artifact(weights)
+                    .artifact(tokenizer)
+                    .build();
+            java.util.List<io.cortexj.spi.repository.ResolvedArtifact> artifacts =
+                    new java.util.ArrayList<io.cortexj.spi.repository.ResolvedArtifact>();
+            artifacts.add(new io.cortexj.spi.support.SimpleResolvedArtifact(weights,
+                    java.net.URI.create("file:/tmp/definitely-missing.gguf"),
+                    java.util.Collections.<String, String>emptyMap()));
+            artifacts.add(new io.cortexj.spi.support.SimpleResolvedArtifact(tokenizer,
+                    java.net.URI.create("file:/tmp/definitely-missing-tokenizer.json"),
+                    java.util.Collections.<String, String>emptyMap()));
+            return new io.cortexj.spi.repository.ResolvedModel(descriptor, "rev1",
+                    io.cortexj.spi.repository.RepositoryId.of("sidecar-repo"), artifacts);
+        }
+    }
 }

@@ -183,8 +183,8 @@ class DownloadRetryMatrixTest {
 
         assertArrayEquals(data, Files.readAllBytes(result),
                 "the download must succeed after a transient 5xx");
-        assertEquals(3, requests.get(),
-                "one failed probe + one successful probe + one successful download");
+        assertEquals(2, requests.get(),
+                "one failed attempt + one successful download");
         assertTrue(cache.contains("retry-repo", "rev1", "model.bin"));
     }
 
@@ -202,8 +202,8 @@ class DownloadRetryMatrixTest {
 
         assertArrayEquals(data, Files.readAllBytes(result),
                 "the download must succeed after a 429");
-        assertEquals(3, requests.get(),
-                "one failed probe + one successful probe + one successful download");
+        assertEquals(2, requests.get(),
+                "one failed attempt + one successful download");
         assertTrue(cache.contains("retry-repo", "rev1", "model.bin"));
     }
 

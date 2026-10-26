@@ -51,9 +51,12 @@ public final class DefaultCortexJ implements CortexJ {
     // stay on downloadExecutor - a stuck multi-minute load must not starve
     // queued downloads (or vice versa) into RejectedExecutionException
     private final ExecutorService loadExecutor;
+    private final Thread shutdownHook;
 
     DefaultCortexJ(CortexJBuilder configuration) {
+        EventBus eventsCandidate = null;
         ExecutorService ioExecutorCandidate = null;
+        boolean ownsExecutorCandidate = false;
         ExecutorService asyncExecutorCandidate = null;
         java.util.concurrent.ThreadPoolExecutor downloadExecutorCandidate = null;
         java.util.concurrent.ThreadPoolExecutor loadExecutorCandidate = null;
@@ -61,7 +64,8 @@ public final class DefaultCortexJ implements CortexJ {
             this.snapshot = EnvironmentSnapshot.probe();
             PlatformModuleSelector.validateStarters(snapshot);
             this.platformModule = PlatformModuleSelector.select(snapshot);
-            this.events = new EventBus(configuration.eventListeners(), configuration.isAsyncEventDelivery());
+            eventsCandidate = new EventBus(configuration.eventListeners(), configuration.isAsyncEventDelivery());
+            this.events = eventsCandidate;
 
             this.runtimeProviders = SpiRegistries.loadSorted(RuntimeProvider.class,
                     new SpiRegistries.IdAccessor<RuntimeProvider>() {
@@ -95,9 +99,11 @@ public final class DefaultCortexJ implements CortexJ {
 
             if (configuration.executor() != null) {
                 ioExecutorCandidate = configuration.executor();
+                ownsExecutorCandidate = false;
                 this.ownsExecutor = false;
             } else {
                 ioExecutorCandidate = platformModule.createIoExecutor();
+                ownsExecutorCandidate = true;
                 this.ownsExecutor = true;
             }
             int asyncWidth = positiveIntProperty("cortexj.async.width",
@@ -199,15 +205,27 @@ public final class DefaultCortexJ implements CortexJ {
             // assigned, so a JVM exit mid-construction can never call close() on a
             // half-built platform
             if (configuration.isShutdownHook()) {
-                Runtime.getRuntime().addShutdownHook(new java.lang.Thread(new Runnable() {
+                Thread hook = new java.lang.Thread(new Runnable() {
                     @Override
                     public void run() {
                         close();
                     }
-                }, "cortexj-shutdown"));
+                }, "cortexj-shutdown");
+                Runtime.getRuntime().addShutdownHook(hook);
+                this.shutdownHook = hook;
+            } else {
+                this.shutdownHook = null;
             }
-        } catch (RuntimeException failure) {
-            shutdownExecutor(ioExecutorCandidate);
+        } catch (Throwable failure) {
+            if (eventsCandidate != null) {
+                try {
+                    eventsCandidate.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (ownsExecutorCandidate) {
+                shutdownExecutor(ioExecutorCandidate);
+            }
             shutdownExecutor(asyncExecutorCandidate);
             shutdownExecutor(downloadExecutorCandidate);
             shutdownExecutor(loadExecutorCandidate);
@@ -340,6 +358,13 @@ public final class DefaultCortexJ implements CortexJ {
     public void close() {
         if (!platformClosed.compareAndSet(false, true)) {
             return;
+        }
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException | SecurityException ignored) {
+                // JVM shutdown is already in progress or security manager denied removal
+            }
         }
         try {
             models.closeAll();

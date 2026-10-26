@@ -20,7 +20,8 @@ import io.cortexj.spi.runtime.RuntimeModel;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public final class DefaultModelHandle implements ModelHandle {
 
@@ -33,7 +34,7 @@ public final class DefaultModelHandle implements ModelHandle {
     private volatile ModelRuntime runtime;
     private final DefaultCortexJ platform;
     private final ExecutionCandidate candidate;
-    private final ReentrantLock sessionLock = new ReentrantLock();
+    private final ReentrantReadWriteLock sessionLock = new ReentrantReadWriteLock();
     private final boolean serializeAccess;
     private volatile java.util.function.Consumer<DefaultModelHandle> closeCallback;
     private final Object lifecycleMonitor = new Object();
@@ -77,6 +78,10 @@ public final class DefaultModelHandle implements ModelHandle {
         return io.cortexj.runtime.ThreadSafety.SESSION_SCOPED;
     }
 
+    private Lock callLock() {
+        return serializeAccess ? sessionLock.writeLock() : sessionLock.readLock();
+    }
+
     void markFallback(String fromRuntime, String toRuntime) {
         this.fallbackNote = "load fell back from " + fromRuntime + " to " + toRuntime;
     }
@@ -115,6 +120,7 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public ModelCapabilities capabilities() {
+        requireActive("capabilities");
         return model.capabilities();
     }
 
@@ -136,6 +142,7 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public <T> Optional<T> capabilityIfSupported(Class<T> capabilityType) {
+        requireActive("capabilityIfSupported");
         return Optional.ofNullable(capabilityIfSupportedInternal(capabilityType));
     }
 
@@ -189,17 +196,15 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.inference.GenerationResponse generate(io.cortexj.inference.GenerationRequest request) {
-            // audit L-3: the generation dispatch goes through the session lock
-            // for SESSION_SCOPED runtimes exactly like execute/stream
-            if (serializeAccess) {
-                sessionLock.lock();
-                try {
-                    return generateAndInstrument(request);
-                } finally {
-                    sessionLock.unlock();
-                }
+            requireActive("generate");
+            Lock lock = callLock();
+            lock.lock();
+            try {
+                requireActive("generate");
+                return generateAndInstrument(request);
+            } finally {
+                lock.unlock();
             }
-            return generateAndInstrument(request);
         }
 
         private io.cortexj.inference.GenerationResponse generateAndInstrument(
@@ -214,18 +219,15 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.stream.TokenStream stream(io.cortexj.inference.GenerationRequest request) {
-            // audit L-3: the stream creation dispatches on the runtime model too,
-            // so it goes through the session lock for SESSION_SCOPED runtimes
-            // exactly like generate/execute
-            if (serializeAccess) {
-                sessionLock.lock();
-                try {
-                    return streamAndInstrument(request);
-                } finally {
-                    sessionLock.unlock();
-                }
+            requireActive("stream");
+            Lock lock = callLock();
+            lock.lock();
+            try {
+                requireActive("stream");
+                return streamAndInstrument(request);
+            } finally {
+                lock.unlock();
             }
-            return streamAndInstrument(request);
         }
 
         private io.cortexj.stream.TokenStream streamAndInstrument(
@@ -321,17 +323,15 @@ public final class DefaultModelHandle implements ModelHandle {
 
         @Override
         public io.cortexj.inference.EmbeddingResponse embed(io.cortexj.inference.EmbeddingRequest request) {
-            // audit L-3: the embedding dispatch goes through the session lock
-            // for SESSION_SCOPED runtimes exactly like execute/generate
-            if (serializeAccess) {
-                sessionLock.lock();
-                try {
-                    return embedAndInstrument(request);
-                } finally {
-                    sessionLock.unlock();
-                }
+            requireActive("embed");
+            Lock lock = callLock();
+            lock.lock();
+            try {
+                requireActive("embed");
+                return embedAndInstrument(request);
+            } finally {
+                lock.unlock();
             }
-            return embedAndInstrument(request);
         }
 
         private io.cortexj.inference.EmbeddingResponse embedAndInstrument(
@@ -346,6 +346,7 @@ public final class DefaultModelHandle implements ModelHandle {
 
     @Override
     public boolean supports(TaskCapability task) {
+        requireActive("supports");
         return model.capabilities().supports(task);
     }
 
@@ -399,12 +400,10 @@ public final class DefaultModelHandle implements ModelHandle {
 
     public InferenceResponse execute(InferenceRequest request) {
         requireActive("execute");
-        if (!serializeAccess) {
-            return model.execute(request);
-        }
-        long waitStartedNanos = System.nanoTime();
-        sessionLock.lock();
-        long queueWaitMillis = (System.nanoTime() - waitStartedNanos) / 1_000_000L;
+        Lock lock = callLock();
+        long waitStartedNanos = serializeAccess ? System.nanoTime() : 0L;
+        lock.lock();
+        long queueWaitMillis = serializeAccess ? (System.nanoTime() - waitStartedNanos) / 1_000_000L : 0L;
         try {
             if (queueWaitMillis > 0) {
                 publishQueueWait(queueWaitMillis);
@@ -412,7 +411,7 @@ public final class DefaultModelHandle implements ModelHandle {
             requireActive("execute");
             return model.execute(request);
         } finally {
-            sessionLock.unlock();
+            lock.unlock();
         }
     }
 
@@ -445,7 +444,14 @@ public final class DefaultModelHandle implements ModelHandle {
                 return rejected;
             }
         }
-        return model.executeAsync(request);
+        Lock lock = callLock();
+        lock.lock();
+        try {
+            requireActive("executeAsync");
+            return model.executeAsync(request);
+        } finally {
+            lock.unlock();
+        }
     }
 
     private void transitionTo(ModelLifecycleState next) {
@@ -514,18 +520,15 @@ public final class DefaultModelHandle implements ModelHandle {
         if (!beginClose()) {
             return;
         }
-        // close under the same session lock execute() uses for SESSION_SCOPED
-        // runtimes: close-during-execute waits for the in-flight call instead
-        // of tearing down the native session under it
-        if (serializeAccess) {
-            sessionLock.lock();
-            try {
-                closeResources();
-            } finally {
-                sessionLock.unlock();
-            }
-        } else {
+        // Hold the write lock while closing resources so both SESSION_SCOPED
+        // (write lock) and CONCURRENT (read lock) in-flight calls drain first
+        // before tearing down the underlying model/runtime.
+        Lock writeLock = sessionLock.writeLock();
+        writeLock.lock();
+        try {
             closeResources();
+        } finally {
+            writeLock.unlock();
         }
         transitionTo(ModelLifecycleState.CLOSED);
         java.util.function.Consumer<DefaultModelHandle> callback = closeCallback;

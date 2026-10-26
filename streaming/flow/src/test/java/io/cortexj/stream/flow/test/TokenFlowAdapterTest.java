@@ -112,4 +112,34 @@ class TokenFlowAdapterTest {
         done.get(10, TimeUnit.SECONDS);
         assertEquals(java.util.Arrays.asList("one", "two", "three"), received);
     }
+
+    @Test
+    void nonPositiveRequestDeliversIllegalArgumentExceptionToOnError() throws Exception {
+        io.cortexj.stream.internal.PushTokenStream source =
+                new io.cortexj.stream.internal.PushTokenStream();
+        CompletableFuture<Throwable> errorFuture = new CompletableFuture<>();
+
+        TokenFlowAdapter.publisher(source).subscribe(new Flow.Subscriber<Token>() {
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(0);
+            }
+
+            @Override
+            public void onNext(Token item) {
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                errorFuture.complete(throwable);
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        Throwable err = errorFuture.get(5, TimeUnit.SECONDS);
+        assertTrue(err instanceof IllegalArgumentException);
+    }
 }

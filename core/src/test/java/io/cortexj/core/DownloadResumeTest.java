@@ -255,8 +255,8 @@ class DownloadResumeTest {
 
             Path result = downloads.download(artifact(fullPayload, null), "proxy-repo", "rev1", cache, 0L);
             assertArrayEquals(fullPayload, Files.readAllBytes(result));
-            assertEquals(2, proxyHits.get(),
-                    "redirect probe + download must both go through the explicit proxy");
+            assertEquals(1, proxyHits.get(),
+                    "download must go through the explicit proxy");
             assertEquals(0, targetHits.get(), "the target must not be contacted directly");
         } finally {
             proxy.stop(0);
@@ -291,8 +291,8 @@ class DownloadResumeTest {
                     return;
                 }
                 int freshRequest = bodyRequests.incrementAndGet();
-                if (freshRequest <= 2) {
-                    // the first two fresh requests (redirect probe + download):
+                if (freshRequest <= 1) {
+                    // the first fresh request:
                     // serve only a prefix, then close (truncated body)
                     exchange.sendResponseHeaders(200, fullPayload.length);
                     try (OutputStream out = exchange.getResponseBody()) {
@@ -326,9 +326,8 @@ class DownloadResumeTest {
                 "after the Content-Range mismatch the download must restart from scratch");
         assertEquals(1, rangeRequests.get(), "exactly one lying 206 resume request expected");
         assertEquals("bytes=100-", rangeHeaders.get(0));
-        assertEquals(5, bodyRequests.get(),
-                "two truncated fresh requests (probe + download) + one complete fresh request,"
-                        + " plus the later redirect probes");
+        assertEquals(2, bodyRequests.get(),
+                "one truncated fresh request + one complete fresh request");
     }
 
     @Test

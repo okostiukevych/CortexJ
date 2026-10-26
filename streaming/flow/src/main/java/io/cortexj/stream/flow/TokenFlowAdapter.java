@@ -67,6 +67,7 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
         // Flow rule 3.9 (GitHub #79): a non-positive request must produce
         // exactly ONE onError, then the bridge stops delivering signals
         private final AtomicBoolean requestFailureSignalled = new AtomicBoolean(false);
+        private Throwable requestError;
         private boolean errorDelivered;
         // audit #93: an upstream failure is buffered and delivered through the
         // drain guard, never directly from the producer thread - otherwise it
@@ -130,7 +131,7 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                 return;
             }
 
-            upstream.set(stream.subscribe(new TokenConsumer() {
+            StreamSubscription sub = stream.subscribe(new TokenConsumer() {
                 @Override
                 public void onToken(Token token) {
                     if (cancelled.get()) {
@@ -167,19 +168,30 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                     stream.close();
                     drain();
                 }
-            }));
+            });
+            upstream.set(sub);
+            if (cancelled.get()) {
+                sub.cancel();
+                stream.close();
+            }
         }
 
         private void rejectNonPositiveRequest(long n) {
+            if (cancelled.get()) {
+                return;
+            }
             if (requestFailureSignalled.compareAndSet(false, true)) {
+                synchronized (lock) {
+                    requestError = new IllegalArgumentException(
+                            "non-positive subscription request: " + n);
+                }
                 cancelled.set(true);
                 StreamSubscription up = upstream.get();
                 if (up != null) {
                     up.cancel();
                 }
                 stream.close();
-                downstream.onError(new IllegalArgumentException(
-                        "non-positive subscription request: " + n));
+                drain();
             }
         }
 
@@ -197,6 +209,9 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
 
         private boolean hasWork() {
             synchronized (lock) {
+                if (requestError != null && !errorDelivered) {
+                    return true;
+                }
                 if (cancelled.get()) {
                     return false;
                 }
@@ -241,12 +256,15 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
             while (true) {
                 Token token = null;
                 boolean complete = false;
+                Throwable reqErrorToDeliver = null;
                 io.cortexj.error.CortexJException errorToDeliver = null;
                 synchronized (lock) {
-                    if (cancelled.get()) {
+                    if (requestError != null && !errorDelivered) {
+                        errorDelivered = true;
+                        reqErrorToDeliver = requestError;
+                    } else if (cancelled.get()) {
                         return;
-                    }
-                    if (demand.get() > 0 && !buffered.isEmpty()) {
+                    } else if (demand.get() > 0 && !buffered.isEmpty()) {
                         token = buffered.poll();
                         demand.decrementAndGet();
                     } else if (overflowed.get() && !errorDelivered) {
@@ -259,16 +277,20 @@ public final class TokenFlowAdapter implements Flow.Publisher<Token> {
                                 "Request demand proactively or consume tokens faster; the "
                                         + "adapter never buffers without bound.");
                     } else if (upstreamError != null && !errorDelivered) {
-                            errorDelivered = true;
-                            errorToDeliver = upstreamError;
-                        } else if (completed.get() && buffered.isEmpty() && !completionDelivered) {
-                            completionDelivered = true;
-                            complete = true;
-                        } else {
-                            return;
-                        }
+                        errorDelivered = true;
+                        errorToDeliver = upstreamError;
+                    } else if (completed.get() && buffered.isEmpty() && !completionDelivered) {
+                        completionDelivered = true;
+                        complete = true;
+                    } else {
+                        return;
                     }
-                    if (errorToDeliver != null) {
+                }
+                if (reqErrorToDeliver != null) {
+                    downstream.onError(reqErrorToDeliver);
+                    return;
+                }
+                if (errorToDeliver != null) {
                         // explicit overflow/upstream-failure policy: the generation
                         // is cancelled and the subscriber gets a loud typed error
                         stream.close();
