@@ -1,9 +1,11 @@
 package io.cortexj.platform.java21;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
@@ -23,8 +25,12 @@ import java.util.concurrent.TimeUnit;
  */
 final class BoundedVirtualThreadExecutor extends AbstractExecutorService {
 
+    static final String MAX_CONCURRENCY_PROPERTY = "cortexj.io.width";
+    static final int DEFAULT_MAX_CONCURRENCY = Math.max(8, 2 * Runtime.getRuntime().availableProcessors());
+
     private final ExecutorService delegate = Executors.newVirtualThreadPerTaskExecutor();
     private final Semaphore permits;
+    private final ThreadLocal<Boolean> inWorker = new ThreadLocal<>();
 
     BoundedVirtualThreadExecutor(int width) {
         this.permits = new Semaphore(Math.max(1, width), true);
@@ -47,22 +53,29 @@ final class BoundedVirtualThreadExecutor extends AbstractExecutorService {
 
     @Override
     public void execute(Runnable command) {
-        permits.acquireUninterruptibly();
-        boolean admitted = false;
-        try {
-            delegate.execute(() -> {
-                try {
-                    command.run();
-                } finally {
+        Objects.requireNonNull(command, "command");
+        if (delegate.isShutdown()) {
+            throw new RejectedExecutionException("Executor is shut down");
+        }
+        final boolean nested = Boolean.TRUE.equals(inWorker.get());
+        delegate.execute(() -> {
+            boolean acquired = false;
+            try {
+                if (!nested) {
+                    permits.acquire();
+                    acquired = true;
+                }
+                inWorker.set(Boolean.TRUE);
+                command.run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                inWorker.remove();
+                if (acquired) {
                     permits.release();
                 }
-            });
-            admitted = true;
-        } finally {
-            if (!admitted) {
-                permits.release();
             }
-        }
+        });
     }
 
     @Override
