@@ -61,7 +61,20 @@ public final class ModelInterfaces {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (method.getDeclaringClass() == Object.class) {
+                String methodName = method.getName();
+                if ("equals".equals(methodName)) {
+                    return proxy == (args == null || args.length == 0 ? null : args[0]);
+                }
+                if ("hashCode".equals(methodName)) {
+                    return System.identityHashCode(proxy);
+                }
+                if ("toString".equals(methodName)) {
+                    return "ModelInterfacesProxy[" + handle.descriptor().id() + "]";
+                }
                 return method.invoke(this, args);
+            }
+            if (method.isDefault()) {
+                throw new UnsupportedOperationException("default interface methods are not supported by ModelInterfaces proxy: " + method.getName());
             }
             ModelPrompt prompt = method.getAnnotation(ModelPrompt.class);
             if (prompt == null) {
@@ -92,10 +105,15 @@ public final class ModelInterfaces {
         private static java.util.Map<String, String> namedArgs(Method method, Object[] args) {
             java.util.Map<String, String> named =
                     new java.util.LinkedHashMap<String, String>();
-            for (int i = 0; i < method.getParameterCount(); i++) {
-                String name = "arg" + i;
+            java.lang.reflect.Parameter[] parameters = method.getParameters();
+            for (int i = 0; i < parameters.length; i++) {
                 Object value = args == null ? null : args[i];
-                named.put(name, value == null ? "" : String.valueOf(value));
+                String strValue = value == null ? "" : String.valueOf(value);
+                named.put("arg" + i, strValue);
+                String paramName = parameters[i].getName();
+                if (paramName != null && !paramName.isEmpty()) {
+                    named.put(paramName, strValue);
+                }
             }
             return named;
         }
@@ -103,11 +121,19 @@ public final class ModelInterfaces {
         private static String render(String template, java.util.Map<String, String> named) {
             Matcher matcher = PARAMETER.matcher(template);
             StringBuffer rendered = new StringBuffer();
+            String singleArgFallback = named.containsKey("arg0") && !named.containsKey("arg1")
+                    ? named.get("arg0")
+                    : null;
             while (matcher.find()) {
                 String key = matcher.group(1);
-                String value = named.containsKey(key)
-                        ? named.get(key)
-                        : "{" + key + "}";
+                String value;
+                if (named.containsKey(key)) {
+                    value = named.get(key);
+                } else if (singleArgFallback != null) {
+                    value = singleArgFallback;
+                } else {
+                    value = "{" + key + "}";
+                }
                 matcher.appendReplacement(rendered, Matcher.quoteReplacement(value));
             }
             matcher.appendTail(rendered);

@@ -15,7 +15,10 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ModelInterfacesTest {
 
@@ -217,5 +220,77 @@ class ModelInterfacesTest {
                 fakePlatform().models().load(ModelReference.of("e2e/model")),
                 Echo.class, null);
         assertEquals("fixed", echo.echo("anything"));
+    }
+
+    @Test
+    void singleArgPlaceholderSubstitutionAndObjectMethodsWork() {
+        final String[] capturedPrompt = new String[1];
+        ModelHandle capturingHandle = new ModelHandle() {
+            @Override
+            public io.cortexj.model.ModelDescriptor descriptor() {
+                return io.cortexj.model.ModelDescriptor.builder("test/model").build();
+            }
+
+            @Override
+            public io.cortexj.planner.ExecutionPlan plan() {
+                return null;
+            }
+
+            @Override
+            public io.cortexj.model.ModelCapabilities capabilities() {
+                return null;
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T> T capability(Class<T> capabilityType) {
+                return (T) new TextGenerationCapability() {
+                    @Override
+                    public GenerationResponse generate(GenerationRequest request) {
+                        capturedPrompt[0] = request.prompt();
+                        return new GenerationResponse(request.prompt(),
+                                io.cortexj.inference.FinishReason.STOP,
+                                io.cortexj.inference.TokenUsage.unknown(), null);
+                    }
+
+                    @Override
+                    public io.cortexj.stream.TokenStream stream(GenerationRequest request) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+
+            @Override
+            public <T> java.util.Optional<T> capabilityIfSupported(Class<T> capabilityType) {
+                return java.util.Optional.empty();
+            }
+
+            @Override
+            public boolean supports(io.cortexj.model.TaskCapability task) {
+                return false;
+            }
+
+            @Override
+            public io.cortexj.model.ModelLifecycleState state() {
+                return io.cortexj.model.ModelLifecycleState.READY;
+            }
+
+            @Override
+            public void waitForReady() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+
+        Echo echo = ModelInterfaces.of(capturingHandle, Echo.class, null);
+        assertEquals("Repeat this exactly: $100", echo.echo("$100"));
+        assertEquals("Repeat this exactly: $100", capturedPrompt[0]);
+
+        assertTrue(echo.equals(echo));
+        assertFalse(echo.equals("other"));
+        assertEquals(System.identityHashCode(echo), echo.hashCode());
+        assertTrue(echo.toString().contains("test/model"));
     }
 }

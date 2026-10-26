@@ -22,10 +22,10 @@ public class ToolCallSurfaceTest {
 
     @Test
     public void toolCallCarriesIdNameAndRawArguments() {
-        ToolCall call = new ToolCall("call_1", "get_weather", "{\"city\":\"Omsk\"}");
+        ToolCall call = new ToolCall("call_1", "get_weather", "{\"city\":\"Kiev\"}");
         assertEquals("call_1", call.id());
         assertEquals("get_weather", call.name());
-        assertEquals("{\"city\":\"Omsk\"}", call.arguments());
+        assertEquals("{\"city\":\"Kiev\"}", call.arguments());
     }
 
     @Test

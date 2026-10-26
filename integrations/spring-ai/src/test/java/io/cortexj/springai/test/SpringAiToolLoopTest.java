@@ -59,7 +59,7 @@ class SpringAiToolLoopTest {
                 new GenerationResponse("", FinishReason.TOOL_CALL, TokenUsage.unknown(),
                         java.util.Map.of(),
                         java.util.List.of(new io.cortexj.model.ToolCall("call_1", "get_weather",
-                                "{\"city\":\"Omsk\"}"))),
+                                "{\"city\":\"Kiev\"}"))),
                 () -> new GenerationResponse("The weather is -3", FinishReason.STOP,
                         TokenUsage.unknown(), java.util.Map.of()));
 
@@ -68,10 +68,10 @@ class SpringAiToolLoopTest {
                 .build();
         CortexJChatModel model = new CortexJChatModel(fakePlatform(handle), "test/model");
         try {
-            var chatResponse = model.call(new Prompt("weather in Omsk?", (ChatOptions) options));
+            var chatResponse = model.call(new Prompt("weather in Kiev?", (ChatOptions) options));
 
             assertEquals("The weather is -3", chatResponse.getResult().getOutput().getText());
-            assertEquals("{city=Omsk}", executedArguments.get());
+            assertEquals("{city=Kiev}", executedArguments.get());
             // round 2 must carry the loop state: the original user message, the
             // assistant echo with the proposed calls, and the tool result tied
             // to its call id
@@ -97,7 +97,7 @@ class SpringAiToolLoopTest {
                 new GenerationResponse("", FinishReason.TOOL_CALL, TokenUsage.unknown(),
                         java.util.Map.of(),
                         java.util.List.of(new io.cortexj.model.ToolCall("call_1", "get_weather",
-                                "{\"city\":\"Omsk\"}"))),
+                                "{\"city\":\"Kiev\"}"))),
                 () -> new GenerationResponse("The weather is -3C", FinishReason.STOP,
                         TokenUsage.unknown(), java.util.Map.of()));
 
@@ -113,7 +113,7 @@ class SpringAiToolLoopTest {
                 new io.cortexj.springai.CortexJStreamingChatModel(fakePlatform(handle), "test/model");
         try {
             java.util.List<org.springframework.ai.chat.model.ChatResponse> chunks =
-                    model.stream(new Prompt("weather in Omsk?", (ChatOptions) options))
+                    model.stream(new Prompt("weather in Kiev?", (ChatOptions) options))
                             .collectList()
                             .block(java.time.Duration.ofSeconds(10));
 

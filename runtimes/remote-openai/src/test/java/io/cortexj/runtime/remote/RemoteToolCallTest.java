@@ -53,7 +53,7 @@ class RemoteToolCallTest {
                     nonStreamResponse = "{\"choices\":[{\"finish_reason\":\"tool_calls\","
                             + "\"message\":{\"content\":\"\",\"tool_calls\":["
                             + "{\"id\":\"call_abc\",\"type\":\"function\","
-                            + "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Omsk\\\"}\"}}]}}],"
+                            + "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Kiev\\\"}\"}}]}}],"
                             + "\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5}}";
                 }
                 respondJson(exchange, nonStreamResponse);
@@ -168,7 +168,7 @@ class RemoteToolCallTest {
             assertEquals(1, response.toolCalls().size());
             assertEquals("call_abc", response.toolCalls().get(0).id());
             assertEquals("get_weather", response.toolCalls().get(0).name());
-            assertEquals("{\"city\":\"Omsk\"}", response.toolCalls().get(0).arguments());
+            assertEquals("{\"city\":\"Kiev\"}", response.toolCalls().get(0).arguments());
         } finally {
             model.close();
         }
@@ -184,7 +184,7 @@ class RemoteToolCallTest {
                     .message(ChatMessage.user("weather?"))
                     .message(ChatMessage.assistantToolCalls(Collections.singletonList(
                             new io.cortexj.model.ToolCall("call_abc", "get_weather",
-                                    "{\"city\":\"Omsk\"}")), ""))
+                                    "{\"city\":\"Kiev\"}")), ""))
                     .message(ChatMessage.tool("call_abc", "{\"temp\":-3}"))
                     .build());
 
@@ -192,7 +192,7 @@ class RemoteToolCallTest {
             // assistant echo carries the proposed calls
             assertTrue(contains(payload, "\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":["
                     + "{\"id\":\"call_abc\",\"type\":\"function\",\"function\":"
-                    + "{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Omsk\\\"}\"}}]"));
+                    + "{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Kiev\\\"}\"}}]"));
             // the executed result is tied to its call by id
             assertTrue(contains(payload, "\"role\":\"tool\",\"content\":\"{\\\"temp\\\":-3}\","
                     + "\"tool_call_id\":\"call_abc\""));
@@ -218,7 +218,7 @@ class RemoteToolCallTest {
                                     + "\"id\":\"call_st1\",\"type\":\"function\","
                                     + "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\"}}]}}]}",
                             "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
-                                    + "\"function\":{\"arguments\":\"\\\"city\\\":\\\"Omsk\\\"}\"}}]}}]}",
+                                    + "\"function\":{\"arguments\":\"\\\"city\\\":\\\"Kiev\\\"}\"}}]}}]}",
                             "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
                             "{\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}," 
                                     + "\"choices\":[]}"};
@@ -276,7 +276,7 @@ class RemoteToolCallTest {
             assertEquals("call_st1", received.get(0).id());
             assertEquals("get_weather", received.get(0).name());
             // the arguments streamed as three fragments assemble verbatim
-            assertEquals("{\"city\":\"Omsk\"}", received.get(0).arguments());
+            assertEquals("{\"city\":\"Kiev\"}", received.get(0).arguments());
             assertEquals(FinishReason.TOOL_CALL, finish[0]);
         } finally {
             model.close();
