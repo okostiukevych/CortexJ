@@ -37,9 +37,10 @@ public final class Standard {
             throw new IllegalArgumentException("epsilon must be positive");
         }
         return new Optimizer() {
-            private double[] first;
-            private double[] second;
-            private long step;
+            private final java.util.IdentityHashMap<double[], AdamState> states =
+                    new java.util.IdentityHashMap<double[], AdamState>();
+            private final java.util.Map<Integer, AdamState> byLength =
+                    new java.util.HashMap<Integer, AdamState>();
 
             @Override
             public String id() {
@@ -47,40 +48,61 @@ public final class Standard {
             }
 
             @Override
-            public double[] step(double[] parameters, double[] gradients) {
+            public synchronized double[] step(double[] parameters, double[] gradients) {
                 if (gradients.length != parameters.length) {
                     throw new IllegalArgumentException("gradient shape mismatch");
                 }
-                if (first == null) {
-                    first = new double[parameters.length];
-                    second = new double[parameters.length];
+                AdamState state = states.get(parameters);
+                if (state == null) {
+                    state = byLength.get(Integer.valueOf(parameters.length));
                 }
-                step++;
+                if (state == null) {
+                    state = new AdamState(parameters.length);
+                    byLength.put(Integer.valueOf(parameters.length), state);
+                }
+                state.step++;
                 double[] updated = new double[parameters.length];
-                double bias1 = 1 - Math.pow(beta1, step);
-                double bias2 = 1 - Math.pow(beta2, step);
+                double bias1 = 1 - Math.pow(beta1, state.step);
+                double bias2 = 1 - Math.pow(beta2, state.step);
                 for (int i = 0; i < parameters.length; i++) {
-                    first[i] = beta1 * first[i] + (1 - beta1) * gradients[i];
-                    second[i] = beta2 * second[i] + (1 - beta2) * gradients[i] * gradients[i];
-                    double correctedFirst = first[i] / bias1;
-                    double correctedSecond = second[i] / bias2;
+                    state.first[i] = beta1 * state.first[i] + (1 - beta1) * gradients[i];
+                    state.second[i] = beta2 * state.second[i] + (1 - beta2) * gradients[i] * gradients[i];
+                    double correctedFirst = state.first[i] / bias1;
+                    double correctedSecond = state.second[i] / bias2;
                     updated[i] = parameters[i]
                             - learningRate * correctedFirst / (Math.sqrt(correctedSecond) + epsilon)
                             - learningRate * weightDecay * parameters[i];
                 }
+                states.put(parameters, state);
+                states.put(updated, state);
                 return updated;
             }
         };
     }
 
-    public static Optimizer sgd(double learningRate, double momentum) {        if (learningRate <= 0 || learningRate > 1) {
+    private static final class AdamState {
+        final double[] first;
+        final double[] second;
+        long step;
+
+        AdamState(int length) {
+            this.first = new double[length];
+            this.second = new double[length];
+        }
+    }
+
+    public static Optimizer sgd(double learningRate, double momentum) {
+        if (learningRate <= 0 || learningRate > 1) {
             throw new IllegalArgumentException("learning rate must sit in (0, 1]");
         }
         if (momentum < 0 || momentum >= 1) {
             throw new IllegalArgumentException("momentum must sit in [0, 1)");
         }
         return new Optimizer() {
-            private double[] velocity;
+            private final java.util.IdentityHashMap<double[], double[]> velocities =
+                    new java.util.IdentityHashMap<double[], double[]>();
+            private final java.util.Map<Integer, double[]> byLength =
+                    new java.util.HashMap<Integer, double[]>();
 
             @Override
             public String id() {
@@ -88,18 +110,25 @@ public final class Standard {
             }
 
             @Override
-            public double[] step(double[] parameters, double[] gradients) {
+            public synchronized double[] step(double[] parameters, double[] gradients) {
                 if (gradients.length != parameters.length) {
                     throw new IllegalArgumentException("gradient shape mismatch");
                 }
+                double[] velocity = velocities.get(parameters);
+                if (velocity == null) {
+                    velocity = byLength.get(Integer.valueOf(parameters.length));
+                }
                 if (velocity == null) {
                     velocity = new double[parameters.length];
+                    byLength.put(Integer.valueOf(parameters.length), velocity);
                 }
                 double[] updated = new double[parameters.length];
                 for (int i = 0; i < parameters.length; i++) {
                     velocity[i] = momentum * velocity[i] - learningRate * gradients[i];
                     updated[i] = parameters[i] + velocity[i];
                 }
+                velocities.put(parameters, velocity);
+                velocities.put(updated, velocity);
                 return updated;
             }
         };

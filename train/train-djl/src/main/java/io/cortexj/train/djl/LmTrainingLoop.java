@@ -70,8 +70,12 @@ final class LmTrainingLoop {
 
     /** Eval-mode forward over one (1, T) id batch: logits (1, T, vocab). */
     NDList evalForward(int[] ids) {
-        NDArray input = trainer.getManager().create(ids, new Shape(1, ids.length));
-        return trainer.evaluate(new NDList(input));
+        try (NDManager stepScope = trainer.getManager().newSubManager()) {
+            NDArray input = stepScope.create(ids, new Shape(1, ids.length));
+            NDList out = trainer.evaluate(new NDList(input));
+            out.attach(trainer.getManager());
+            return out;
+        }
     }
 
     Map<String, Double> run(List<LmBatcher.LmBatch> trainBatches,
@@ -83,8 +87,7 @@ final class LmTrainingLoop {
         int micro = 0;
         for (int epoch = 0; epoch < epochs; epoch++) {
             for (LmBatcher.LmBatch batch : trainBatches) {
-                NDArray lossValue = stepLoss(batch, accumulation);
-                lastLoss = lossValue.getFloat();
+                lastLoss = stepLoss(batch, accumulation);
                 if (Double.isNaN(firstLoss)) {
                     firstLoss = lastLoss;
                 }
@@ -166,38 +169,40 @@ final class LmTrainingLoop {
         model.close();
     }
 
-    private NDArray stepLoss(LmBatcher.LmBatch batch, int accumulation) {
-        // batch arrays live on the model manager (parameters and frozen
-        // weights live there too)
-        NDManager manager = model.getNDManager();
-        int rows = batch.ids.length;
-        int width = batch.sequenceLength;
-        NDArray ids = manager.create(flattenInts(batch.ids), new Shape(rows, width));
-        NDArray labels = manager.create(flattenLongs(batch.labels), new Shape(rows, width));
-        NDArray mask = manager.create(flattenFloats(batch.mask), new Shape(rows, width));
-        // the forward MUST run inside the collector: PtGradientCollector
-        // enables torch grad mode on open, and a forward outside of it
-        // builds a grad-less graph (same pattern as DjlTrainingBackend)
-        try (GradientCollector gc = trainer.newGradientCollector()) {
-            NDList logits = trainer.forward(new NDList(ids));
-            NDArray lossValue = loss.evaluate(new NDList(labels, mask), logits);
-            gc.backward(lossValue.div(accumulation));
-            return lossValue;
+    private float stepLoss(LmBatcher.LmBatch batch, int accumulation) {
+        try (NDManager stepScope = trainer.getManager().newSubManager()) {
+            int rows = batch.ids.length;
+            int width = batch.sequenceLength;
+            NDArray ids = stepScope.create(flattenInts(batch.ids), new Shape(rows, width));
+            NDArray labels = stepScope.create(flattenLongs(batch.labels), new Shape(rows, width));
+            NDArray mask = stepScope.create(flattenFloats(batch.mask), new Shape(rows, width));
+            // the forward MUST run inside the collector: PtGradientCollector
+            // enables torch grad mode on open, and a forward outside of it
+            // builds a grad-less graph (same pattern as DjlTrainingBackend)
+            try (GradientCollector gc = trainer.newGradientCollector()) {
+                NDList logits = trainer.forward(new NDList(ids));
+                NDArray lossValue = loss.evaluate(new NDList(labels, mask), logits);
+                float scalarLoss = lossValue.getFloat();
+                gc.backward(lossValue.div(accumulation));
+                return scalarLoss;
+            }
         }
     }
 
     private double evalLoss(List<LmBatcher.LmBatch> batches) {
-        NDManager manager = model.getNDManager();
         double weighted = 0;
         double weights = 0;
         for (LmBatcher.LmBatch batch : batches) {
-            int rows = batch.ids.length;
-            int width = batch.sequenceLength;
-            NDArray ids = manager.create(flattenInts(batch.ids), new Shape(rows, width));
-            NDArray labels = manager.create(flattenLongs(batch.labels), new Shape(rows, width));
-            NDArray mask = manager.create(flattenFloats(batch.mask), new Shape(rows, width));
-            NDList logits = trainer.evaluate(new NDList(ids));
-            double value = loss.evaluate(new NDList(labels, mask), logits).getFloat();
+            double value;
+            try (NDManager stepScope = trainer.getManager().newSubManager()) {
+                int rows = batch.ids.length;
+                int width = batch.sequenceLength;
+                NDArray ids = stepScope.create(flattenInts(batch.ids), new Shape(rows, width));
+                NDArray labels = stepScope.create(flattenLongs(batch.labels), new Shape(rows, width));
+                NDArray mask = stepScope.create(flattenFloats(batch.mask), new Shape(rows, width));
+                NDList logits = trainer.evaluate(new NDList(ids));
+                value = loss.evaluate(new NDList(labels, mask), logits).getFloat();
+            }
             double weight = 0;
             for (float[] row : batch.mask) {
                 for (float v : row) {

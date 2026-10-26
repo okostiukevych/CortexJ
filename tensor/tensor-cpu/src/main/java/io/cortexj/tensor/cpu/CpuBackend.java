@@ -99,19 +99,25 @@ public class CpuBackend implements TensorBackend {
     @Override
     public Tensor softmax(Tensor tensor) {
         CpuTensor value = checked(tensor);
+        long[] dims = value.shape().dimensions();
+        int cols = (int) dims[dims.length - 1];
         double[] data = value.toArray();
-        double max = Double.NEGATIVE_INFINITY;
-        for (double element : data) {
-            max = Math.max(max, element);
-        }
-        double total = 0;
         double[] result = new double[data.length];
-        for (int i = 0; i < data.length; i++) {
-            result[i] = Math.exp(data[i] - max);
-            total += result[i];
-        }
-        for (int i = 0; i < result.length; i++) {
-            result[i] /= total;
+        int rows = data.length / cols;
+        for (int r = 0; r < rows; r++) {
+            int rowOffset = r * cols;
+            double max = Double.NEGATIVE_INFINITY;
+            for (int c = 0; c < cols; c++) {
+                max = Math.max(max, data[rowOffset + c]);
+            }
+            double total = 0;
+            for (int c = 0; c < cols; c++) {
+                result[rowOffset + c] = Math.exp(data[rowOffset + c] - max);
+                total += result[rowOffset + c];
+            }
+            for (int c = 0; c < cols; c++) {
+                result[rowOffset + c] /= total;
+            }
         }
         return new CpuTensor(value.shape(), value.dtype(), result, null);
     }
@@ -257,13 +263,17 @@ public class CpuBackend implements TensorBackend {
         double[] b = right.toArray();
         long[] outShape = broadcastShape(left.shape(), right.shape());
         Shape shape = Shape.of(outShape);
-        double[] result = new double[(int) shape.size()];
+        long totalSize = shape.size();
+        double[] result = new double[(int) totalSize];
         long[] aDims = left.shape().dimensions();
         long[] bDims = right.shape().dimensions();
-        for (long flat = 0; flat < shape.size(); flat++) {
+        long[] outStrides = stridesOf(outShape);
+        long[] aStrides = stridesOf(aDims);
+        long[] bStrides = stridesOf(bDims);
+        for (long flat = 0; flat < totalSize; flat++) {
             result[(int) flat] = op.applyAsDouble(
-                    a[(int) broadcastOffset(flat, outShape, aDims)],
-                    b[(int) broadcastOffset(flat, outShape, bDims)]);
+                    a[(int) broadcastOffset(flat, outShape, outStrides, aDims, aStrides)],
+                    b[(int) broadcastOffset(flat, outShape, outStrides, bDims, bStrides)]);
         }
         return new CpuTensor(shape, left.dtype(), result, null);
     }
@@ -289,23 +299,25 @@ public class CpuBackend implements TensorBackend {
         return out;
     }
 
-    private static long broadcastOffset(long flat, long[] outShape, long[] inShape) {
+    private static long[] stridesOf(long[] dims) {
+        long[] strides = new long[dims.length];
+        long stride = 1;
+        for (int i = dims.length - 1; i >= 0; i--) {
+            strides[i] = stride;
+            stride *= dims[i];
+        }
+        return strides;
+    }
+
+    private static long broadcastOffset(long flat, long[] outShape, long[] outStrides,
+                                        long[] inShape, long[] inStrides) {
         long offset = 0;
-        long multiplier = 1;
         int shift = outShape.length - inShape.length;
         for (int i = inShape.length - 1; i >= 0; i--) {
-            long outAxis = i + shift;
-            long outStride = 1;
-            for (int j = (int) outAxis + 1; j < outShape.length; j++) {
-                outStride *= outShape[j];
-            }
-            long coordinate = (flat / outStride) % outShape[(int) outAxis];
+            int outAxis = i + shift;
+            long coordinate = (flat / outStrides[outAxis]) % outShape[outAxis];
             long inCoordinate = inShape[i] == 1 ? 0 : coordinate;
-            long inStride = 1;
-            for (int j = i + 1; j < inShape.length; j++) {
-                inStride *= inShape[j];
-            }
-            offset += inCoordinate * inStride;
+            offset += inCoordinate * inStrides[i];
         }
         return offset;
     }
@@ -399,19 +411,25 @@ public class CpuBackend implements TensorBackend {
     @Override
     public Tensor logSoftmax(Tensor tensor) {
         CpuTensor value = checked(tensor);
+        long[] dims = value.shape().dimensions();
+        int cols = (int) dims[dims.length - 1];
         double[] data = value.toArray();
-        double max = Double.NEGATIVE_INFINITY;
-        for (double element : data) {
-            max = Math.max(max, element);
-        }
-        double total = 0;
-        for (double element : data) {
-            total += Math.exp(element - max);
-        }
-        double logTotal = Math.log(total);
         double[] result = new double[data.length];
-        for (int i = 0; i < data.length; i++) {
-            result[i] = data[i] - max - logTotal;
+        int rows = data.length / cols;
+        for (int r = 0; r < rows; r++) {
+            int rowOffset = r * cols;
+            double max = Double.NEGATIVE_INFINITY;
+            for (int c = 0; c < cols; c++) {
+                max = Math.max(max, data[rowOffset + c]);
+            }
+            double total = 0;
+            for (int c = 0; c < cols; c++) {
+                total += Math.exp(data[rowOffset + c] - max);
+            }
+            double logTotal = Math.log(total);
+            for (int c = 0; c < cols; c++) {
+                result[rowOffset + c] = data[rowOffset + c] - max - logTotal;
+            }
         }
         return new CpuTensor(value.shape(), value.dtype(), result, null);
     }
@@ -425,11 +443,10 @@ public class CpuBackend implements TensorBackend {
         }
         int columns = (int) shape[1];
         double[] storage = value.storage();
-        double[] view = java.util.Arrays.copyOfRange(storage,
-                (int) (from * columns), (int) (to * columns));
-        // views share the parent storage: the copy above is only the
-        // window handle; the parent reference keeps it alive (ADR-024)
-        return new CpuTensor(Shape.of(to - from, columns), value.dtype(), view, storage);
+        int viewOffset = value.offset() + (int) (from * columns);
+        int viewLength = (int) ((to - from) * columns);
+        return new CpuTensor(Shape.of(to - from, columns), value.dtype(),
+                storage, viewOffset, viewLength, storage);
     }
 
     @Override
@@ -458,10 +475,17 @@ public class CpuBackend implements TensorBackend {
         private final Shape shape;
         private final DType dtype;
         private final double[] storage;
+        private final int offset;
+        private final int length;
         private final double[] sharedWith;
         private final AtomicBoolean closed = new AtomicBoolean();
 
         public CpuTensor(Shape shape, DType dtype, double[] storage, double[] sharedWith) {
+            this(shape, dtype, storage, 0, (int) shape.size(), sharedWith);
+        }
+
+        public CpuTensor(Shape shape, DType dtype, double[] storage,
+                         int offset, int length, double[] sharedWith) {
             this.shape = shape;
             this.dtype = dtype;
             // audit 2026-10-10: NO defensive copies here - views intentionally
@@ -469,6 +493,8 @@ public class CpuBackend implements TensorBackend {
             // silently detach views from their parent. SpotBugs EI_EXPOSE_REP2
             // for this constructor is excluded with this justification.
             this.storage = storage;
+            this.offset = offset;
+            this.length = length;
             this.sharedWith = sharedWith;
         }
 
@@ -490,18 +516,23 @@ public class CpuBackend implements TensorBackend {
         @Override
         public double get(long... index) {
             requireOpen();
-            return storage[(int) shape.offsetOf(index)];
+            return storage[offset + (int) shape.offsetOf(index)];
         }
 
         @Override
         public double[] toArray() {
             requireOpen();
-            return storage.clone();
+            return java.util.Arrays.copyOfRange(storage, offset, offset + length);
         }
 
         double[] storage() {
             requireOpen();
             return storage;
+        }
+
+        int offset() {
+            requireOpen();
+            return offset;
         }
 
         @Override
@@ -525,12 +556,12 @@ public class CpuBackend implements TensorBackend {
         @Override
         public void setAll(double[] values) {
             requireOpen();
-            if (values == null || values.length != storage.length) {
+            if (values == null || values.length != length) {
                 throw new IllegalArgumentException("value count "
                         + (values == null ? 0 : values.length)
-                        + " does not match tensor size " + storage.length);
+                        + " does not match tensor size " + length);
             }
-            System.arraycopy(values, 0, storage, 0, values.length);
+            System.arraycopy(values, 0, storage, offset, length);
         }
 
         public void requireOpen() {

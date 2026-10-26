@@ -73,24 +73,38 @@ public final class PipelineSchedule {
     }
 
     /**
-     * 1F1B schedule: all forwards in stage/micro-batch order, then all
-     * backwards in reverse micro-batch order per stage. Deterministic
-     * for the same inputs.
+     * 1F1B schedule: warmup forwards until the first micro-batch reaches
+     * the final stage, then steady-state alternating one forward and one
+     * backward step, then cooldown backwards for the remaining in-flight
+     * micro-batches. Deterministic for the same inputs.
      */
     public static List<Step> schedule(int stages, int microBatches) {
         if (stages < 1 || microBatches < 1) {
             throw new IllegalArgumentException("stages and micro-batches must be positive");
         }
-        List<Step> steps = new ArrayList<>();
+        List<Step> forwards = new ArrayList<>(stages * microBatches);
         for (int micro = 0; micro < microBatches; micro++) {
             for (int stage = 0; stage < stages; stage++) {
-                steps.add(new Step(stage, micro, Step.Direction.FORWARD));
+                forwards.add(new Step(stage, micro, Step.Direction.FORWARD));
             }
         }
-        for (int micro = microBatches - 1; micro >= 0; micro--) {
+        List<Step> backwards = new ArrayList<>(stages * microBatches);
+        for (int micro = 0; micro < microBatches; micro++) {
             for (int stage = stages - 1; stage >= 0; stage--) {
-                steps.add(new Step(stage, micro, Step.Direction.BACKWARD));
+                backwards.add(new Step(stage, micro, Step.Direction.BACKWARD));
             }
+        }
+        int warmup = Math.min(stages, forwards.size());
+        List<Step> steps = new ArrayList<>(2 * stages * microBatches);
+        for (int i = 0; i < warmup; i++) {
+            steps.add(forwards.get(i));
+        }
+        for (int i = warmup; i < forwards.size(); i++) {
+            steps.add(forwards.get(i));
+            steps.add(backwards.get(i - warmup));
+        }
+        for (int i = forwards.size() - warmup; i < backwards.size(); i++) {
+            steps.add(backwards.get(i));
         }
         return Collections.unmodifiableList(steps);
     }

@@ -8,7 +8,9 @@ import io.cortexj.tensor.TensorBackend;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -21,8 +23,8 @@ import java.util.function.Supplier;
 public final class Autograd {
 
     private final TensorBackend backend;
-    private final List<TapeNode> tape = new ArrayList<TapeNode>();
-    private boolean recording = true;
+    private final List<TapeNode> tape = Collections.synchronizedList(new ArrayList<TapeNode>());
+    private final ThreadLocal<Boolean> recording = ThreadLocal.withInitial(() -> Boolean.TRUE);
 
     public Autograd(TensorBackend backend) {
         if (backend == null) {
@@ -43,20 +45,30 @@ public final class Autograd {
 
     public Variable add(Variable left, Variable right) {
         Tensor result = backend.add(left.data(), right.data());
+        Shape outShape = result.shape();
+        Shape leftShape = left.shape();
+        Shape rightShape = right.shape();
         Variable output = new Variable(result, needsGrad(left, right));
         record(output, List.of(left, right), (NodeBackward) gradOutput -> new double[][]{
-                broadcast(gradOutput, left.shape()),
-                broadcast(gradOutput, right.shape())
+                reduceBroadcast(gradOutput, outShape, leftShape),
+                reduceBroadcast(gradOutput, outShape, rightShape)
         });
         return output;
     }
 
     public Variable mul(Variable left, Variable right) {
         Tensor result = backend.mul(left.data(), right.data());
+        Shape outShape = result.shape();
+        Shape leftShape = left.shape();
+        Shape rightShape = right.shape();
         Variable output = new Variable(result, needsGrad(left, right));
-        record(output, List.of(left, right), gradOutput -> new double[][]{
-                elementwiseMul(gradOutput, right.data().toArray()),
-                elementwiseMul(gradOutput, left.data().toArray())
+        record(output, List.of(left, right), gradOutput -> {
+            double[] leftData = expandBroadcast(left.data().toArray(), leftShape, outShape);
+            double[] rightData = expandBroadcast(right.data().toArray(), rightShape, outShape);
+            return new double[][]{
+                    reduceBroadcast(elementwiseMul(gradOutput, rightData), outShape, leftShape),
+                    reduceBroadcast(elementwiseMul(gradOutput, leftData), outShape, rightShape)
+            };
         });
         return output;
     }
@@ -76,7 +88,7 @@ public final class Autograd {
 
     public Variable sum(Variable input) {
         Tensor result = backend.sum(input.data());
-        Variable output = new Variable(result, input.requiresGradient());
+        Variable output = new Variable(result, isRecording() && input.requiresGradient());
         record(output, List.of(input), gradOutput -> new double[][]{
                 broadcast(gradOutput, input.shape())
         });
@@ -85,7 +97,7 @@ public final class Autograd {
 
     public Variable mean(Variable input) {
         Tensor result = backend.mean(input.data());
-        Variable output = new Variable(result, input.requiresGradient());
+        Variable output = new Variable(result, isRecording() && input.requiresGradient());
         double scale = 1.0 / input.shape().size();
         record(output, List.of(input), gradOutput -> {
             double[] broadcast = broadcast(gradOutput, input.shape());
@@ -99,17 +111,23 @@ public final class Autograd {
 
     public Variable softmax(Variable input) {
         Tensor result = backend.softmax(input.data());
-        Variable output = new Variable(result, input.requiresGradient());
+        Variable output = new Variable(result, isRecording() && input.requiresGradient());
         record(output, List.of(input), gradOutput -> {
             double[] softmaxValues = result.toArray();
-            double[] weighted = elementwiseMul(gradOutput, softmaxValues);
-            double weightedSum = 0;
-            for (double value : weighted) {
-                weightedSum += value;
-            }
+            long[] dims = input.shape().dimensions();
+            int cols = (int) dims[dims.length - 1];
+            int rows = softmaxValues.length / cols;
             double[] gradient = new double[gradOutput.length];
-            for (int i = 0; i < gradient.length; i++) {
-                gradient[i] = weighted[i] - softmaxValues[i] * weightedSum;
+            for (int r = 0; r < rows; r++) {
+                int offset = r * cols;
+                double weightedSum = 0;
+                for (int c = 0; c < cols; c++) {
+                    weightedSum += gradOutput[offset + c] * softmaxValues[offset + c];
+                }
+                for (int c = 0; c < cols; c++) {
+                    double s = softmaxValues[offset + c];
+                    gradient[offset + c] = s * (gradOutput[offset + c] - weightedSum);
+                }
             }
             return new double[][]{gradient};
         });
@@ -118,7 +136,7 @@ public final class Autograd {
 
     public Variable relu(Variable input) {
         Tensor result = backend.relu(input.data());
-        Variable output = new Variable(result, input.requiresGradient());
+        Variable output = new Variable(result, isRecording() && input.requiresGradient());
         record(output, List.of(input), gradOutput -> {
             double[] dataValues = input.data().toArray();
             double[] gradient = new double[gradOutput.length];
@@ -135,7 +153,7 @@ public final class Autograd {
      * backward rule; the tape handles accumulation (ADR-026).
      */
     public Variable record(Variable output, List<Variable> inputs, TapeNode.Backward backward) {
-        if (!output.requiresGradient() || !recording) {
+        if (!output.requiresGradient() || !isRecording()) {
             return output;
         }
         tape.add(new TapeNode(output, inputs, backward));
@@ -155,29 +173,40 @@ public final class Autograd {
         if (!loss.requiresGradient()) {
             throw new IllegalArgumentException("the loss does not require gradient");
         }
+        IdentityHashMap<Variable, TapeNode> producers = new IdentityHashMap<Variable, TapeNode>();
+        synchronized (tape) {
+            for (TapeNode node : tape) {
+                producers.put(node.output(), node);
+            }
+        }
+        List<TapeNode> postOrder = new ArrayList<TapeNode>();
+        Set<Variable> visited = Collections.newSetFromMap(new IdentityHashMap<Variable, Boolean>());
+        buildTopo(loss, producers, visited, postOrder);
+        Collections.reverse(postOrder);
+        for (TapeNode node : postOrder) {
+            node.output().clearGradient();
+        }
         double[] ones = new double[1];
         ones[0] = 1.0;
         loss.seedGradient(ones);
-        // collectReachable returns parents-before-children: consumers run
-        // before producers, which is exactly the valid backward order
-        List<TapeNode> reachable = new ArrayList<TapeNode>();
-        collectReachable(loss, reachable, new java.util.HashSet<Variable>());
-        for (TapeNode node : reachable) {
+        for (TapeNode node : postOrder) {
             node.applyBackward(node.output().gradInternal());
         }
     }
 
-    private void collectReachable(Variable output, List<TapeNode> into, java.util.HashSet<Variable> visited) {
+    private void buildTopo(Variable output,
+                           IdentityHashMap<Variable, TapeNode> producers,
+                           Set<Variable> visited,
+                           List<TapeNode> postOrder) {
         if (!visited.add(output)) {
             return;
         }
-        for (TapeNode node : tape) {
-            if (node.output() == output) {
-                into.add(node);
-                for (Variable input : node.inputs()) {
-                    collectReachable(input, into, visited);
-                }
+        TapeNode node = producers.get(output);
+        if (node != null) {
+            for (Variable input : node.inputs()) {
+                buildTopo(input, producers, visited, postOrder);
             }
+            postOrder.add(node);
         }
     }
 
@@ -189,12 +218,12 @@ public final class Autograd {
      * No-grad scope: ops inside the supplier skip recording (ADR-026).
      */
     public <T> T noGrad(Supplier<T> body) {
-        boolean previous = recording;
-        recording = false;
+        boolean previous = isRecording();
+        recording.set(Boolean.FALSE);
         try {
             return body.get();
         } finally {
-            recording = previous;
+            recording.set(Boolean.valueOf(previous));
         }
     }
 
@@ -213,9 +242,13 @@ public final class Autograd {
         return tape;
     }
 
+    private boolean isRecording() {
+        return Boolean.TRUE.equals(recording.get());
+    }
+
     private boolean needsGrad(Variable left, Variable right) {
         // no-grad scope: outputs of unrecorded ops do not require gradient
-        return recording && (left.requiresGradient() || right.requiresGradient());
+        return isRecording() && (left.requiresGradient() || right.requiresGradient());
     }
 
     private double[] broadcast(double[] source, Shape shape) {
@@ -231,6 +264,66 @@ public final class Autograd {
         }
         throw new IllegalArgumentException("cannot broadcast gradient of length " + source.length
                 + " to " + shape);
+    }
+
+    private static double[] expandBroadcast(double[] values, Shape inShape, Shape outShape) {
+        if (inShape.equals(outShape)) {
+            return values;
+        }
+        long[] outDims = outShape.dimensions();
+        long[] inDims = inShape.dimensions();
+        long[] outStrides = stridesOf(outDims);
+        long[] inStrides = stridesOf(inDims);
+        int outSize = (int) outShape.size();
+        double[] expanded = new double[outSize];
+        for (int flat = 0; flat < outSize; flat++) {
+            expanded[flat] = values[(int) broadcastOffset(flat, outDims, outStrides, inDims, inStrides)];
+        }
+        return expanded;
+    }
+
+    private static double[] reduceBroadcast(double[] gradOutput, Shape outShape, Shape targetShape) {
+        if (outShape.equals(targetShape)) {
+            return gradOutput.clone();
+        }
+        if (gradOutput.length == 1) {
+            double[] filled = new double[(int) targetShape.size()];
+            java.util.Arrays.fill(filled, gradOutput[0]);
+            return filled;
+        }
+        long[] outDims = outShape.dimensions();
+        long[] inDims = targetShape.dimensions();
+        long[] outStrides = stridesOf(outDims);
+        long[] inStrides = stridesOf(inDims);
+        double[] reduced = new double[(int) targetShape.size()];
+        for (int flat = 0; flat < gradOutput.length; flat++) {
+            int idx = (int) broadcastOffset(flat, outDims, outStrides, inDims, inStrides);
+            reduced[idx] += gradOutput[flat];
+        }
+        return reduced;
+    }
+
+    private static long[] stridesOf(long[] dims) {
+        long[] strides = new long[dims.length];
+        long stride = 1;
+        for (int i = dims.length - 1; i >= 0; i--) {
+            strides[i] = stride;
+            stride *= dims[i];
+        }
+        return strides;
+    }
+
+    private static long broadcastOffset(long flat, long[] outShape, long[] outStrides,
+                                        long[] inShape, long[] inStrides) {
+        long offset = 0;
+        int shift = outShape.length - inShape.length;
+        for (int i = inShape.length - 1; i >= 0; i--) {
+            int outAxis = i + shift;
+            long coordinate = (flat / outStrides[outAxis]) % outShape[outAxis];
+            long inCoordinate = inShape[i] == 1 ? 0 : coordinate;
+            offset += inCoordinate * inStrides[i];
+        }
+        return offset;
     }
 
     private static double[] elementwiseMul(double[] left, double[] right) {

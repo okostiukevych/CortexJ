@@ -33,6 +33,15 @@ class MultiNodeDataParallelTest {
                 assertEquals(fullBatch[i], averaged[i], 1e-9,
                         "multi-node average must equal the full batch at " + i);
             }
+
+            // Uneven shards across nodes: shard0 has 2 rows, shard1 has 3 rows
+            double[] unevenBatch = {1.0, 2.0, -0.5, 3.0, 1.5};
+            double[][] unevenShards = {{1.0, 2.0}, {-0.5, 3.0, 1.5}};
+            double[] unevenAveraged = driver.gradients(weights, unevenShards);
+            double[] unevenFull = new DataParallel().gradients(weights, unevenBatch, 1);
+            for (int i = 0; i < unevenFull.length; i++) {
+                assertEquals(unevenFull[i], unevenAveraged[i], 1e-9);
+            }
         }
     }
 

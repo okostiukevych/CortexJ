@@ -54,11 +54,25 @@ public final class MultiNodeDataParallel implements AutoCloseable {
         if (shards == null || shards.length != workerEndpoints.size()) {
             throw new IllegalArgumentException("one shard per worker is required");
         }
+        int totalRows = 0;
+        for (double[] shard : shards) {
+            if (shard != null) {
+                totalRows += shard.length;
+            }
+        }
+        if (totalRows == 0) {
+            throw new IllegalArgumentException("batch must not be empty");
+        }
         double[] averaged = new double[weights.length];
         for (int w = 0; w < workerEndpoints.size(); w++) {
-            double[] shardGradient = gradientOnce(workerEndpoints.get(w), weights, shards[w]);
+            double[] shard = shards[w];
+            if (shard == null || shard.length == 0) {
+                continue;
+            }
+            double shardWeight = (double) shard.length / totalRows;
+            double[] shardGradient = gradientOnce(workerEndpoints.get(w), weights, shard);
             for (int p = 0; p < weights.length; p++) {
-                averaged[p] += shardGradient[p] / workerEndpoints.size();
+                averaged[p] += shardGradient[p] * shardWeight;
             }
         }
         return averaged;
@@ -66,23 +80,25 @@ public final class MultiNodeDataParallel implements AutoCloseable {
 
     private double[] gradientOnce(String endpoint, double[] weights, double[] shard)
             throws IOException {
-        IOException first = requestGradient(endpoint, weights, shard);
-        if (first == null) {
-            return lastResult;
+        try {
+            return requestGradient(endpoint, weights, shard);
+        } catch (IOException first) {
+            // one reconnect retry (fault semantics, ADR-027), then typed failure
+            try {
+                return requestGradient(endpoint, weights, shard);
+            } catch (IOException second) {
+                throw new IOException("worker unreachable after retry: " + endpoint
+                        + " (" + second.getMessage() + ")", second);
+            }
         }
-        // one reconnect retry (fault semantics, ADR-027), then typed failure
-        IOException second = requestGradient(endpoint, weights, shard);
-        if (second == null) {
-            return lastResult;
-        }
-        throw new IOException("worker unreachable after retry: " + endpoint
-                + " (" + second.getMessage() + ")");
     }
 
-    private double[] lastResult;
-
-    private IOException requestGradient(String endpoint, double[] weights, double[] shard) {
-        ZMQ.Socket socket = context.createSocket(SocketType.REQ);
+    private double[] requestGradient(String endpoint, double[] weights, double[] shard)
+            throws IOException {
+        ZMQ.Socket socket;
+        synchronized (context) {
+            socket = context.createSocket(SocketType.REQ);
+        }
         try {
             socket.setReceiveTimeOut((int) Math.min(timeoutMillis, Integer.MAX_VALUE));
             socket.setSendTimeOut((int) Math.min(timeoutMillis, Integer.MAX_VALUE));
@@ -90,18 +106,21 @@ public final class MultiNodeDataParallel implements AutoCloseable {
             socket.send(encodeRequest(weights, shard));
             byte[] reply = socket.recv();
             if (reply == null) {
-                return new IOException("worker timeout: " + endpoint);
+                throw new IOException("worker timeout: " + endpoint);
             }
             String text = new String(reply, java.nio.charset.StandardCharsets.UTF_8);
             if (text.startsWith("{\"error\"")) {
-                return new IOException("worker error: " + text);
+                throw new IOException("worker error: " + text);
             }
-            lastResult = decodeGradient(text, weights.length);
-            return null;
+            return decodeGradient(text, weights.length);
+        } catch (IOException e) {
+            throw e;
         } catch (Throwable e) {
-            return new IOException("worker call failed: " + endpoint + ": " + e, e);
+            throw new IOException("worker call failed: " + endpoint + ": " + e, e);
         } finally {
-            socket.close();
+            synchronized (context) {
+                socket.close();
+            }
         }
     }
 

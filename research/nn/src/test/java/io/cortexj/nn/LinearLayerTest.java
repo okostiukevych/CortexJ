@@ -31,11 +31,21 @@ class LinearLayerTest {
         // y[0] = 0.5*1 + 0.5*2 = 1.5
         assertEquals(1.5, y.data().get(0, 0), 1e-9);
         assertEquals(1.5, y.data().get(1, 0), 1e-9);
-        // bias shifts
+        // bias shifts per row across batch columns, and backward propagates into bias
         layer.loadStateDict(Map.of("weight", new double[]{0.5, 0.5, 0.5, 0.5},
-                "bias", new double[]{1.0, 1.0}));
-        Variable shifted = (Variable) layer.forward(x);
-        assertEquals(2.5, shifted.data().get(0, 0), 1e-9);
+                "bias", new double[]{1.0, 2.0}));
+        Variable batchX = autograd.constant(new double[]{1.0, 2.0, 3.0, 4.0}, Shape.of(2, 2));
+        Variable shifted = (Variable) layer.forward(batchX);
+        // row 0: [0.5*1 + 0.5*3 + 1.0, 0.5*2 + 0.5*4 + 1.0] = [3.0, 4.0]
+        // row 1: [0.5*1 + 0.5*3 + 2.0, 0.5*2 + 0.5*4 + 2.0] = [4.0, 5.0]
+        assertEquals(3.0, shifted.data().get(0, 0), 1e-9);
+        assertEquals(4.0, shifted.data().get(0, 1), 1e-9);
+        assertEquals(4.0, shifted.data().get(1, 0), 1e-9);
+        assertEquals(5.0, shifted.data().get(1, 1), 1e-9);
+        Variable loss = autograd.sum(shifted);
+        autograd.backward(loss);
+        assertEquals(2.0, layer.bias().grad()[0], 1e-9);
+        assertEquals(2.0, layer.bias().grad()[1], 1e-9);
     }
 
     @Test

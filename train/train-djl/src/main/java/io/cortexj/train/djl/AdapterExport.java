@@ -26,7 +26,8 @@ final class AdapterExport {
     static Map<String, String> writeAll(GenericDecoderBlock block, int rank, int alpha,
                                         List<String> targets, Path outputDirectory)
             throws IOException {
-        Files.createDirectories(outputDirectory);
+        Path normalizedRoot = outputDirectory.toAbsolutePath().normalize();
+        Files.createDirectories(normalizedRoot);
         Map<String, String> checksums = new LinkedHashMap<String, String>();
         for (Map.Entry<String, LoraLinear> entry : block.loraChildren().entrySet()) {
             String childName = entry.getKey();
@@ -36,8 +37,12 @@ final class AdapterExport {
             LoRAAdapter adapter = new LoRAAdapter(moduleName,
                     entry.getValue().inUnits(), entry.getValue().outUnits(),
                     config, entry.getValue().matrixA(), entry.getValue().matrixB());
-            String fileName = "adapter_" + childName.replace('.', '_') + ".safetensors";
-            Path file = outputDirectory.resolve(fileName);
+            String safeChild = childName.replace("..", "_").replace('/', '_').replace('\\', '_').replace('.', '_');
+            String fileName = "adapter_" + safeChild + ".safetensors";
+            Path file = normalizedRoot.resolve(fileName).normalize();
+            if (!file.startsWith(normalizedRoot)) {
+                throw new IOException("Export path escapes output directory: " + fileName);
+            }
             LoRASafetensors.write(adapter, file, metadata(rank, alpha, targets));
             checksums.put(fileName, sha256(file));
         }

@@ -177,10 +177,6 @@ public class DjlTrainingBackend implements TrainingBackend {
                     return difference.mul(difference).mean();
                 }
             };
-            Trainer trainer = model.newTrainer(new DefaultTrainingConfig(loss)
-                    .optOptimizer(Optimizer.sgd()
-                            .setLearningRateTracker(Tracker.fixed(learningRate)).build()));
-
             float[] inputs = new float[data.rows()];
             float[] targets = new float[data.rows()];
             for (int row = 0; row < data.rows(); row++) {
@@ -188,7 +184,10 @@ public class DjlTrainingBackend implements TrainingBackend {
                 targets[row] = (float) data.targetAt(row);
             }
             AtomicInteger steps = new AtomicInteger();
-            try (NDManager manager = model.getNDManager().newSubManager()) {
+            try (Trainer trainer = model.newTrainer(new DefaultTrainingConfig(loss)
+                    .optOptimizer(Optimizer.sgd()
+                            .setLearningRateTracker(Tracker.fixed(learningRate)).build()));
+                 NDManager manager = model.getNDManager().newSubManager()) {
                 NDArray xData = manager.create(inputs, new Shape(data.rows(), 1));
                 NDArray yData = manager.create(targets, new Shape(data.rows(), 1));
                 ArrayDataset dataset = new ArrayDataset.Builder()
@@ -209,17 +208,20 @@ public class DjlTrainingBackend implements TrainingBackend {
                 double finalLoss = 0;
                 for (int epoch = 0; epoch < epochs; epoch++) {
                     for (var batch : trainer.iterateDataset(dataset)) {
-                        try (var gc = trainer.newGradientCollector()) {
-                            NDArray prediction =
-                                    trainer.forward(batch.getData()).singletonOrThrow();
-                            NDArray lossValue = loss.evaluate(
-                                    batch.getLabels(), new NDList(prediction));
-                            finalLoss = lossValue.getFloat();
-                            gc.backward(lossValue);
-                            trainer.step();
-                            steps.incrementAndGet();
+                        try {
+                            try (var gc = trainer.newGradientCollector()) {
+                                NDArray prediction =
+                                        trainer.forward(batch.getData()).singletonOrThrow();
+                                NDArray lossValue = loss.evaluate(
+                                        batch.getLabels(), new NDList(prediction));
+                                finalLoss = lossValue.getFloat();
+                                gc.backward(lossValue);
+                                trainer.step();
+                                steps.incrementAndGet();
+                            }
+                        } finally {
+                            batch.close();
                         }
-                        batch.close();
                     }
                 }
 
@@ -392,56 +394,58 @@ public class DjlTrainingBackend implements TrainingBackend {
         LmTrainingLoop loop = LmTrainingLoop.create(block,
                 (float) request.learningRate(),
                 intParameter(request, "warmupSteps", 10), 0.01f);
-        int seqLen = intParameter(request, "seqLen", 512);
-        loop.initialize(seqLen);
-        block.loadWeights(weights, loop.modelManager());
-        block.initLora(longParameter(request, "seed", 42L));
-        String resumeFrom = request.parameters().get("resumeFrom");
-        loop.restoreFromCheckpoint(resumeFrom == null || resumeFrom.trim().isEmpty()
-                ? null : Paths.get(resumeFrom.trim()));
-
-        LmDataset lmData = request.lmData();
-        java.util.List<LmExample> examples = lmData.examples();
-        java.util.List<java.util.List<LmExample>> split = LmDatasets.split(examples,
-                1.0 - doubleParameter(request, "evalSplit", 0.1),
-                longParameter(request, "seed", 42L));
-        if (split.get(0).isEmpty()) {
-            throw lmFailure("CORTEXJ-TRAIN-0110",
-                    "the train split is empty",
-                    "Provide more examples or lower evalSplit.");
-        }
-        int batchSize = intParameter(request, "batchSize", 1);
-        long seed = longParameter(request, "seed", 42L);
-        java.util.List<LmBatcher.LmBatch> trainBatches = LmBatcher.batch(split.get(0),
-                batchSize, seqLen, seed, true);
-        java.util.List<LmBatcher.LmBatch> evalBatches = split.get(1).isEmpty()
-                ? java.util.Collections.<LmBatcher.LmBatch>emptyList()
-                : LmBatcher.batch(split.get(1), batchSize, seqLen, seed, false);
-
-        java.util.Map<String, Double> metrics = loop.run(trainBatches, evalBatches,
-                request.epochs(), intParameter(request, "accumulation", 4));
-
-        String outputDir = request.parameters().get("outputDir");
-        java.nio.file.Path out;
         try {
-            out = outputDir == null || outputDir.trim().isEmpty()
-                    ? Files.createTempDirectory("cortexj-lora-adapter")
-                    : Paths.get(outputDir.trim());
-            java.util.Map<String, String> checksums = AdapterExport.writeAll(block,
-                    lora.rank(), lora.alpha(), lora.targetModules(), out);
-            loop.saveCheckpoint(out.resolve("checkpoint-0"));
-            return new TrainingResult("train-" + System.nanoTime(),
-                    ModelIdentity.of(request.model(), null),
-                    out.toAbsolutePath().toString(),
-                    metrics,
-                    new TrainingResult.ProvenanceHolder(
-                            lmData.fingerprint(),
-                            java.util.List.of(seed),
-                            id(), "cpu", checksums));
-        } catch (java.io.IOException e) {
-            throw lmFailure("CORTEXJ-TRAIN-0111",
-                    "adapter export failed: " + e.getMessage(),
-                    "Check the output directory permissions.");
+            int seqLen = intParameter(request, "seqLen", 512);
+            loop.initialize(seqLen);
+            block.loadWeights(weights, loop.modelManager());
+            block.initLora(longParameter(request, "seed", 42L));
+            String resumeFrom = request.parameters().get("resumeFrom");
+            loop.restoreFromCheckpoint(resumeFrom == null || resumeFrom.trim().isEmpty()
+                    ? null : Paths.get(resumeFrom.trim()));
+
+            LmDataset lmData = request.lmData();
+            java.util.List<LmExample> examples = lmData.examples();
+            java.util.List<java.util.List<LmExample>> split = LmDatasets.split(examples,
+                    1.0 - doubleParameter(request, "evalSplit", 0.1),
+                    longParameter(request, "seed", 42L));
+            if (split.get(0).isEmpty()) {
+                throw lmFailure("CORTEXJ-TRAIN-0110",
+                        "the train split is empty",
+                        "Provide more examples or lower evalSplit.");
+            }
+            int batchSize = intParameter(request, "batchSize", 1);
+            long seed = longParameter(request, "seed", 42L);
+            java.util.List<LmBatcher.LmBatch> trainBatches = LmBatcher.batch(split.get(0),
+                    batchSize, seqLen, seed, true);
+            java.util.List<LmBatcher.LmBatch> evalBatches = split.get(1).isEmpty()
+                    ? java.util.Collections.<LmBatcher.LmBatch>emptyList()
+                    : LmBatcher.batch(split.get(1), batchSize, seqLen, seed, false);
+
+            java.util.Map<String, Double> metrics = loop.run(trainBatches, evalBatches,
+                    request.epochs(), intParameter(request, "accumulation", 4));
+
+            String outputDir = request.parameters().get("outputDir");
+            java.nio.file.Path out;
+            try {
+                out = outputDir == null || outputDir.trim().isEmpty()
+                        ? Files.createTempDirectory("cortexj-lora-adapter")
+                        : Paths.get(outputDir.trim());
+                java.util.Map<String, String> checksums = AdapterExport.writeAll(block,
+                        lora.rank(), lora.alpha(), lora.targetModules(), out);
+                loop.saveCheckpoint(out.resolve("checkpoint-0"));
+                return new TrainingResult("train-" + System.nanoTime(),
+                        ModelIdentity.of(request.model(), null),
+                        out.toAbsolutePath().toString(),
+                        metrics,
+                        new TrainingResult.ProvenanceHolder(
+                                lmData.fingerprint(),
+                                java.util.List.of(seed),
+                                id(), "cpu", checksums));
+            } catch (java.io.IOException e) {
+                throw lmFailure("CORTEXJ-TRAIN-0111",
+                        "adapter export failed: " + e.getMessage(),
+                        "Check the output directory permissions.");
+            }
         } finally {
             loop.close();
         }

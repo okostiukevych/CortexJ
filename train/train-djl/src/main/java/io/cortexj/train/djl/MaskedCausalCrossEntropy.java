@@ -27,6 +27,7 @@ final class MaskedCausalCrossEntropy extends Loss {
         NDArray logProbs = logits.reshape(rows, vocab).logSoftmax(1);
         NDArray nll = logProbs.gather(label.reshape(rows, 1), 1).reshape(rows);
         NDArray flatMask = mask.reshape(rows);
-        return nll.mul(flatMask).sum().div(flatMask.sum()).neg();
+        NDArray denom = flatMask.sum().maximum(1e-8f);
+        return nll.mul(flatMask).sum().div(denom).neg();
     }
 }

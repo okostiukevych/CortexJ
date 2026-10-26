@@ -115,9 +115,16 @@ public final class LmDatasets {
             for (LmExample example : examples) {
                 int[] tokens = example.tokens();
                 int[] mask = example.lossMask();
+                int length = tokens.length;
+                digest.update((byte) (length & 0xFF));
+                digest.update((byte) ((length >>> 8) & 0xFF));
+                digest.update((byte) ((length >>> 16) & 0xFF));
+                digest.update((byte) ((length >>> 24) & 0xFF));
                 for (int i = 0; i < tokens.length; i++) {
                     digest.update((byte) (tokens[i] & 0xFF));
                     digest.update((byte) ((tokens[i] >>> 8) & 0xFF));
+                    digest.update((byte) ((tokens[i] >>> 16) & 0xFF));
+                    digest.update((byte) ((tokens[i] >>> 24) & 0xFF));
                     digest.update((byte) mask[i]);
                 }
             }

@@ -192,12 +192,15 @@ public final class GenericDecoderBlock extends AbstractBlock {
                 System.arraycopy(embedding, id * hidden, embedded, (b * t + p) * hidden, hidden);
             }
         }
-        NDArray x = manager.create(embedded, new Shape(n, t, hidden));
+        NDManager stepManager = ids.getManager() != null ? ids.getManager() : manager;
+        NDArray x = stepManager.create(embedded, new Shape(n, t, hidden));
         int half = config.headDim() / 2;
         NDArray cos = cosTable.get("0:" + t).reshape(1, 1, t, half);
         NDArray sin = sinTable.get("0:" + t).reshape(1, 1, t, half);
+        cos.attach(stepManager);
+        sin.attach(stepManager);
         for (DecoderLayer layer : layers) {
-            x = layer.forward(x, cos, sin, manager, parameterStore, training);
+            x = layer.forward(x, cos, sin, stepManager, parameterStore, training);
         }
         x = LmOps.rmsNorm(x, finalNorm, (float) config.rmsEps());
         return new NDList(x.matMul(headWeight));

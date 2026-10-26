@@ -26,11 +26,11 @@ public final class Variable {
         this.requiresGradient = requiresGradient;
     }
 
-    void addHook(io.cortexj.autograd.GradientHooks.Hook hook) {
+    synchronized void addHook(io.cortexj.autograd.GradientHooks.Hook hook) {
         hooks.add(hook);
     }
 
-    void removeHook(io.cortexj.autograd.GradientHooks.Hook hook) {
+    synchronized void removeHook(io.cortexj.autograd.GradientHooks.Hook hook) {
         hook.remove();
         hooks.remove(hook);
     }
@@ -59,7 +59,7 @@ public final class Variable {
      * The accumulated gradient (zeros while backward has not run); null
      * for variables that do not require gradient.
      */
-    public double[] grad() {
+    public synchronized double[] grad() {
         if (!requiresGradient) {
             return null;
         }
@@ -69,7 +69,7 @@ public final class Variable {
         return grad.clone();
     }
 
-    void accumulateGradient(double[] values) {
+    synchronized void accumulateGradient(double[] values) {
         if (values.length != (int) data.shape().size()) {
             throw new IllegalArgumentException("gradient shape mismatch");
         }
@@ -80,17 +80,22 @@ public final class Variable {
                 grad[i] += values[i];
             }
         }
+        double[] snapshot = grad.clone();
         for (io.cortexj.autograd.GradientHooks.Hook hook : new java.util.ArrayList<>(hooks)) {
-            hook.fire(grad);
+            hook.fire(snapshot);
         }
     }
 
-    double[] gradInternal() {
-        return grad;
+    synchronized double[] gradInternal() {
+        return grad == null ? null : grad.clone();
     }
 
-    void seedGradient(double[] values) {
-        grad = values.clone();
+    synchronized void seedGradient(double[] values) {
+        grad = values == null ? null : values.clone();
+    }
+
+    synchronized void clearGradient() {
+        grad = null;
     }
 
     /**

@@ -80,15 +80,35 @@ public final class CheckpointShards {
                 }
                 body.append('\n');
             }
+            byte[] shardBytes = body.toString().getBytes(StandardCharsets.UTF_8);
             Path file = directory.resolve("shard-" + shard + ".properties");
-            Files.writeString(file, body.toString(), StandardCharsets.UTF_8);
+            writeAtomically(directory, file, shardBytes);
             files.add(file);
             manifest.append("shard.").append(shard).append(".checksum=")
-                    .append(sha256Hex(Files.readAllBytes(file))).append('\n');
+                    .append(sha256Hex(shardBytes)).append('\n');
         }
-        Files.writeString(directory.resolve("manifest.properties"),
-                manifest.toString(), StandardCharsets.UTF_8);
+        byte[] manifestBytes = manifest.toString().getBytes(StandardCharsets.UTF_8);
+        writeAtomically(directory, directory.resolve("manifest.properties"), manifestBytes);
         return files;
+    }
+
+    private static void writeAtomically(Path directory, Path target, byte[] bytes)
+            throws IOException {
+        java.nio.file.Path fileName = target.getFileName();
+        String prefix = fileName == null ? "checkpoint" : fileName.toString();
+        Path temp = Files.createTempFile(directory, prefix, ".tmp");
+        try {
+            Files.write(temp, bytes);
+            try {
+                Files.move(temp, target,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException fallback) {
+                Files.move(temp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
     }
 
     /**

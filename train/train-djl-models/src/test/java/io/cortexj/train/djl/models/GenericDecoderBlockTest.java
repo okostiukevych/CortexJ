@@ -102,6 +102,16 @@ class GenericDecoderBlockTest {
                 () -> HfWeightLoader.load(empty));
         assertEquals("CORTEXJ-TRAIN-0103", failure.code());
         assertTrue(failure.getMessage().contains("model.safetensors"));
+
+        // Path traversal in model.safetensors.index.json is rejected with CORTEXJ-TRAIN-0103
+        Path traversalDir = Files.createDirectories(temp.resolve("traversal"));
+        Files.writeString(traversalDir.resolve("model.safetensors.index.json"),
+                "{\"weight_map\":{\"model.embed_tokens.weight\":\"../../outside.safetensors\"}}",
+                StandardCharsets.UTF_8);
+        io.cortexj.error.CortexJException traversalFailure = assertThrows(
+                io.cortexj.error.CortexJException.class,
+                () -> HfWeightLoader.load(traversalDir));
+        assertEquals("CORTEXJ-TRAIN-0103", traversalFailure.code());
     }
 
     @Test

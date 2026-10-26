@@ -54,6 +54,16 @@ class TrainingPolicyContractsTest {
         double[] updated = adamW.step(new double[]{1.0}, new double[]{2.0});
         assertEquals(1.0 - 0.001 - 0.00001, updated[0], 1e-9);
         assertEquals("adamw", adamW.id());
+
+        // Stepping multiple parameter tensors of different sizes on the same optimizer instance
+        double[] weights = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+        double[] biases = {0.5, -0.5};
+        for (int step = 0; step < 3; step++) {
+            weights = adamW.step(weights, new double[]{0.1, 0.1, 0.1, 0.1, 0.1, 0.1});
+            biases = adamW.step(biases, new double[]{0.2, -0.2});
+        }
+        assertEquals(6, weights.length);
+        assertEquals(2, biases.length);
     }
 
     @Test

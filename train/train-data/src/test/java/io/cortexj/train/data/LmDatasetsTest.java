@@ -90,6 +90,11 @@ class LmDatasetsTest {
         b.add(LmExample.of(new int[]{1, 2}, new int[]{1, 1}));
         assertNotEquals(LmDatasets.fingerprint(a), LmDatasets.fingerprint(b));
         assertEquals(LmDatasets.fingerprint(a), LmDatasets.fingerprint(a));
+
+        // High-byte token IDs above 65535 must not collide with low-byte equivalents
+        List<LmExample> lowId = List.of(LmExample.of(new int[]{1}, new int[]{1}));
+        List<LmExample> highId = List.of(LmExample.of(new int[]{65537}, new int[]{1}));
+        assertNotEquals(LmDatasets.fingerprint(lowId), LmDatasets.fingerprint(highId));
     }
 
     @Test

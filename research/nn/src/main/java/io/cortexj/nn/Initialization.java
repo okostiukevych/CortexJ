@@ -31,7 +31,11 @@ public final class Initialization {
             throw new IllegalArgumentException("bound must be positive");
         }
         Random random = new Random(seed);
-        return ignored -> (random.nextDouble() * 2 - 1) * bound;
+        return ignored -> {
+            synchronized (random) {
+                return (random.nextDouble() * 2 - 1) * bound;
+            }
+        };
     }
 
     /**

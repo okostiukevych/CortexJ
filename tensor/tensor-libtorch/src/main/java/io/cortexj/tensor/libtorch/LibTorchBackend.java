@@ -129,15 +129,21 @@ public class LibTorchBackend implements TensorBackend {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment handle = bridge.create(
                     arena, toFloat(value.toArray()), shape[0], shape[1]);
-            MemorySegment result = bridge.relu(handle);
-            float[] data = bridge.read(result, value.shape().size());
-            bridge.destroy(result);
-            bridge.destroy(handle);
-            double[] doubles = new double[data.length];
-            for (int i = 0; i < data.length; i++) {
-                doubles[i] = data[i];
+            try {
+                MemorySegment result = bridge.relu(handle);
+                try {
+                    float[] data = bridge.read(result, value.shape().size());
+                    double[] doubles = new double[data.length];
+                    for (int i = 0; i < data.length; i++) {
+                        doubles[i] = data[i];
+                    }
+                    return reference.create(doubles, value.shape(), DType.F32, Device.CPU);
+                } finally {
+                    bridge.destroy(result);
+                }
+            } finally {
+                bridge.destroy(handle);
             }
-            return reference.create(doubles, value.shape(), DType.F32, Device.CPU);
         } catch (CortexJException e) {
             throw e;
         } catch (Throwable e) {
@@ -241,28 +247,34 @@ public class LibTorchBackend implements TensorBackend {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment aHandle = bridge.create(
                     arena, toFloat(a.toArray()), aShape[0], aShape[1]);
-            MemorySegment bHandle = bridge.create(
-                    arena, toFloat(b.toArray()), bShape[0], bShape[1]);
             try {
-                MemorySegment resultHandle = "add".equals(op) ? bridge.add(aHandle, bHandle)
-                        : "mul".equals(op) ? bridge.mul(aHandle, bHandle)
-                        : bridge.matmul(aHandle, bHandle);
-                long[] outShape = "matmul".equals(op)
-                        ? new long[]{aShape[0], bShape[1]}
-                        : aShape;
-                float[] data = bridge.read(resultHandle, outShape[0] * outShape[1]);
-                bridge.destroy(resultHandle);
-                double[] doubles = new double[data.length];
-                for (int i = 0; i < data.length; i++) {
-                    doubles[i] = data[i];
+                MemorySegment bHandle = bridge.create(
+                        arena, toFloat(b.toArray()), bShape[0], bShape[1]);
+                try {
+                    MemorySegment resultHandle = "add".equals(op) ? bridge.add(aHandle, bHandle)
+                            : "mul".equals(op) ? bridge.mul(aHandle, bHandle)
+                            : bridge.matmul(aHandle, bHandle);
+                    try {
+                        long[] outShape = "matmul".equals(op)
+                                ? new long[]{aShape[0], bShape[1]}
+                                : aShape;
+                        float[] data = bridge.read(resultHandle, outShape[0] * outShape[1]);
+                        double[] doubles = new double[data.length];
+                        for (int i = 0; i < data.length; i++) {
+                            doubles[i] = data[i];
+                        }
+                        Shape shape = outShape.length == 2
+                                ? Shape.of(outShape[0], outShape[1])
+                                : Shape.of(outShape);
+                        return reference.create(doubles, shape, DType.F32, Device.CPU);
+                    } finally {
+                        bridge.destroy(resultHandle);
+                    }
+                } finally {
+                    bridge.destroy(bHandle);
                 }
-                Shape shape = outShape.length == 2
-                        ? Shape.of(outShape[0], outShape[1])
-                        : Shape.of(outShape);
-                return reference.create(doubles, shape, DType.F32, Device.CPU);
             } finally {
                 bridge.destroy(aHandle);
-                bridge.destroy(bHandle);
             }
         } catch (CortexJException e) {
             throw e;

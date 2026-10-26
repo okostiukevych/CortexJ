@@ -87,7 +87,10 @@ public final class DjlHfTokenizer implements Tokenizer {
     public static int vocabCount(Path tokenizerJson) {
         try {
             ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(Files.newInputStream(tokenizerJson));
+            JsonNode root;
+            try (java.io.InputStream in = Files.newInputStream(tokenizerJson)) {
+                root = mapper.readTree(in);
+            }
             JsonNode vocab = root.path("model").path("vocab");
             java.util.Set<Integer> ids = new java.util.HashSet<Integer>();
             if (vocab.isObject()) {
@@ -119,8 +122,10 @@ public final class DjlHfTokenizer implements Tokenizer {
             Path sibling = tokenizerJson.toAbsolutePath().getParent();
             Path config = sibling == null ? null : sibling.resolve("tokenizer_config.json");
             if (config != null && Files.isRegularFile(config)) {
-                JsonNode decoder = mapper.readTree(Files.newInputStream(config))
-                        .path("added_tokens_decoder");
+                JsonNode decoder;
+                try (java.io.InputStream configIn = Files.newInputStream(config)) {
+                    decoder = mapper.readTree(configIn).path("added_tokens_decoder");
+                }
                 java.util.Iterator<String> keys = decoder.fieldNames();
                 while (keys.hasNext()) {
                     try {

@@ -36,7 +36,7 @@ public final class Shape {
     public long size() {
         long total = 1;
         for (long dimension : dimensions) {
-            total *= dimension;
+            total = Math.multiplyExact(total, dimension);
         }
         return total;
     }

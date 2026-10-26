@@ -229,6 +229,18 @@ class TensorConformanceTest {
         }
         assertEquals(1.0, total, TOLERANCE);
         assertParity(logged.toArray(), VECTOR.logSoftmax(a).toArray());
+
+        // 2D multi-row softmax and logSoftmax normalize each row independently
+        Tensor batched = CPU.create(new double[]{1.0, 2.0, 3.0, -2.0, 0.0, 2.0}, Shape.of(2, 3), DType.F32, Device.CPU);
+        Tensor sm = CPU.softmax(batched);
+        assertEquals(1.0, sm.get(0, 0) + sm.get(0, 1) + sm.get(0, 2), TOLERANCE);
+        assertEquals(1.0, sm.get(1, 0) + sm.get(1, 1) + sm.get(1, 2), TOLERANCE);
+        assertParity(sm.toArray(), VECTOR.softmax(batched).toArray());
+
+        Tensor lsm = CPU.logSoftmax(batched);
+        assertEquals(1.0, Math.exp(lsm.get(0, 0)) + Math.exp(lsm.get(0, 1)) + Math.exp(lsm.get(0, 2)), TOLERANCE);
+        assertEquals(1.0, Math.exp(lsm.get(1, 0)) + Math.exp(lsm.get(1, 1)) + Math.exp(lsm.get(1, 2)), TOLERANCE);
+        assertParity(lsm.toArray(), VECTOR.logSoftmax(batched).toArray());
     }
 
     @Test
@@ -239,6 +251,14 @@ class TensorConformanceTest {
         assertEquals(Shape.of(2, 2), view.shape());
         assertEquals(3.0, view.get(0, 0), TOLERANCE);
         assertEquals(6.0, view.get(1, 1), TOLERANCE);
+        // Mutating the slice via setAll updates the underlying tensor a
+        view.setAll(new double[]{30, 40, 50, 60});
+        assertEquals(30.0, a.get(1, 0), TOLERANCE);
+        assertEquals(60.0, a.get(2, 1), TOLERANCE);
+        // Mutating the parent tensor updates the slice view
+        a.setAll(new double[]{1, 2, 300, 400, 500, 600});
+        assertEquals(300.0, view.get(0, 0), TOLERANCE);
+        assertEquals(600.0, view.get(1, 1), TOLERANCE);
         assertThrows(IllegalArgumentException.class, () -> CPU.slice(a, 2, 2));
         assertThrows(IllegalArgumentException.class, () -> CPU.slice(a, 0, 4));
     }

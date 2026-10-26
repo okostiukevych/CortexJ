@@ -17,26 +17,50 @@ class PipelineAndShardingTest {
     @Test
     void scheduleIsOneForwardOneBackward() {
         List<PipelineSchedule.Step> steps = PipelineSchedule.schedule(2, 3);
-        // 2 stages x 3 micro-batches forward, then the same backward
+        // 2 stages x 3 micro-batches = 6 forward + 6 backward = 12 steps
         assertEquals(12, steps.size());
-        for (int i = 0; i < 6; i++) {
-            assertEquals(PipelineSchedule.Step.Direction.FORWARD, steps.get(i).direction());
+        long forwardCount = steps.stream()
+                .filter(s -> s.direction() == PipelineSchedule.Step.Direction.FORWARD)
+                .count();
+        long backwardCount = steps.stream()
+                .filter(s -> s.direction() == PipelineSchedule.Step.Direction.BACKWARD)
+                .count();
+        assertEquals(6L, forwardCount);
+        assertEquals(6L, backwardCount);
+
+        // Warmup runs 2 steps forward (micro-batch 0 across both stages), then steady-state interleaves 1F and 1B:
+        // index 0: F(m0, s0), index 1: F(m0, s1), index 2: F(m1, s0), index 3: B(m0, s1), index 4: F(m1, s1), index 5: B(m0, s0)
+        assertEquals(PipelineSchedule.Step.Direction.FORWARD, steps.get(0).direction());
+        assertEquals(PipelineSchedule.Step.Direction.BACKWARD, steps.get(3).direction());
+        assertEquals(0, steps.get(3).microBatch());
+        assertEquals(1, steps.get(3).stage());
+        assertEquals(PipelineSchedule.Step.Direction.FORWARD, steps.get(4).direction());
+        assertEquals(1, steps.get(4).microBatch());
+        assertEquals(PipelineSchedule.Step.Direction.BACKWARD, steps.get(5).direction());
+        assertEquals(0, steps.get(5).microBatch());
+        assertEquals(0, steps.get(5).stage());
+
+        // Verify causal topological ordering for every micro-batch:
+        // F(m, 0) < F(m, 1) < B(m, 1) < B(m, 0)
+        for (int m = 0; m < 3; m++) {
+            int f0 = indexOf(steps, m, 0, PipelineSchedule.Step.Direction.FORWARD);
+            int f1 = indexOf(steps, m, 1, PipelineSchedule.Step.Direction.FORWARD);
+            int b1 = indexOf(steps, m, 1, PipelineSchedule.Step.Direction.BACKWARD);
+            int b0 = indexOf(steps, m, 0, PipelineSchedule.Step.Direction.BACKWARD);
+            assertTrue(f0 < f1 && f1 < b1 && b1 < b0,
+                    "invalid causal order for micro-batch " + m);
         }
-        for (int i = 6; i < 12; i++) {
-            assertEquals(PipelineSchedule.Step.Direction.BACKWARD, steps.get(i).direction());
+    }
+
+    private static int indexOf(List<PipelineSchedule.Step> steps, int microBatch, int stage,
+                               PipelineSchedule.Step.Direction direction) {
+        for (int i = 0; i < steps.size(); i++) {
+            PipelineSchedule.Step step = steps.get(i);
+            if (step.microBatch() == microBatch && step.stage() == stage && step.direction() == direction) {
+                return i;
+            }
         }
-        // forwards run micro-batch by micro-batch, all stages in order
-        assertEquals(0, steps.get(0).stage());
-        assertEquals(0, steps.get(0).microBatch());
-        assertEquals(1, steps.get(1).stage());
-        assertEquals(0, steps.get(1).microBatch());
-        assertEquals(0, steps.get(2).stage());
-        assertEquals(1, steps.get(2).microBatch());
-        // backwards run in reverse micro-batch order
-        assertEquals(2, steps.get(6).microBatch());
-        assertEquals(1, steps.get(6).stage());
-        assertEquals(0, steps.get(11).microBatch());
-        assertEquals(0, steps.get(11).stage());
+        return -1;
     }
 
     @Test

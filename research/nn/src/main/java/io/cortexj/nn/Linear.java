@@ -39,12 +39,29 @@ public final class Linear extends TensorModule {
 
     private Variable broadcast(Variable source, Shape inputShape) {
         // weight·x has shape (out, xCols); the bias broadcasts per column
-        long[] productShape = {source.shape().dimensions()[0], inputShape.rank() > 1
-                ? inputShape.dimensions()[1] : 1};
-        int size = (int) (productShape[0] * productShape[1]);
-        double[] values = new double[size];
-        java.util.Arrays.fill(values, source.data().toArray()[0]);
-        return autograd.constant(values, Shape.of(productShape));
+        int rows = (int) source.shape().dimensions()[0];
+        int cols = inputShape.rank() > 1 ? (int) inputShape.dimensions()[1] : 1;
+        double[] biasValues = source.data().toArray();
+        double[] values = new double[rows * cols];
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                values[r * cols + c] = biasValues[r];
+            }
+        }
+        Variable expanded = source.requiresGradient()
+                ? autograd.variable(values, Shape.of(rows, cols))
+                : autograd.constant(values, Shape.of(rows, cols));
+        return autograd.record(expanded, java.util.List.of(source), gradOutput -> {
+            double[] gradBias = new double[rows];
+            for (int r = 0; r < rows; r++) {
+                double rowSum = 0;
+                for (int c = 0; c < cols; c++) {
+                    rowSum += gradOutput[r * cols + c];
+                }
+                gradBias[r] = rowSum;
+            }
+            return new double[][]{gradBias};
+        });
     }
 
     public Variable weight() {

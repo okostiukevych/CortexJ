@@ -23,6 +23,7 @@ public final class GradientWorker implements AutoCloseable {
     public GradientWorker() {
         this.context = new ZContext();
         this.socket = context.createSocket(SocketType.REP);
+        this.socket.setReceiveTimeOut(200);
         this.port = socket.bindToRandomPort("tcp://127.0.0.1");
     }
 
@@ -35,16 +36,29 @@ public final class GradientWorker implements AutoCloseable {
             return;
         }
         worker = new Thread(() -> {
-            while (running.get() && !Thread.currentThread().isInterrupted()) {
-                byte[] request = socket.recv();
-                if (request == null) {
-                    break;
+            try {
+                while (running.get() && !Thread.currentThread().isInterrupted()) {
+                    byte[] request = socket.recv();
+                    if (request == null) {
+                        if (!running.get() || Thread.currentThread().isInterrupted()) {
+                            break;
+                        }
+                        continue;
+                    }
+                    try {
+                        socket.send(serve(new String(request, StandardCharsets.UTF_8)));
+                    } catch (Throwable e) {
+                        socket.send("{\"error\":" + quote(String.valueOf(e.getMessage())) + "}");
+                    }
                 }
-                try {
-                    socket.send(serve(new String(request, StandardCharsets.UTF_8)));
-                } catch (Throwable e) {
-                    socket.send("{\"error\":" + quote(String.valueOf(e.getMessage())) + "}");
+            } catch (org.zeromq.ZMQException interrupted) {
+                // close() interrupts the worker mid-recv: that is a normal stop,
+                // anything else while still running is a real failure
+                if (running.get() && !Thread.currentThread().isInterrupted()) {
+                    throw interrupted;
                 }
+            } finally {
+                socket.close();
             }
         }, "cortexj-gradient-worker");
         worker.setDaemon(true);
@@ -128,11 +142,17 @@ public final class GradientWorker implements AutoCloseable {
 
     @Override
     public void close() {
-        running.set(false);
+        boolean wasRunning = running.getAndSet(false);
         if (worker != null) {
             worker.interrupt();
+            try {
+                worker.join(2_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } else if (!wasRunning) {
+            socket.close();
         }
-        socket.close();
         context.close();
     }
 }

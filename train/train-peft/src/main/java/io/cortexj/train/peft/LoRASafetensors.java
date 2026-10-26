@@ -80,7 +80,7 @@ public final class LoRASafetensors {
         for (int i = 0; i < 8; i++) {
             headerLength |= (long) (all[i] & 0xFF) << (8 * i);
         }
-        if (headerLength < 2 || headerLength > all.length - 8) {
+        if (headerLength < 2 || headerLength > 100_000_000L || headerLength > all.length - 8) {
             throw new IOException("safetensors header length is invalid: " + headerLength);
         }
         String header = new String(all, 8, (int) headerLength, StandardCharsets.UTF_8);
@@ -136,35 +136,59 @@ public final class LoRASafetensors {
     }
 
     static long offsetStart(String header, String tensor) {
-        String needle = "\"" + tensor + "\"";
-        int at = header.indexOf(needle);
-        if (at < 0) {
+        String section = tensorSection(header, tensor);
+        if (section == null) {
             return -1;
         }
-        int offsets = header.indexOf("data_offsets", at);
+        int offsets = section.indexOf("data_offsets");
         if (offsets < 0) {
             return -1;
         }
-        int open = header.indexOf('[', offsets);
-        int comma = header.indexOf(',', open);
-        return Long.parseLong(header.substring(open + 1, comma).trim());
+        int open = section.indexOf('[', offsets);
+        int comma = section.indexOf(',', open);
+        if (open < 0 || comma < 0) {
+            return -1;
+        }
+        return Long.parseLong(section.substring(open + 1, comma).trim());
     }
 
     static long[] shape(String header, String tensor) {
-        String needle = "\"" + tensor + "\"";
-        int at = header.indexOf(needle);
-        if (at < 0) {
+        String section = tensorSection(header, tensor);
+        if (section == null) {
             return null;
         }
-        int shapeKey = header.indexOf("shape", at);
-        int open = header.indexOf('[', shapeKey);
-        int close = header.indexOf(']', open);
-        String[] parts = header.substring(open + 1, close).split(",");
+        int shapeKey = section.indexOf("shape");
+        if (shapeKey < 0) {
+            return null;
+        }
+        int open = section.indexOf('[', shapeKey);
+        int close = section.indexOf(']', open);
+        if (open < 0 || close < 0) {
+            return null;
+        }
+        String[] parts = section.substring(open + 1, close).split(",");
         long[] shape = new long[parts.length];
         for (int i = 0; i < parts.length; i++) {
             shape[i] = Long.parseLong(parts[i].trim());
         }
         return shape;
+    }
+
+    private static String tensorSection(String header, String tensor) {
+        String needle = "\"" + tensor + "\"";
+        int at = header.indexOf(needle);
+        if (at < 0) {
+            return null;
+        }
+        int braceOpen = header.indexOf('{', at + needle.length());
+        if (braceOpen < 0) {
+            return null;
+        }
+        int braceClose = header.indexOf('}', braceOpen + 1);
+        if (braceClose < 0) {
+            return header.substring(braceOpen);
+        }
+        return header.substring(braceOpen, braceClose + 1);
     }
 
     static String metadataValue(String header, String key, String fallback) {
@@ -185,6 +209,10 @@ public final class LoRASafetensors {
     }
 
     private static String quote(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return "\"" + value.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t") + "\"";
     }
 }

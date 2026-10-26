@@ -36,15 +36,30 @@ public final class HfWeightLoader {
         if (Files.isRegularFile(index)) {
             try {
                 ObjectMapper mapper = new ObjectMapper();
-                JsonNode weightMap = mapper.readTree(Files.newInputStream(index)).path("weight_map");
+                JsonNode weightMap;
+                try (java.io.InputStream in = Files.newInputStream(index)) {
+                    weightMap = mapper.readTree(in).path("weight_map");
+                }
                 Map<String, float[]> all = new LinkedHashMap<String, float[]>();
                 TreeSet<String> shardFiles = new TreeSet<String>();
                 Iterator<String> fields = weightMap.fieldNames();
                 while (fields.hasNext()) {
                     shardFiles.add(weightMap.path(fields.next()).asText());
                 }
+                Path normalizedRoot = modelDirectory.toAbsolutePath().normalize();
                 for (String shard : shardFiles) {
-                    all.putAll(SafetensorsTensorReader.readAllFloats(modelDirectory.resolve(shard)));
+                    if (shard == null || shard.isEmpty() || shard.contains("..")) {
+                        throw new CortexJException("CORTEXJ-TRAIN-0103",
+                                "invalid shard path in model.safetensors.index.json: " + shard,
+                                "Ensure all shard paths in model.safetensors.index.json stay within modelDirectory.");
+                    }
+                    Path resolved = normalizedRoot.resolve(shard).normalize();
+                    if (!resolved.startsWith(normalizedRoot)) {
+                        throw new CortexJException("CORTEXJ-TRAIN-0103",
+                                "shard path escapes model directory: " + shard,
+                                "Ensure all shard paths in model.safetensors.index.json stay within modelDirectory.");
+                    }
+                    all.putAll(SafetensorsTensorReader.readAllFloats(resolved));
                 }
                 return new LoadedWeights(all);
             } catch (IOException e) {

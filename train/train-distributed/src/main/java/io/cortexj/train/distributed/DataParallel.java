@@ -17,14 +17,19 @@ public class DataParallel {
      */
     public double[] gradients(double[] weights, double[] batch, int workers) {
         requireValid(weights, batch, workers);
-        int rows = batch.length / workers;
+        int rows = Math.max(1, batch.length / workers);
         double[] averaged = new double[weights.length];
         for (int worker = 0; worker < workers; worker++) {
-            int from = worker * rows;
-            int to = worker == workers - 1 ? batch.length : from + rows;
+            int from = Math.min(batch.length, worker * rows);
+            int to = worker == workers - 1 ? batch.length : Math.min(batch.length, from + rows);
+            int sliceLength = to - from;
+            if (sliceLength <= 0) {
+                continue;
+            }
+            double weight = (double) sliceLength / batch.length;
             double[] shardGradient = shardGradient(weights, batch, from, to);
             for (int p = 0; p < weights.length; p++) {
-                averaged[p] += shardGradient[p] / workers;
+                averaged[p] += shardGradient[p] * weight;
             }
         }
         return averaged;
@@ -35,12 +40,17 @@ public class DataParallel {
      */
     public double loss(double[] weights, double[] batch, int workers) {
         requireValid(weights, batch, workers);
-        int rows = batch.length / workers;
+        int rows = Math.max(1, batch.length / workers);
         double total = 0;
         for (int worker = 0; worker < workers; worker++) {
-            int from = worker * rows;
-            int to = worker == workers - 1 ? batch.length : from + rows;
-            total += shardLoss(weights, batch, from, to) / workers;
+            int from = Math.min(batch.length, worker * rows);
+            int to = worker == workers - 1 ? batch.length : Math.min(batch.length, from + rows);
+            int sliceLength = to - from;
+            if (sliceLength <= 0) {
+                continue;
+            }
+            double weight = (double) sliceLength / batch.length;
+            total += shardLoss(weights, batch, from, to) * weight;
         }
         return total;
     }
@@ -49,8 +59,8 @@ public class DataParallel {
         if (weights == null || weights.length == 0) {
             throw new IllegalArgumentException("weights must not be empty");
         }
-        if (batch == null || batch.length == 0 || batch.length < workers) {
-            throw new IllegalArgumentException("batch must have at least one row per worker");
+        if (batch == null || batch.length == 0) {
+            throw new IllegalArgumentException("batch must not be empty");
         }
         if (workers < 1) {
             throw new IllegalArgumentException("worker count must be at least 1");

@@ -24,6 +24,16 @@ class DataParallelGradientTest {
             assertEquals(fullBatch[i], averaged[i], 1e-9,
                     "sharded average must equal full-batch gradient at " + i);
         }
+
+        // Uneven batch size (5 elements across 2 workers -> shards of 2 and 3)
+        double[] unevenBatch = {1.0, 2.0, -0.5, 3.0, 1.5};
+        double[] unevenSharded = new DataParallel().gradients(weights, unevenBatch, 2);
+        double[] unevenFull = new DataParallel().gradients(weights, unevenBatch, 1);
+        for (int i = 0; i < unevenFull.length; i++) {
+            assertEquals(unevenFull[i], unevenSharded[i], 1e-9);
+        }
+        assertEquals(new DataParallel().loss(weights, unevenBatch, 1),
+                new DataParallel().loss(weights, unevenBatch, 2), 1e-9);
     }
 
     @Test

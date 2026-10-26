@@ -87,22 +87,23 @@ public final class Collectives implements AutoCloseable {
     }
 
     private double[] roundTrip(String endpoint, String op, double[] payload) throws IOException {
-        IOException first = call(endpoint, op, payload);
-        if (first == null) {
-            return lastResult;
+        try {
+            return call(endpoint, op, payload);
+        } catch (IOException first) {
+            try {
+                return call(endpoint, op, payload);
+            } catch (IOException second) {
+                throw new IOException("worker unreachable after retry: " + endpoint
+                        + " (" + second.getMessage() + ")", second);
+            }
         }
-        IOException second = call(endpoint, op, payload);
-        if (second == null) {
-            return lastResult;
-        }
-        throw new IOException("worker unreachable after retry: " + endpoint
-                + " (" + second.getMessage() + ")");
     }
 
-    private double[] lastResult;
-
-    private IOException call(String endpoint, String op, double[] payload) {
-        ZMQ.Socket socket = context.createSocket(SocketType.REQ);
+    private double[] call(String endpoint, String op, double[] payload) throws IOException {
+        ZMQ.Socket socket;
+        synchronized (context) {
+            socket = context.createSocket(SocketType.REQ);
+        }
         try {
             socket.setReceiveTimeOut((int) Math.min(timeoutMillis, Integer.MAX_VALUE));
             socket.setSendTimeOut((int) Math.min(timeoutMillis, Integer.MAX_VALUE));
@@ -110,18 +111,21 @@ public final class Collectives implements AutoCloseable {
             socket.send(encode(op, payload));
             byte[] reply = socket.recv();
             if (reply == null) {
-                return new IOException("worker timeout: " + endpoint);
+                throw new IOException("worker timeout: " + endpoint);
             }
             String text = new String(reply, StandardCharsets.UTF_8);
             if (text.startsWith("{\"error\"")) {
-                return new IOException("worker error: " + text);
+                throw new IOException("worker error: " + text);
             }
-            lastResult = decode(text);
-            return null;
+            return decode(text);
+        } catch (IOException e) {
+            throw e;
         } catch (Throwable e) {
-            return new IOException("worker call failed: " + endpoint + ": " + e, e);
+            throw new IOException("worker call failed: " + endpoint + ": " + e, e);
         } finally {
-            socket.close();
+            synchronized (context) {
+                socket.close();
+            }
         }
     }
 

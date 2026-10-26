@@ -84,4 +84,28 @@ class ShardedLinearTest {
         return layer.shardedForward(new Autograd(BACKEND).constant(
                 new double[]{1.0, 2.0}, Shape.of(2, 1)), shard);
     }
+
+    @Test
+    void shardedBackwardPropagatesGradientsMatchingUnsharded() {
+        Autograd autograd = new Autograd(BACKEND);
+        ShardedLinear colLayer = new ShardedLinear(autograd, 2, 4, 2,
+                ShardedLinear.Split.COLUMN, Initialization.constant(0.5));
+        Linear refCol = new Linear(autograd, 2, 4, Initialization.constant(0.5));
+        Variable x1 = autograd.variable(new double[]{1.0, 2.0}, Shape.of(2, 1));
+        Variable x2 = autograd.variable(new double[]{1.0, 2.0}, Shape.of(2, 1));
+
+        Variable outSharded = (Variable) colLayer.forward(x1);
+        autograd.backward(autograd.sum(outSharded));
+        Variable outRef = (Variable) refCol.forward(x2);
+        autograd.backward(autograd.sum(outRef));
+
+        for (int i = 0; i < 8; i++) {
+            assertEquals(refCol.weight().grad()[i], colLayer.weight().grad()[i], 1e-9);
+        }
+        for (int i = 0; i < 4; i++) {
+            assertEquals(refCol.bias().grad()[i], colLayer.bias().grad()[i], 1e-9);
+        }
+        assertEquals(x2.grad()[0], x1.grad()[0], 1e-9);
+        assertEquals(x2.grad()[1], x1.grad()[1], 1e-9);
+    }
 }

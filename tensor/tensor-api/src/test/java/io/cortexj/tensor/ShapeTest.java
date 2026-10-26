@@ -37,4 +37,10 @@ class ShapeTest {
         assertEquals(Shape.of(2, 3).hashCode(), Shape.of(2, 3).hashCode());
         assertFalse(Shape.of(2, 3).equals(Shape.of(3, 2)));
     }
+
+    @Test
+    void sizeDetectsOverflow() {
+        Shape huge = Shape.of(Long.MAX_VALUE / 2 + 1, 4);
+        assertThrows(ArithmeticException.class, huge::size);
+    }
 }
