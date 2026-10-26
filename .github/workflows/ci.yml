@@ -197,12 +197,12 @@ jobs:
       - name: Build and test (GPU runtimes probed honestly on the accelerator)
         run: mvn -B clean install
 
-  # Binary compatibility gate (spec §74): after the 1.0.0 release the baseline
-  # lives in the cortexj-maven repository (declared in the parent POM). This job
+  # Binary compatibility gate: the baseline is the previous release, published
+  # in the cortexj-maven repository (declared in the parent POM). This job
   # fails the build on any binary-incompatible change to the Public API /
-  # Stable SPI tiers without a major bump.
+  # Stable SPI tiers without a major version bump.
   compat:
-    name: Binary compatibility (japicmp vs the latest release (1.0.1))
+    name: Binary compatibility (japicmp vs the latest release (1.0.2))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -216,8 +216,8 @@ jobs:
         with:
           path: ~/.m2
           key: ubuntu-latest-maven-compat-${{ hashFiles('**/pom.xml') }}
-      - name: japicmp against the 1.0.0 baseline
-        run: mvn -B verify -Pcompat -Dcortexj.api.baseline=1.0.1 -Dcortexj.compat.skip=false -DskipTests
+      - name: japicmp against the 1.0.2 baseline
+        run: mvn -B verify -Pcompat -Dcortexj.api.baseline=1.0.2 -Dcortexj.compat.skip=false -DskipTests
 
   # Dependency CVE sweep (Audit-2, issue #242). NVD data is cached between
   # runs; the scan fails on untriaged CVSS>=7 findings (in-repo suppressions
