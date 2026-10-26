@@ -29,9 +29,18 @@ interface LlamaServerLauncher {
 
     static void awaitHealthy(String baseUrl, long timeoutMillis)
             throws IOException, InterruptedException {
+        awaitHealthy(baseUrl, timeoutMillis, null);
+    }
+
+    static void awaitHealthy(String baseUrl, long timeoutMillis, Process process)
+            throws IOException, InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMillis;
         IOException last = null;
         while (System.currentTimeMillis() < deadline) {
+            if (process != null && !isProcessAlive(process)) {
+                throw new IOException("llama-server process exited before becoming healthy"
+                        + (last == null ? "" : ": " + last.getMessage()));
+            }
             try {
                 java.net.HttpURLConnection connection =
                         (java.net.HttpURLConnection) new java.net.URL(baseUrl + "/health")
@@ -50,9 +59,22 @@ interface LlamaServerLauncher {
             } catch (IOException probeFailure) {
                 last = probeFailure;
             }
+            if (process != null && !isProcessAlive(process)) {
+                throw new IOException("llama-server process exited before becoming healthy: "
+                        + last.getMessage());
+            }
             TimeUnit.MILLISECONDS.sleep(250);
         }
         throw new IOException("llama-server did not become healthy in " + timeoutMillis
-                + " ms" + (last == null ? "" : ": " + last.getMessage()));
+                + " ms: " + last.getMessage());
+    }
+
+    static boolean isProcessAlive(Process process) {
+        try {
+            process.exitValue();
+            return false;
+        } catch (IllegalThreadStateException stillRunning) {
+            return true;
+        }
     }
 }

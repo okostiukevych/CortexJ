@@ -75,7 +75,8 @@ final class IsolatedModelRuntime implements ModelRuntime {
         ModelCapabilities capabilities = WorkerCodec.parseModelCapabilities(reply.path("capabilities"));
         boolean textGeneration = reply.path("textGeneration").asBoolean(false);
         boolean embedding = reply.path("embedding").asBoolean(false);
-        return IsolatedModelProxy.create(channel, executor, modelToken, capabilities, textGeneration, embedding);
+        return IsolatedModelProxy.create(channel, executor, modelToken, modelTokens,
+                capabilities, textGeneration, embedding);
     }
 
     @Override

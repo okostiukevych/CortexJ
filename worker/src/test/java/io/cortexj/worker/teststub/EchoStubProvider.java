@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Deterministic in-process stub runtime used by the worker protocol tests.
  * Registered under META-INF/services with id "worker-stub".
  */
-public final class EchoStubProvider implements RuntimeProvider {
+public class EchoStubProvider implements RuntimeProvider {
 
     public static final String ID = "worker-stub";
     /** execute() sleeps this long when the request parameter "slow" is true. */

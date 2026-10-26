@@ -71,6 +71,12 @@ public final class LlamaCppProvider implements RuntimeProvider {
 
     @Override
     public RuntimeProbeResult probe(RuntimeProbeContext context) {
+        String serverBinary = llamaServerBinary();
+        if (serverBinary != null) {
+            return RuntimeProbeResult.available(
+                    "llama-server found at " + serverBinary
+                            + "; GGUF models will be executed by a managed llama-server process");
+        }
         List<String> candidates = candidateLibraries(context);
         for (String candidate : candidates) {
             File file = new File(candidate);
@@ -78,12 +84,6 @@ public final class LlamaCppProvider implements RuntimeProvider {
                 return RuntimeProbeResult.available(
                         "llama.cpp native library found: " + candidate);
             }
-        }
-        String serverBinary = llamaServerBinary();
-        if (serverBinary != null) {
-            return RuntimeProbeResult.available(
-                    "llama-server found at " + serverBinary
-                            + "; GGUF models will be executed by a managed llama-server process");
         }
         NativeRuntimeException failure = new NativeRuntimeException(ErrorCode.NATIVE_LIBRARY_MISSING,
                 nativeMissingMessage(candidates),
@@ -181,11 +181,11 @@ public final class LlamaCppProvider implements RuntimeProvider {
                         : probe.error();
             }
         }
-        boolean hasNativeLib = overrideLauncher == null && existsFirstCandidateLibrary(request);
-        if (!hasNativeLib || overrideLauncher != null) {
+        String serverBinary = llamaServerBinary();
+        if (overrideLauncher != null || serverBinary != null) {
             LlamaServerLauncher effective = overrideLauncher != null
                     ? overrideLauncher
-                    : new ProcessLlamaServerLauncher(llamaServerBinary(),
+                    : new ProcessLlamaServerLauncher(serverBinary,
                             SERVER_STARTUP_TIMEOUT_MILLIS, request.eventListener());
             return new LlamaServerModelRuntime(effective, request.executor());
         }

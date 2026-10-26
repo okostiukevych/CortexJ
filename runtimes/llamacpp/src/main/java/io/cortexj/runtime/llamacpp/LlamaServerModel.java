@@ -146,6 +146,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 // and every call failing connection-refused forever - fail the
                 // model fast (releasing the endpoint so the next load respawns
                 // it) with an actionable remediation instead
+                endpoint.evict();
                 close();
                 InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
                         "the llama-server process behind this model is unreachable (connection refused)",
@@ -250,13 +251,17 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                 URL url = new URL(endpoint.baseUrl() + "/v1/chat/completions");
                 connection = (HttpURLConnection) url.openConnection();
                 activeConnection = connection;
+                if (closed.get()) {
+                    connection.disconnect();
+                    consumer.onError(closedDuringStream());
+                    return;
+                }
+                if (cancelled.get()) {
+                    connection.disconnect();
+                    return;
+                }
                 connection.setConnectTimeout(CONNECT_TIMEOUT);
-                // poll-style read timeout: a blocked socket read cannot be
-                // interrupted by cancel()/close() (fd close does not wake a
-                // blocked reader), so the loop wakes at short intervals and
-                // re-checks the cancel/close flags - the ceiling below still
-                // bounds a silent-but-open stream
-                connection.setReadTimeout(SSE_POLL_MILLIS);
+                connection.setReadTimeout(READ_TIMEOUT);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -269,6 +274,12 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                     throw new IOException("HTTP " + connection.getResponseCode()
                             + " from llama-server streaming endpoint");
                 }
+                // poll-style read timeout: a blocked socket read cannot be
+                // interrupted by cancel()/close() (fd close does not wake a
+                // blocked reader), so the loop wakes at short intervals and
+                // re-checks the cancel/close flags - the ceiling below still
+                // bounds a silent-but-open stream
+                connection.setReadTimeout(SSE_POLL_MILLIS);
                 TokenUsage usage = TokenUsage.unknown();
                 FinishReason finishReason = FinishReason.STOP;
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -335,6 +346,7 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                     // releases the endpoint (the next load respawns it) instead
                     // of leaving the handle READY and every call failing
                     // connection-refused forever
+                    endpoint.evict();
                     close();
                     InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
                             "the llama-server process behind this model is unreachable (connection refused)",

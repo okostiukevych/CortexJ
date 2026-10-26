@@ -71,6 +71,8 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
         server.createContext("/v1/models", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
+                String auth = exchange.getRequestHeaders().getFirst("Authorization");
+                lastAuthHeader.put("models", auth == null ? "" : auth);
                 respond(exchange, 200, "{\"object\":\"list\",\"data\":[{\"id\":\"tck-model\"}]}");
             }
         });
@@ -248,6 +250,26 @@ class RemoteOpenAiProviderTckTest extends RuntimeProviderContract {
     void probeSucceedsAgainstHealthyEndpoint() {
         RuntimeProbeResult result = provider.probe(contextWithBaseUrl());
         assertEquals(io.cortexj.runtime.RuntimeHealth.AVAILABLE, result.health(), result.message());
+    }
+
+    @Test
+    void probeForwardsApiKeyAndRedactsBaseUrlCredentials() {
+        String urlWithUserInfo = baseUrl.replace("http://", "http://user:secret-password@");
+        RuntimeProbeResult result = provider.probe(new RuntimeProbeContext(
+                testEnvironment(), testHardware(true), false,
+                mapOf("remote.baseUrl", urlWithUserInfo,
+                        "remote.apiKey", "probe-secret-key")));
+        assertEquals(io.cortexj.runtime.RuntimeHealth.AVAILABLE, result.health(), result.message());
+        assertEquals("Bearer probe-secret-key", lastAuthHeader.get("models"),
+                "probe() must send Authorization header when remote.apiKey is configured");
+        assertFalse(result.message().contains("secret-password"),
+                "probe() status message must redact credentials from baseUrl, got: " + result.message());
+
+        RuntimeProbeResult offlineResult = provider.probe(new RuntimeProbeContext(
+                testEnvironment(), testHardware(true), true,
+                Collections.singletonMap("remote.baseUrl", baseUrl + "?api_key=secret-query-token")));
+        assertFalse(offlineResult.message().contains("secret-query-token"),
+                "offline probe() status message must redact query credentials from baseUrl, got: " + offlineResult.message());
     }
 
     @Test

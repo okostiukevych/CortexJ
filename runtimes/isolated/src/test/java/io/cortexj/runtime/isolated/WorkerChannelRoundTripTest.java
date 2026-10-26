@@ -88,4 +88,51 @@ class WorkerChannelRoundTripTest {
         assertTrue(channel.isDead());
         assertFalse(channel.processForTesting().isAlive());
     }
+
+    @Test
+    void readCappedLineReturnsMarkerWithoutWaitingForNewlineAndProviderRefcountsSessions() throws Exception {
+        // 1. Unterminated stream exceeding cap returns CAPPED_LINE_MARKER immediately without blocking for \n
+        java.io.BufferedReader infiniteNoNewline = new java.io.BufferedReader(new java.io.Reader() {
+            @Override
+            public int read(char[] cbuf, int off, int len) {
+                for (int i = 0; i < len; i++) {
+                    cbuf[off + i] = 'x';
+                }
+                return len;
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+        String capped = WorkerChannel.readCappedLine(infiniteNoNewline, 64);
+        assertTrue(capped == WorkerChannel.CAPPED_LINE_MARKER,
+                "readCappedLine must return CAPPED_LINE_MARKER without blocking on missing newline");
+
+        // 2. Provider allows two concurrent open() sessions and closes child session only when last closes
+        Path artifact = Files.createTempFile("isolated-refcount-model", ".onnx");
+        Files.write(artifact, "stub".getBytes(StandardCharsets.UTF_8));
+        IsolatedRuntimeProvider provider = new IsolatedRuntimeProvider("stub");
+        try {
+            io.cortexj.spi.runtime.ModelRuntime session1 =
+                    provider.open(IsolatedProviderRoundTripTest.openRequest());
+            io.cortexj.spi.runtime.ModelRuntime session2 =
+                    provider.open(IsolatedProviderRoundTripTest.openRequest());
+            io.cortexj.spi.runtime.RuntimeModel model1 =
+                    session1.load(IsolatedProviderRoundTripTest.loadRequest(artifact));
+            model1.close();
+            session1.close();
+
+            // session2 must still be able to load and execute after session1 closed
+            io.cortexj.spi.runtime.RuntimeModel model2 =
+                    session2.load(IsolatedProviderRoundTripTest.loadRequest(artifact));
+            assertEquals("stub:ok", model2.execute(
+                    io.cortexj.inference.InferenceRequest.builder().input("ok").build()).singleOutput());
+            model2.close();
+            session2.close();
+        } finally {
+            provider.close();
+            Files.deleteIfExists(artifact);
+        }
+    }
 }

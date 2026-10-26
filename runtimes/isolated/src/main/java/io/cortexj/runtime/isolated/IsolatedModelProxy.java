@@ -44,20 +44,29 @@ final class IsolatedModelProxy implements InvocationHandler {
     private final WorkerChannel channel;
     private final ExecutorService executor;
     private final String modelToken;
+    private final java.util.Set<String> modelTokens;
     private final ModelCapabilities capabilities;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private IsolatedModelProxy(WorkerChannel channel, ExecutorService executor,
-                              String modelToken, ModelCapabilities capabilities) {
+                              String modelToken, java.util.Set<String> modelTokens,
+                              ModelCapabilities capabilities) {
         this.channel = channel;
         this.executor = executor;
         this.modelToken = modelToken;
+        this.modelTokens = modelTokens;
         this.capabilities = capabilities;
     }
 
     static RuntimeModel create(WorkerChannel channel, ExecutorService executor, String modelToken,
                                ModelCapabilities capabilities, boolean textGeneration, boolean embedding) {
-        IsolatedModelProxy handler = new IsolatedModelProxy(channel, executor, modelToken, capabilities);
+        return create(channel, executor, modelToken, null, capabilities, textGeneration, embedding);
+    }
+
+    static RuntimeModel create(WorkerChannel channel, ExecutorService executor, String modelToken,
+                               java.util.Set<String> modelTokens, ModelCapabilities capabilities,
+                               boolean textGeneration, boolean embedding) {
+        IsolatedModelProxy handler = new IsolatedModelProxy(channel, executor, modelToken, modelTokens, capabilities);
         List<Class<?>> interfaces = new ArrayList<Class<?>>();
         interfaces.add(RuntimeModel.class);
         if (textGeneration) {
@@ -236,6 +245,9 @@ final class IsolatedModelProxy implements InvocationHandler {
 
     void close() {
         if (closed.compareAndSet(false, true)) {
+            if (modelTokens != null) {
+                modelTokens.remove(modelToken);
+            }
             ObjectNode payload = WorkerCodec.object();
             payload.put("modelToken", modelToken);
             try {
@@ -260,7 +272,13 @@ final class IsolatedModelProxy implements InvocationHandler {
 
     private <T> CompletionStage<T> supplyAsync(final java.util.function.Supplier<T> supplier) {
         if (executor == null) {
-            return CompletableFuture.completedFuture(supplier.get());
+            try {
+                return CompletableFuture.completedFuture(supplier.get());
+            } catch (Throwable failure) {
+                CompletableFuture<T> failed = new CompletableFuture<T>();
+                failed.completeExceptionally(failure);
+                return failed;
+            }
         }
         try {
             return CompletableFuture.supplyAsync(supplier, executor);

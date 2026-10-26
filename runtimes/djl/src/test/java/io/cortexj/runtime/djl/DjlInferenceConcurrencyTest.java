@@ -149,7 +149,7 @@ class DjlInferenceConcurrencyTest {
     }
 
     @Test
-    void executeAsyncWithoutExecutorRunsInline() {
+    void executeAsyncWithoutExecutorReturnsFailedFuture() throws Exception {
         final StubModel fake = new StubModel(new java.util.function.Supplier<ai.djl.ndarray.NDManager>() {
             @Override
             public ai.djl.ndarray.NDManager get() {
@@ -158,9 +158,11 @@ class DjlInferenceConcurrencyTest {
         });
         final DjlProvider provider = new DjlProvider();
         final DjlProvider.DjlModel model = provider.new DjlModel(fake, HfTokenizer.fallback(), null);
-        InferenceException inline = assertThrows(InferenceException.class,
-                () -> model.executeAsync(InferenceRequest.builder().input("alpha beta").build()));
-        assertEquals("offload-marker", causeMessage(inline));
+        // an async contract reports failure through the future, not a synchronous throw
+        java.util.concurrent.CompletableFuture<?> future = model
+                .executeAsync(InferenceRequest.builder().input("alpha beta").build()).toCompletableFuture();
+        ExecutionException failure = assertThrows(ExecutionException.class, () -> future.get());
+        assertEquals("offload-marker", causeMessage(failure.getCause()));
     }
 
     @Test

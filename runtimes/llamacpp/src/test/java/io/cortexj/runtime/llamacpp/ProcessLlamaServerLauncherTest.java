@@ -434,4 +434,67 @@ class ProcessLlamaServerLauncherTest {
         assertEquals(a, ProcessLlamaServerLauncher.cacheKey(artifact, withLora),
                 "the same adapter must reuse the same process");
     }
+
+    @Test
+    void rejectsUnknownServerArgsAndNormalizesLoraPathsAndWindowsDriveColons() throws Exception {
+        StubbornProcess process = new StubbornProcess();
+        ProcessLlamaServerLauncher launcher = launcherFor(process, 200);
+        Path artifact = Files.createTempFile(tempDir, "fake-model", ".gguf");
+        try {
+            java.util.Map<String, Object> unknown = new java.util.LinkedHashMap<String, Object>();
+            unknown.put("unknownFlag", "value");
+            assertThrows(IOException.class, new org.junit.jupiter.api.function.Executable() {
+                @Override
+                public void execute() throws IOException {
+                    launcher.launch(artifact, unknown);
+                }
+            });
+            assertFalse(process.destroyCalled, "unknown server arg must fail before starting process");
+        } finally {
+            Files.deleteIfExists(artifact);
+        }
+
+        java.util.Map<String, Object> winLora = new java.util.LinkedHashMap<String, Object>();
+        winLora.put("lora", "C:\\models\\adapter.gguf");
+        assertEquals(java.util.Collections.singletonList("C:\\models\\adapter.gguf"),
+                ProcessLlamaServerLauncher.loraFlags(winLora));
+
+        java.util.Map<String, Object> winLoraWithScale = new java.util.LinkedHashMap<String, Object>();
+        winLoraWithScale.put("lora", "C:\\models\\adapter.gguf:0.75");
+        assertEquals(java.util.Collections.singletonList("C:\\models\\adapter.gguf:0.75"),
+                ProcessLlamaServerLauncher.loraFlags(winLoraWithScale));
+
+        Path base = tempDir.resolve("base.gguf");
+        Path absAdapter = tempDir.resolve("adapter.gguf").toAbsolutePath().normalize();
+        java.util.Map<String, Object> relMap = new java.util.LinkedHashMap<String, Object>();
+        relMap.put("lora", "adapter.gguf:0.5");
+        java.util.Map<String, Object> absMap = new java.util.LinkedHashMap<String, Object>();
+        absMap.put("lora", absAdapter.toString() + ":0.5");
+        assertEquals(
+                ProcessLlamaServerLauncher.cacheKey(base, absMap),
+                ProcessLlamaServerLauncher.cacheKey(base, relMap),
+                "relative and absolute paths to the same LoRA adapter must produce identical cache keys");
+    }
+
+    @Test
+    void awaitHealthyAbortsImmediatelyWhenProcessAlreadyExited() throws Exception {
+        StubbornProcess exitedProcess = new StubbornProcess();
+        exitedProcess.running = false;
+        ProcessLlamaServerLauncher launcher = launcherFor(exitedProcess, 30_000);
+        Path artifact = Files.createTempFile(tempDir, "fake-model", ".gguf");
+        long start = System.currentTimeMillis();
+        try {
+            IOException ex = assertThrows(IOException.class, new org.junit.jupiter.api.function.Executable() {
+                @Override
+                public void execute() throws IOException {
+                    launcher.launch(artifact);
+                }
+            });
+            long elapsed = System.currentTimeMillis() - start;
+            assertTrue(elapsed < 5_000L, "dead process must fail fast instead of waiting full timeout");
+            assertTrue(ex.getMessage().contains("exited during startup"));
+        } finally {
+            Files.deleteIfExists(artifact);
+        }
+    }
 }

@@ -50,6 +50,28 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
     // cancel() (which disconnects) remains the primary abort mechanism
     private static final int SSE_HEADER_TIMEOUT_MILLIS = 30_000;
     private static final long SSE_IDLE_CEILING_MILLIS = 300_000L;
+    private static final int MAX_SSE_LINE_CHARS = 4 * 1024 * 1024;
+    private static final int MAX_STREAMED_TOOL_CALLS = 128;
+    private static final int MAX_STREAMED_TOOL_ARGS_CHARS = 4 * 1024 * 1024;
+
+    /**
+     * {@code HttpURLConnection.disconnect()} can block on the input-stream lock
+     * held by a reader parked in a socket read, so it is issued from a
+     * throwaway daemon thread: callers (close/cancel) never wait on it.
+     */
+    private static void disconnectAsync(final HttpURLConnection connection) {
+        Thread disconnector = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    connection.disconnect();
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }, "cortexj-remote-disconnect");
+        disconnector.setDaemon(true);
+        disconnector.start();
+    }
 
     private static InferenceException closedDuringStream() {
         return new InferenceException(ErrorCode.INFERENCE_CANCELLED,
@@ -129,7 +151,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         }
         for (HttpURLConnection connection : liveStreams) {
             try {
-                connection.disconnect();
+                disconnectAsync(connection);
             } catch (RuntimeException ignored) {
             }
         }
@@ -152,6 +174,9 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         private final String modelId;
         private final boolean rerankEnabled;
         private volatile boolean closed;
+        private final java.util.Set<HttpURLConnection> modelStreams =
+                java.util.Collections.newSetFromMap(
+                        new java.util.concurrent.ConcurrentHashMap<HttpURLConnection, Boolean>());
 
         RemoteModel(String modelId, boolean rerankEnabled) {
             this.modelId = modelId;
@@ -180,7 +205,13 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
             if (executor == null) {
-                return CompletableFuture.completedFuture(execute(request));
+                try {
+                    return CompletableFuture.completedFuture(execute(request));
+                } catch (Throwable failure) {
+                    CompletableFuture<InferenceResponse> failed = new CompletableFuture<InferenceResponse>();
+                    failed.completeExceptionally(failure);
+                    return failed;
+                }
             }
             // audit 2026-10-08: a saturated/shut-down pool must surface as a
             // failed future, not a synchronous throw from an async contract
@@ -244,7 +275,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     cancelled.set(true);
                     HttpURLConnection connection = activeConnection.get();
                     if (connection != null) {
-                        connection.disconnect();
+                        disconnectAsync(connection);
                     }
                 }
             });
@@ -257,7 +288,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                         if (cancelled.get()) {
                             return;
                         }
-                        if (runtimeClosed.get()) {
+                        if (closed || runtimeClosed.get()) {
                             // audit #95: close must deliver a terminal, not swallow it
                             publisher.fail(closedDuringStream());
                             return;
@@ -267,7 +298,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                         if (cancelled.get()) {
                             return;
                         }
-                        if (runtimeClosed.get()) {
+                        if (closed || runtimeClosed.get()) {
                             publisher.fail(closedDuringStream());
                             return;
                         }
@@ -297,91 +328,131 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
             if (cancelled.get()) {
                 return;
             }
-            if (runtimeClosed.get()) {
+            if (closed || runtimeClosed.get()) {
                 // audit #95: a close must not swallow the terminal
                 publisher.fail(closedDuringStream());
                 return;
             }
-            // audit #103: the poll read timeout (below) also fires while
-            // waiting for the response headers - a busy remote endpoint can
-            // legitimately take longer than one poll slice to answer. A header
-            // timeout retries on a fresh connection until the deadline; the
-            // short poll timeout stays in force everywhere so close()/cancel()
-            // keep freeing workers within one poll window
-            long headerDeadline = System.currentTimeMillis() + SSE_HEADER_TIMEOUT_MILLIS;
-            while (true) {
-                URL url = new URL(baseUrl + "/v1/chat/completions");
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                liveStreams.add(connection);
-                activeConnection.set(connection);
-                try {
-                    connection.setRequestMethod("POST");
-                    connection.setConnectTimeout(30_000);
-                    // poll-style read timeout: a blocked socket read cannot be
-                    // interrupted by close()/cancel() (fd close does not wake a
-                    // blocked reader), so the loop wakes at short intervals and
-                    // re-checks the cancel/close flags - the 300s ceiling below
-                    // still bounds a silent-but-open stream
-                    connection.setReadTimeout(SSE_POLL_MILLIS);
-                    connection.setDoOutput(true);
-                    connection.setRequestProperty("Accept", "text/event-stream");
-                    connection.setRequestProperty("Content-Type", "application/json");
-                    if (apiKey != null && !apiKey.isEmpty()) {
-                        connection.setRequestProperty("Authorization", "Bearer " + apiKey);
-                    }
-                    byte[] body = client.toJson(payload).getBytes(StandardCharsets.UTF_8);
-                    connection.setFixedLengthStreamingMode(body.length);
-                    java.io.OutputStream output = connection.getOutputStream();
-                    try {
-                        output.write(body);
-                    } finally {
-                        output.close();
-                    }
-                    int status;
-                    try {
-                        status = connection.getResponseCode();
-                    } catch (java.net.SocketTimeoutException headersNotAnswered) {
-                        connection.disconnect();
-                        liveStreams.remove(connection);
-                        activeConnection.compareAndSet(connection, null);
-                        if (cancelled.get()) {
-                            return;
-                        }
-                        if (runtimeClosed.get()) {
-                            publisher.fail(closedDuringStream());
-                            return;
-                        }
-                        if (System.currentTimeMillis() >= headerDeadline) {
-                            throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
-                                    "the remote endpoint did not answer the stream request within "
-                                            + SSE_HEADER_TIMEOUT_MILLIS + " ms",
-                                    "Check the remote endpoint health and its request queue.")
-                                    .detail("endpoint", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl));
-                        }
-                        continue;
-                    }
-                    if (status != 200) {
-                        throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
-                                "remote stream request failed with HTTP " + status,
-                                "Check the remote endpoint health and model id.")
-                                .detail("status", String.valueOf(status));
-                    }
-                    readSseStream(connection.getInputStream(), publisher, cancelled);
+            String endpointUrl = baseUrl + "/v1/chat/completions";
+            try {
+                io.cortexj.spi.support.HttpGuards.requirePublicHttpUrl(endpointUrl);
+            } catch (IllegalArgumentException blocked) {
+                throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                        "Remote stream URL blocked by the SSRF guard: " + blocked.getMessage(),
+                        "Point the remote endpoint at a public URL or set "
+                                + io.cortexj.spi.support.HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY + "=true.");
+            }
+            URL url = new URL(endpointUrl);
+            HttpURLConnection connection = client.openConnection(url);
+            liveStreams.add(connection);
+            modelStreams.add(connection);
+            activeConnection.set(connection);
+            try {
+                if (cancelled.get()) {
+                    disconnectAsync(connection);
                     return;
-                } finally {
-                    liveStreams.remove(connection);
-                    activeConnection.compareAndSet(connection, null);
-                    connection.disconnect();
                 }
+                if (closed || runtimeClosed.get()) {
+                    disconnectAsync(connection);
+                    publisher.fail(closedDuringStream());
+                    return;
+                }
+                connection.setRequestMethod("POST");
+                connection.setInstanceFollowRedirects(false);
+                connection.setConnectTimeout(30_000);
+                connection.setReadTimeout(SSE_HEADER_TIMEOUT_MILLIS);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Accept", "text/event-stream");
+                connection.setRequestProperty("Content-Type", "application/json");
+                if (apiKey != null && !apiKey.isEmpty()) {
+                    connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+                }
+                byte[] body = client.toJson(payload).getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(body.length);
+                java.io.OutputStream output = connection.getOutputStream();
+                try {
+                    output.write(body);
+                } finally {
+                    output.close();
+                }
+                int status;
+                try {
+                    status = connection.getResponseCode();
+                } catch (java.net.SocketTimeoutException headersNotAnswered) {
+                    if (cancelled.get()) {
+                        return;
+                    }
+                    if (closed || runtimeClosed.get()) {
+                        publisher.fail(closedDuringStream());
+                        return;
+                    }
+                    throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                            "the remote endpoint did not answer the stream request within "
+                                    + SSE_HEADER_TIMEOUT_MILLIS + " ms",
+                            "Check the remote endpoint health and its request queue.")
+                            .detail("endpoint", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl));
+                }
+                if (status != 200) {
+                    throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                            "remote stream request failed with HTTP " + status,
+                            "Check the remote endpoint health and model id.")
+                            .detail("status", String.valueOf(status));
+                }
+                connection.setReadTimeout(SSE_POLL_MILLIS);
+                readSseStream(connection.getInputStream(), publisher, cancelled);
+            } finally {
+                liveStreams.remove(connection);
+                modelStreams.remove(connection);
+                activeConnection.compareAndSet(connection, null);
+                disconnectAsync(connection);
             }
         }
 
         private void readSseStream(InputStream stream, io.cortexj.stream.internal.TokenStreamPublisher publisher,
                                    java.util.concurrent.atomic.AtomicBoolean cancelled) throws IOException {
-            // audit L-6: the reader is closed by try-with-resources - a mid-read
-            // exception must not rely on the outer disconnect for cleanup
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            // the reader is deliberately NOT closed here: closing a chunked
+            // stream blocks on the lock a parked read holds. The connection
+            // is torn down asynchronously by streamSse's finally instead.
+            final BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(stream, StandardCharsets.UTF_8));
+            final Object eof = new Object();
+            final java.util.concurrent.BlockingQueue<Object> queue =
+                    new java.util.concurrent.LinkedBlockingQueue<Object>(1024);
+            final java.util.concurrent.atomic.AtomicBoolean pumpStop =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            Thread pump = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    StringBuilder partial = new StringBuilder(128);
+                    try {
+                        while (!pumpStop.get()) {
+                            String next;
+                            try {
+                                next = readBoundedLine(reader, partial, MAX_SSE_LINE_CHARS);
+                            } catch (java.net.SocketTimeoutException idle) {
+                                continue;
+                            }
+                            Object item = next == null ? eof : next;
+                            while (!pumpStop.get() && !queue.offer(item, 100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                // consumer is slow: backpressure instead of unbounded buffering
+                            }
+                            if (next == null) {
+                                return;
+                            }
+                        }
+                    } catch (Throwable failure) {
+                        // the failure must reach the consumer even when the
+                        // buffer is full: evict buffered frames (the stream is
+                        // failing, buffered items are discarded right after)
+                        while (!queue.offer(failure)) {
+                            queue.poll();
+                        }
+                    }
+                }
+            }, "cortexj-remote-sse-pump");
+            pump.setDaemon(true);
+            pump.start();
+            try {
                 FinishReason finish = FinishReason.STOP;
                 long inputTokens = -1;
                 long outputTokens = -1;
@@ -390,20 +461,32 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                 // id/name land once, function.arguments arrives in pieces
                 java.util.Map<Integer, String[]> toolAccumulator =
                         new java.util.LinkedHashMap<Integer, String[]>();
-                while (!cancelled.get() && !runtimeClosed.get()) {
-                    String line;
+                long totalToolArgsChars = 0L;
+                while (!cancelled.get() && !closed && !runtimeClosed.get()) {
+                    Object item;
                     try {
-                        line = reader.readLine();
-                    } catch (java.net.SocketTimeoutException idle) {
+                        item = queue.poll(SSE_POLL_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    if (item == null) {
                         if (System.currentTimeMillis() - lastActivity >= SSE_IDLE_CEILING_MILLIS) {
                             throw new IOException("remote stream produced no data for "
                                     + SSE_IDLE_CEILING_MILLIS + " ms");
                         }
                         continue;
                     }
-                    if (line == null) {
+                    if (item == eof) {
                         break;
                     }
+                    if (item instanceof IOException) {
+                        throw (IOException) item;
+                    }
+                    if (item instanceof Throwable) {
+                        throw new IOException(String.valueOf(((Throwable) item).getMessage()), (Throwable) item);
+                    }
+                    String line = (String) item;
                     lastActivity = System.currentTimeMillis();
                     if (line.isEmpty()) {
                         continue;
@@ -428,8 +511,18 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                             if (slot < 0) {
                                 slot = toolAccumulator.size();
                             }
+                            if (slot >= MAX_STREAMED_TOOL_CALLS) {
+                                throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                        "remote stream exceeded maximum tool_calls index (" + MAX_STREAMED_TOOL_CALLS + ")",
+                                        "Reduce the number of parallel tool calls requested.");
+                            }
                             String[] acc = toolAccumulator.get(slot);
                             if (acc == null) {
+                                if (toolAccumulator.size() >= MAX_STREAMED_TOOL_CALLS) {
+                                    throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                            "remote stream exceeded maximum tool_calls count (" + MAX_STREAMED_TOOL_CALLS + ")",
+                                            "Reduce the number of parallel tool calls requested.");
+                                }
                                 acc = new String[]{"", "", ""};
                                 toolAccumulator.put(slot, acc);
                             }
@@ -441,7 +534,17 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                             if (!name.isEmpty() && acc[1].isEmpty()) {
                                 acc[1] = name;
                             }
-                            acc[2] += toolNode.path("function").path("arguments").asText("");
+                            String argFragment = toolNode.path("function").path("arguments").asText("");
+                            if (!argFragment.isEmpty()) {
+                                totalToolArgsChars += argFragment.length();
+                                if (totalToolArgsChars > MAX_STREAMED_TOOL_ARGS_CHARS) {
+                                    throw new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                            "remote stream exceeded maximum tool_calls arguments size ("
+                                                    + MAX_STREAMED_TOOL_ARGS_CHARS + " chars)",
+                                            "Check the remote endpoint's streaming tool_calls output.");
+                                }
+                                acc[2] += argFragment;
+                            }
                         }
                     }
                     if (choice.has("finish_reason") && !choice.path("finish_reason").isNull()) {
@@ -457,7 +560,7 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     // deliberately cancelled by the user: no terminal delivery
                     return;
                 }
-                if (runtimeClosed.get()) {
+                if (closed || runtimeClosed.get()) {
                     // audit #95: model/platform close mid-stream must terminate
                     // the subscriber instead of leaving it waiting forever
                     publisher.fail(closedDuringStream());
@@ -481,7 +584,31 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
                     publisher.publishToolCalls(calls);
                 }
                 publisher.complete(finish, inputTokens, outputTokens);
+            } finally {
+                pumpStop.set(true);
             }
+        }
+
+        private String readBoundedLine(BufferedReader reader, StringBuilder sb, int maxChars) throws IOException {
+            int c = reader.read();
+            if (c < 0) {
+                return null;
+            }
+            while (c >= 0) {
+                if (c == '\n') {
+                    break;
+                }
+                if (c != '\r') {
+                    if (sb.length() >= maxChars) {
+                        throw new IOException("remote SSE line exceeds maximum length of " + maxChars + " characters");
+                    }
+                    sb.append((char) c);
+                }
+                c = reader.read();
+            }
+            String line = sb.toString();
+            sb.setLength(0);
+            return line;
         }
 
         @Override
@@ -535,6 +662,12 @@ public final class RemoteOpenAiRuntime implements ModelRuntime {
         @Override
         public void close() {
             closed = true;
+            for (HttpURLConnection connection : modelStreams) {
+                try {
+                    disconnectAsync(connection);
+                } catch (RuntimeException ignored) {
+                }
+            }
         }
 
         private void requireOpen(String operation) {

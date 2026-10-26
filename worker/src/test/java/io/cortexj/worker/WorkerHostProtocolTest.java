@@ -388,6 +388,142 @@ class WorkerHostProtocolTest {
         assertFalse(serveThread.isAlive(), "shutdown must end the serve loop");
     }
 
+    @Test
+    void cancelStreamInvokesSubscriptionCancelOnSubscribedStream() throws Exception {
+        final java.util.concurrent.atomic.AtomicBoolean subscriptionCancelled =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        io.cortexj.spi.runtime.RuntimeProvider customProvider = new EchoStubProvider() {
+            @Override
+            public io.cortexj.spi.runtime.ModelRuntime open(io.cortexj.spi.runtime.RuntimeOpenRequest req) {
+                final io.cortexj.spi.runtime.ModelRuntime delegate = super.open(req);
+                return new io.cortexj.spi.runtime.ModelRuntime() {
+                    @Override
+                    public io.cortexj.runtime.RuntimeId runtimeId() {
+                        return delegate.runtimeId();
+                    }
+
+                    @Override
+                    public io.cortexj.spi.runtime.RuntimeModel load(io.cortexj.spi.runtime.RuntimeModelRequest loadReq) {
+                        final io.cortexj.spi.runtime.RuntimeModel baseModel = delegate.load(loadReq);
+                        return new SubCancellingModel(baseModel, subscriptionCancelled);
+                    }
+
+                    @Override
+                    public void close() {
+                        delegate.close();
+                    }
+                };
+            }
+        };
+        PipedOutputStream customPipe = new PipedOutputStream();
+        PipedInputStream customIn = new PipedInputStream(customPipe, 64 * 1024);
+        CollectingSink customSink = new CollectingSink();
+        final WorkerHost host = new WorkerHost(customProvider, customSink);
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    host.serve(new BufferedReader(new InputStreamReader(customIn, StandardCharsets.UTF_8)));
+                } catch (IOException ignored) {
+                }
+            }
+        });
+        t.setDaemon(true);
+        t.start();
+        PrintWriter customWriter = new PrintWriter(customPipe);
+        try {
+            customWriter.println(openPayload(201).toString());
+            customWriter.flush();
+            assertTrue(parse(customSink.lines.poll(POLL_MILLIS, TimeUnit.MILLISECONDS)).path("ok").asBoolean());
+
+            customWriter.println(loadPayload(202).toString());
+            customWriter.flush();
+            String token = parse(customSink.lines.poll(POLL_MILLIS, TimeUnit.MILLISECONDS)).path("modelToken").asText();
+
+            ObjectNode streamOp = op(203, "stream");
+            streamOp.put("modelToken", token);
+            streamOp.set("request", WorkerCodec.generationRequest(
+                    io.cortexj.inference.GenerationRequest.prompt("hi")));
+            customWriter.println(streamOp.toString());
+            customWriter.flush();
+            assertTrue(parse(customSink.lines.poll(POLL_MILLIS, TimeUnit.MILLISECONDS)).path("ok").asBoolean());
+
+            ObjectNode cancelOp = op(204, "cancelStream");
+            cancelOp.put("streamId", 203L);
+            customWriter.println(cancelOp.toString());
+            customWriter.flush();
+            assertTrue(parse(customSink.lines.poll(POLL_MILLIS, TimeUnit.MILLISECONDS)).path("ok").asBoolean());
+            assertTrue(subscriptionCancelled.get(),
+                    "cancelStream must invoke StreamSubscription.cancel() on the active subscription");
+        } finally {
+            customWriter.close();
+            t.join(5_000L);
+        }
+    }
+
+    private static final class SubCancellingModel
+            implements io.cortexj.spi.runtime.RuntimeModel, io.cortexj.inference.TextGenerationCapability {
+        private final io.cortexj.spi.runtime.RuntimeModel base;
+        private final java.util.concurrent.atomic.AtomicBoolean subscriptionCancelled;
+
+        SubCancellingModel(io.cortexj.spi.runtime.RuntimeModel base,
+                           java.util.concurrent.atomic.AtomicBoolean subscriptionCancelled) {
+            this.base = base;
+            this.subscriptionCancelled = subscriptionCancelled;
+        }
+
+        @Override
+        public io.cortexj.model.ModelCapabilities capabilities() {
+            return base.capabilities();
+        }
+
+        @Override
+        public io.cortexj.inference.InferenceResponse execute(io.cortexj.inference.InferenceRequest request) {
+            return base.execute(request);
+        }
+
+        @Override
+        public io.cortexj.inference.GenerationResponse generate(io.cortexj.inference.GenerationRequest request) {
+            return ((io.cortexj.inference.TextGenerationCapability) base).generate(request);
+        }
+
+        @Override
+        public io.cortexj.stream.TokenStream stream(io.cortexj.inference.GenerationRequest request) {
+            return new io.cortexj.stream.TokenStream() {
+                @Override
+                public io.cortexj.stream.StreamSubscription subscribe(io.cortexj.stream.TokenConsumer consumer) {
+                    return new io.cortexj.stream.StreamSubscription() {
+                        @Override
+                        public void cancel() {
+                            subscriptionCancelled.set(true);
+                        }
+
+                        @Override
+                        public boolean isCancelled() {
+                            return subscriptionCancelled.get();
+                        }
+                    };
+                }
+
+                @Override
+                public void close() {
+                    // intentionally a no-op: cancellation lives on the subscription
+                }
+            };
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> executeAsync(
+                io.cortexj.inference.InferenceRequest request) {
+            return base.executeAsync(request);
+        }
+
+        @Override
+        public void close() {
+            base.close();
+        }
+    }
+
     private ObjectNode openPayload(long id) {
         ObjectNode open = op(id, "open");
         open.set("descriptor", WorkerCodec.modelDescriptor(

@@ -424,6 +424,7 @@ public class JInferRuntimeProvider implements RuntimeProvider {
         private final Arena arena;
         private final Executor executor;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final Object lifecycleLock = new Object();
 
         JInferModel(Kind kind,
                     com.qxotic.jinfer.chat.ChatEngine engine,
@@ -497,14 +498,29 @@ public class JInferRuntimeProvider implements RuntimeProvider {
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
             if (executor == null) {
-                return CompletableFuture.completedFuture(execute(request));
-            }
-            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
-                @Override
-                public InferenceResponse get() {
-                    return execute(request);
+                try {
+                    return CompletableFuture.completedFuture(execute(request));
+                } catch (Throwable failure) {
+                    CompletableFuture<InferenceResponse> failed = new CompletableFuture<InferenceResponse>();
+                    failed.completeExceptionally(failure);
+                    return failed;
                 }
-            }, executor);
+            }
+            try {
+                return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, executor);
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                CompletableFuture<InferenceResponse> rejected = new CompletableFuture<InferenceResponse>();
+                rejected.completeExceptionally(new InferenceException(ErrorCode.INFERENCE_FAILED,
+                        "JInfer runtime overloaded: too many concurrent executions ("
+                                + saturated.getMessage() + ").",
+                        "Await or cancel an in-flight call before submitting more.", saturated));
+                return rejected;
+            }
         }
 
         @Override
@@ -569,6 +585,7 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                 private final AtomicBoolean subscribed = new AtomicBoolean();
                 private final AtomicBoolean terminalDelivered = new AtomicBoolean();
                 private final AtomicBoolean cancelled = new AtomicBoolean();
+                private final Object consumerLock = new Object();
 
                 @Override
                 public StreamSubscription subscribe(TokenConsumer consumer) {
@@ -584,15 +601,17 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                                         new com.qxotic.jinfer.chat.ChatEngine.ReplySink() {
                                             @Override
                                             public void on(com.qxotic.jinfer.chat.ChatEngine.Delta delta) {
-                                                if (cancelled.get()) {
-                                                    return;
-                                                }
-                                                if (delta != null && delta.text() != null
-                                                        && !delta.text().isEmpty()
-                                                        && com.qxotic.jinfer.chat.Channel.CONTENT
-                                                                .equals(delta.channel())) {
-                                                    consumer.onToken(new Token(delta.text(),
-                                                            index.getAndIncrement(), null));
+                                                synchronized (consumerLock) {
+                                                    if (cancelled.get() || terminalDelivered.get()) {
+                                                        return;
+                                                    }
+                                                    if (delta != null && delta.text() != null
+                                                            && !delta.text().isEmpty()
+                                                            && com.qxotic.jinfer.chat.Channel.CONTENT
+                                                                    .equals(delta.channel())) {
+                                                        consumer.onToken(new Token(delta.text(),
+                                                                index.getAndIncrement(), null));
+                                                    }
                                                 }
                                             }
 
@@ -617,7 +636,14 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                         }
                     };
                     if (executor != null) {
-                        executor.execute(task);
+                        try {
+                            executor.execute(task);
+                        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                            deliverError(consumer, new InferenceException(ErrorCode.INFERENCE_STREAM_FAILED,
+                                    "JInfer stream rejected: the executor queue is saturated ("
+                                            + saturated.getMessage() + ").",
+                                    "Retry when in-flight streams drain.", saturated));
+                        }
                     } else {
                         Thread thread = new Thread(task, "cortexj-jinfer-stream");
                         thread.setDaemon(true);
@@ -634,14 +660,18 @@ public class JInferRuntimeProvider implements RuntimeProvider {
                 }
 
                 private void deliverComplete(TokenConsumer consumer, StreamCompletion completion) {
-                    if (terminalDelivered.compareAndSet(false, true)) {
-                        consumer.onComplete(completion);
+                    synchronized (consumerLock) {
+                        if (terminalDelivered.compareAndSet(false, true)) {
+                            consumer.onComplete(completion);
+                        }
                     }
                 }
 
                 private void deliverError(TokenConsumer consumer, CortexJException error) {
-                    if (terminalDelivered.compareAndSet(false, true)) {
-                        consumer.onError(error);
+                    synchronized (consumerLock) {
+                        if (terminalDelivered.compareAndSet(false, true)) {
+                            consumer.onError(error);
+                        }
                     }
                 }
 
@@ -670,6 +700,7 @@ public class JInferRuntimeProvider implements RuntimeProvider {
             requireKind(Kind.EMBEDDING, TaskCapability.EMBEDDING);
             List<String> texts = request == null
                     ? Collections.<String>emptyList() : request.texts();
+            io.cortexj.spi.support.EmbeddingLimits.checkEmbedLimits(texts);
             try {
                 return embedAll(embedder, texts);
             } catch (CortexJException e) {
@@ -684,27 +715,29 @@ public class JInferRuntimeProvider implements RuntimeProvider {
 
         private <S extends com.qxotic.jinfer.ContextState> EmbeddingResponse embedAll(
                 com.qxotic.jinfer.chat.LoadedEmbedder<S> loaded, List<String> texts) {
-            ensureOpen();
-            final List<float[]> vectors = new ArrayList<float[]>();
-            S state = loaded.model().newState(BATCH_STATE_CAPACITY);
-            try {
-                synchronized (loaded) {
-                    ensureOpen();
-                    loaded.embedAll(state, new ArrayList<String>(texts),
-                            new java.util.function.Consumer<float[]>() {
-                                @Override
-                                public void accept(float[] vector) {
-                                    vectors.add(vector.clone());
-                                }
-                            });
-                }
-            } finally {
+            synchronized (lifecycleLock) {
+                ensureOpen();
+                final List<float[]> vectors = new ArrayList<float[]>();
+                S state = loaded.model().newState(BATCH_STATE_CAPACITY);
                 try {
-                    state.close();
-                } catch (Throwable ignored) {
+                    synchronized (loaded) {
+                        ensureOpen();
+                        loaded.embedAll(state, new ArrayList<String>(texts),
+                                new java.util.function.Consumer<float[]>() {
+                                    @Override
+                                    public void accept(float[] vector) {
+                                        vectors.add(vector.clone());
+                                    }
+                                });
+                    }
+                } finally {
+                    try {
+                        state.close();
+                    } catch (Throwable ignored) {
+                    }
                 }
+                return new EmbeddingResponse(vectors);
             }
-            return new EmbeddingResponse(vectors);
         }
 
         @Override
@@ -729,33 +762,35 @@ public class JInferRuntimeProvider implements RuntimeProvider {
         private <S extends com.qxotic.jinfer.ContextState> RerankingResponse scoreAll(
                 com.qxotic.jinfer.chat.LoadedReranker<S> loaded,
                 String query, List<String> documents) {
-            ensureOpen();
-            final List<Double> scores = new ArrayList<Double>();
-            S state = loaded.model().newState(BATCH_STATE_CAPACITY);
-            try {
-                synchronized (loaded) {
-                    ensureOpen();
-                    loaded.scoreAll(state, loaded.reranker().defaultInstruction(), query,
-                            new ArrayList<String>(documents),
-                            new java.util.function.DoubleConsumer() {
-                                @Override
-                                public void accept(double score) {
-                                    scores.add(Double.valueOf(score));
-                                }
-                            });
-                }
-            } finally {
+            synchronized (lifecycleLock) {
+                ensureOpen();
+                final List<Double> scores = new ArrayList<Double>();
+                S state = loaded.model().newState(BATCH_STATE_CAPACITY);
                 try {
-                    state.close();
-                } catch (Throwable ignored) {
+                    synchronized (loaded) {
+                        ensureOpen();
+                        loaded.scoreAll(state, loaded.reranker().defaultInstruction(), query,
+                                new ArrayList<String>(documents),
+                                new java.util.function.DoubleConsumer() {
+                                    @Override
+                                    public void accept(double score) {
+                                        scores.add(Double.valueOf(score));
+                                    }
+                                });
+                    }
+                } finally {
+                    try {
+                        state.close();
+                    } catch (Throwable ignored) {
+                    }
                 }
+                List<RerankingResponse.ScoredDocument> ranked =
+                        new ArrayList<RerankingResponse.ScoredDocument>();
+                for (int index = 0; index < scores.size(); index++) {
+                    ranked.add(new RerankingResponse.ScoredDocument(index, scores.get(index).doubleValue()));
+                }
+                return new RerankingResponse(ranked);
             }
-            List<RerankingResponse.ScoredDocument> ranked =
-                    new ArrayList<RerankingResponse.ScoredDocument>();
-            for (int index = 0; index < scores.size(); index++) {
-                ranked.add(new RerankingResponse.ScoredDocument(index, scores.get(index).doubleValue()));
-            }
-            return new RerankingResponse(ranked);
         }
 
         private void requireKind(Kind expected, TaskCapability task) {
@@ -786,18 +821,20 @@ public class JInferRuntimeProvider implements RuntimeProvider {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            if (engine != null) {
-                try {
-                    synchronized (engine) {
-                        engine.close();
+            synchronized (lifecycleLock) {
+                if (engine != null) {
+                    try {
+                        synchronized (engine) {
+                            engine.close();
+                        }
+                    } catch (Throwable ignored) {
                     }
-                } catch (Throwable ignored) {
                 }
-            }
-            if (arena != null) {
-                try {
-                    arena.close();
-                } catch (Throwable ignored) {
+                if (arena != null) {
+                    try {
+                        arena.close();
+                    } catch (Throwable ignored) {
+                    }
                 }
             }
         }

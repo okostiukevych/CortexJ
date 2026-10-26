@@ -121,4 +121,40 @@ class JInferProviderTckTest extends RuntimeProviderContract {
         assertTrue(!result.error().remediation().isEmpty(),
                 "JVM-incompatible probe must include remediation");
     }
+
+    @Test
+    void executeAsyncReturnsFailedStageWithoutExecutorAndOnRejectedExecution() {
+        JInferRuntimeProvider.JInferModel noExecModel = provider.new JInferModel(
+                JInferRuntimeProvider.JInferModel.Kind.CHAT, null, null, null, null, null);
+        noExecModel.close();
+        java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> stage =
+                noExecModel.executeAsync(io.cortexj.inference.InferenceRequest.builder().input("hi").build());
+        assertTrue(stage.toCompletableFuture().isCompletedExceptionally(),
+                "executeAsync without executor must return a failed stage instead of throwing synchronously");
+
+        java.util.concurrent.Executor rejectingExecutor = new java.util.concurrent.Executor() {
+            @Override
+            public void execute(Runnable command) {
+                throw new java.util.concurrent.RejectedExecutionException("pool full");
+            }
+        };
+        JInferRuntimeProvider.JInferModel rejectedModel = provider.new JInferModel(
+                JInferRuntimeProvider.JInferModel.Kind.CHAT, null, null, null, null, rejectingExecutor);
+        java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> rejectedStage =
+                rejectedModel.executeAsync(io.cortexj.inference.InferenceRequest.builder().input("hi").build());
+        assertTrue(rejectedStage.toCompletableFuture().isCompletedExceptionally(),
+                "executeAsync with rejecting executor must return a failed stage");
+    }
+
+    @Test
+    void embedEnforcesEmbeddingLimits() {
+        JInferRuntimeProvider.JInferModel embeddingModel = provider.new JInferModel(
+                JInferRuntimeProvider.JInferModel.Kind.EMBEDDING, null, null, null, null, null);
+        java.util.List<String> oversizedBatch = new java.util.ArrayList<String>();
+        for (int i = 0; i <= 4096; i++) {
+            oversizedBatch.add("x");
+        }
+        assertThrows(io.cortexj.error.InferenceException.class,
+                () -> embeddingModel.embed(io.cortexj.inference.EmbeddingRequest.texts(oversizedBatch)));
+    }
 }

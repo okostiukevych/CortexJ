@@ -151,16 +151,17 @@ class IsolatedProviderRoundTripTest {
     }
 
     @Test
-    void doubleOpenWithoutCloseFailsLoudly() {
+    void multipleSessionsShareTheHostedWorkerSession() {
         ModelRuntime first = provider.open(openRequest());
+        ModelRuntime second = provider.open(openRequest());
         try {
-            // v1 hosts a single session per worker: a concurrent second open
-            // must fail typed instead of silently breaking the first session
-            assertThrows(CortexJException.class, () -> provider.open(openRequest()));
+            RuntimeModel model = second.load(loadRequest(artifact));
+            assertEquals("stub:ok", model.execute(InferenceRequest.builder().input("ok").build()).singleOutput());
         } finally {
             first.close();
+            second.close();
         }
-        // after closing, open works again
+        // after closing every session, open works again
         ModelRuntime reopened = provider.open(openRequest());
         reopened.close();
     }

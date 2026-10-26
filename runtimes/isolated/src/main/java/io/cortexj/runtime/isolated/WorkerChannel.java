@@ -571,7 +571,7 @@ final class WorkerChannel {
         return child;
     }
 
-    private static final String CAPPED_LINE_MARKER = "capped";
+    static final String CAPPED_LINE_MARKER = "capped";
 
     /**
      * audit #99: readLine() buffers a line of unbounded length - a broken or
@@ -580,7 +580,7 @@ final class WorkerChannel {
      * most {@code capChars} characters; returns {@link #CAPPED_LINE_MARKER}
      * (identity, not equals) when the cap was exceeded, or null on EOF.
      */
-    private static String readCappedLine(BufferedReader reader, int capChars) throws IOException {
+    static String readCappedLine(BufferedReader reader, int capChars) throws IOException {
         StringBuilder line = new StringBuilder(128);
         int c;
         while ((c = reader.read()) != -1) {
@@ -591,11 +591,6 @@ final class WorkerChannel {
                 continue;
             }
             if (line.length() >= capChars) {
-                // drain until the newline (bounded discard) so the stream can
-                // still be used afterwards on the stderr path
-                while ((c = reader.read()) != -1 && c != '\n') {
-                    // discard
-                }
                 return CAPPED_LINE_MARKER;
             }
             line.append((char) c);

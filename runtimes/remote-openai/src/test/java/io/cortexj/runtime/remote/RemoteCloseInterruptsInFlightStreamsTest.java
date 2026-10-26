@@ -213,4 +213,45 @@ class RemoteCloseInterruptsInFlightStreamsTest {
                 "no SSE worker thread of THIS runtime may survive runtime close()");
         model.close();
     }
+
+    @Test
+    void modelCloseDisconnectsInFlightStreamAndDeliversTerminalError() throws Exception {
+        ModelRuntime runtime = loadRuntime();
+        try {
+            RuntimeModel model = runtime.load(new RuntimeModelRequest(
+                    io.cortexj.model.ModelDescriptor.builder("tck/model").build(),
+                    null, null, io.cortexj.runtime.DeviceType.REMOTE,
+                    Collections.<String, Object>emptyMap()));
+            io.cortexj.inference.TextGenerationCapability generator =
+                    (io.cortexj.inference.TextGenerationCapability) model;
+            final CountDownLatch firstToken = new CountDownLatch(1);
+            final CountDownLatch firstError = new CountDownLatch(1);
+            generator.stream(GenerationRequest.prompt("hi")).subscribe(new TokenConsumer() {
+                @Override
+                public void onToken(Token token) {
+                    firstToken.countDown();
+                }
+
+                @Override
+                public void onComplete(io.cortexj.stream.StreamCompletion completion) {
+                }
+
+                @Override
+                public void onError(io.cortexj.error.CortexJException error) {
+                    firstError.countDown();
+                }
+            });
+            assertTrue(firstToken.await(10, TimeUnit.SECONDS),
+                    "the stalled stream must emit its single token");
+            assertTrue(stalled.await(10, TimeUnit.SECONDS),
+                    "the stub must be stalled with the worker blocked in readBoundedLine()");
+
+            model.close();
+
+            assertTrue(firstError.await(10, TimeUnit.SECONDS),
+                    "model.close() must disconnect active streams and deliver a terminal error");
+        } finally {
+            runtime.close();
+        }
+    }
 }

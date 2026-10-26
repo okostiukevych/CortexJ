@@ -39,6 +39,12 @@ final class HttpJsonClient {
         this.proxy = proxy;
     }
 
+    HttpURLConnection openConnection(URL url) throws IOException {
+        return proxy == null
+                ? (HttpURLConnection) url.openConnection()
+                : (HttpURLConnection) url.openConnection(proxy);
+    }
+
     static final class Response {
 
         final int status;

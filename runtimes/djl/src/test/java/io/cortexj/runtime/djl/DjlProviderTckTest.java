@@ -77,4 +77,41 @@ class DjlProviderTckTest extends RuntimeProviderContract {
             Files.deleteIfExists(onnx);
         }
     }
+
+    @Test
+    void executeAsyncReturnsFailedStageWithoutExecutorAndOnRejectedExecution() {
+        final java.util.concurrent.atomic.AtomicBoolean modelClosed =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        ai.djl.Model stubModel = (ai.djl.Model) java.lang.reflect.Proxy.newProxyInstance(
+                ai.djl.Model.class.getClassLoader(),
+                new Class<?>[]{ai.djl.Model.class},
+                new java.lang.reflect.InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, java.lang.reflect.Method method, Object[] args) {
+                        if ("close".equals(method.getName())) {
+                            modelClosed.set(true);
+                        }
+                        return null;
+                    }
+                });
+        DjlProvider.DjlModel noExecModel = provider.new DjlModel(
+                stubModel, io.cortexj.model.token.HfTokenizer.fallback(), null);
+        noExecModel.close();
+        assertTrue(modelClosed.get());
+
+        java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> failedStage =
+                noExecModel.executeAsync(io.cortexj.inference.InferenceRequest.builder().input("hello").build());
+        assertTrue(failedStage.toCompletableFuture().isCompletedExceptionally(),
+                "executeAsync without executor must return a failed stage instead of throwing synchronously");
+
+        java.util.concurrent.ExecutorService shutdownExec =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        shutdownExec.shutdownNow();
+        DjlProvider.DjlModel rejectedModel = provider.new DjlModel(
+                stubModel, io.cortexj.model.token.HfTokenizer.fallback(), shutdownExec);
+        java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> rejectedStage =
+                rejectedModel.executeAsync(io.cortexj.inference.InferenceRequest.builder().input("hello").build());
+        assertTrue(rejectedStage.toCompletableFuture().isCompletedExceptionally(),
+                "executeAsync on rejected execution must return a failed stage");
+    }
 }

@@ -94,4 +94,15 @@ class OnnxProviderTckTest extends RuntimeProviderContract {
             }
         }
     }
+
+    @Test
+    void executeAsyncWithoutExecutorReturnsFailedStageInsteadOfThrowingSynchronously() {
+        OnnxRuntimeProvider.OnnxModel closedModel = provider.new OnnxModel(
+                null, io.cortexj.model.token.HfTokenizer.fallback(), "input_ids", null);
+        closedModel.close();
+        java.util.concurrent.CompletionStage<io.cortexj.inference.InferenceResponse> stage =
+                closedModel.executeAsync(io.cortexj.inference.InferenceRequest.builder().input("hello").build());
+        assertTrue(stage.toCompletableFuture().isCompletedExceptionally(),
+                "executeAsync without executor must return a failed stage when execution fails");
+    }
 }

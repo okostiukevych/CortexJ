@@ -57,8 +57,10 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
     private final String targetRuntimeId;
     private final RuntimeId id;
     private final Object channelLock = new Object();
+    private final Object sessionLock = new Object();
     private final Set<IsolatedModelRuntime> openSessions =
             Collections.newSetFromMap(new ConcurrentHashMap<IsolatedModelRuntime, Boolean>());
+    private WorkerChannel openedSessionChannel;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile WorkerChannel channel;
     // audit 2026-10-07 (#145): single-flight spawn claim - concurrent
@@ -183,40 +185,38 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
                     "Create a new IsolatedRuntimeProvider instance.");
         }
         WorkerChannel active = ensureChannel();
-        ObjectNode payload = WorkerCodec.object();
-        payload.set("descriptor", WorkerCodec.modelDescriptor(request.model()));
-        payload.set("artifact", WorkerCodec.artifact(request.artifact()));
-        if (request.artifactPath() != null) {
-            payload.put("artifactPath", request.artifactPath().toAbsolutePath().toString());
+        IsolatedModelRuntime runtime;
+        synchronized (sessionLock) {
+            if (closed.get()) {
+                throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "the isolated runtime provider is closed",
+                        "Create a new IsolatedRuntimeProvider instance.");
+            }
+            if (openedSessionChannel != active) {
+                ObjectNode payload = WorkerCodec.object();
+                payload.set("descriptor", WorkerCodec.modelDescriptor(request.model()));
+                payload.set("artifact", WorkerCodec.artifact(request.artifact()));
+                if (request.artifactPath() != null) {
+                    payload.put("artifactPath", request.artifactPath().toAbsolutePath().toString());
+                }
+                payload.put("device", request.device() == null ? "CPU" : request.device().name());
+                payload.set("options", WorkerCodec.mapper().valueToTree(request.runtimeOptions()));
+                // audit #98: the child env allowlist deliberately withholds credential
+                // variables, and the open payload must not smuggle them in through the
+                // back door either - a child-hosted runtime that prints its config (a
+                // common native-runtime habit) would leak the key into parent logs
+                payload.set("headers", WorkerCodec.mapper().valueToTree(
+                        sanitizeForChild(request.platformConfiguration())));
+                active.call(active.nextId(), "open", payload);
+                openedSessionChannel = active;
+            }
+            runtime = new IsolatedModelRuntime(this, active, request.executor());
+            openSessions.add(runtime);
         }
-        payload.put("device", request.device() == null ? "CPU" : request.device().name());
-        payload.set("options", WorkerCodec.mapper().valueToTree(request.runtimeOptions()));
-        // audit #98: the child env allowlist deliberately withholds credential
-        // variables, and the open payload must not smuggle them in through the
-        // back door either - a child-hosted runtime that prints its config (a
-        // common native-runtime habit) would leak the key into parent logs
-        payload.set("headers", WorkerCodec.mapper().valueToTree(
-                sanitizeForChild(request.platformConfiguration())));
-        active.call(active.nextId(), "open", payload);
-        IsolatedModelRuntime runtime = new IsolatedModelRuntime(this, active, request.executor());
         // audit 2026-10-08: re-check under no window - a close() that ran
         // entirely after the entry check must not leave this session
         // unclosed (nor resurrect the channel for it)
         if (closed.get()) {
-            try {
-                runtime.close();
-            } catch (Throwable ignored) {
-            }
-            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
-                    "the isolated runtime provider is closed",
-                    "Create a new IsolatedRuntimeProvider instance.");
-        }
-        openSessions.add(runtime);
-        if (closed.get()) {
-            // lost the race after all: close the just-registered session now
-            // that close() is guaranteed to have run (or be running, in which
-            // case its snapshot missed us and we self-close instead of
-            // leaking)
             openSessions.remove(runtime);
             try {
                 runtime.close();
@@ -302,6 +302,11 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
     }
 
     private WorkerChannel ensureChannel() {
+        if (closed.get()) {
+            throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                    "the isolated runtime provider is closed",
+                    "Create a new IsolatedRuntimeProvider instance.");
+        }
         WorkerChannel active = channel;
         if (active != null && !active.isDead()) {
             return active;
@@ -309,6 +314,11 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
         boolean owner = false;
         java.util.concurrent.CompletableFuture<WorkerChannel> claimed;
         synchronized (channelLock) {
+            if (closed.get()) {
+                throw new RuntimeUnavailableException(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "the isolated runtime provider is closed",
+                        "Create a new IsolatedRuntimeProvider instance.");
+            }
             active = channel;
             if (active != null && !active.isDead()) {
                 return active;
@@ -408,8 +418,14 @@ public final class IsolatedRuntimeProvider implements RuntimeProvider, AutoClose
 
     /** Called by a closing session; true when the child hosted session is free again. */
     boolean sessionClosed(IsolatedModelRuntime session) {
-        openSessions.remove(session);
-        return openSessions.isEmpty();
+        synchronized (sessionLock) {
+            openSessions.remove(session);
+            if (openSessions.isEmpty()) {
+                openedSessionChannel = null;
+                return true;
+            }
+            return false;
+        }
     }
 
     private RuntimeDescriptor probeChildDescriptor(WorkerChannel active, boolean offline,

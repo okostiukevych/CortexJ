@@ -175,6 +175,7 @@ public class DjlProvider implements RuntimeProvider {
             }
             HfTokenizer.TokenEncoder tokenizer;
             boolean modelLoaded = false;
+            boolean loadSucceeded = false;
             java.nio.file.Path modelDirectory = artifactPath.toAbsolutePath().getParent();
             java.nio.file.Path modelFileName = artifactPath.getFileName();
             try {
@@ -182,6 +183,9 @@ public class DjlProvider implements RuntimeProvider {
                         modelFileName == null ? "model" : modelFileName.toString());
                 modelLoaded = true;
                 tokenizer = loadTokenizer(modelDirectory);
+                DjlModel loaded = new DjlModel(model, tokenizer, executor);
+                loadSucceeded = true;
+                return loaded;
             } catch (Exception loadFailure) {
                 if (modelLoaded) {
                     throw new ModelLoadException(ErrorCode.LOAD_FAILED,
@@ -192,11 +196,10 @@ public class DjlProvider implements RuntimeProvider {
                         "DJL could not load the ONNX model: " + loadFailure,
                         "Verify the artifact is a valid ONNX model for the OnnxRuntime engine.");
             } finally {
-                if (!modelLoaded) {
+                if (!loadSucceeded) {
                     model.close();
                 }
             }
-            return new DjlModel(model, tokenizer, executor);
         }
 
         private HfTokenizer.TokenEncoder loadTokenizer(Path modelDirectory) {
@@ -304,14 +307,26 @@ public class DjlProvider implements RuntimeProvider {
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
             if (executor == null) {
-                return CompletableFuture.completedFuture(execute(request));
-            }
-            return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
-                @Override
-                public InferenceResponse get() {
-                    return execute(request);
+                try {
+                    return CompletableFuture.completedFuture(execute(request));
+                } catch (Throwable failure) {
+                    CompletableFuture<InferenceResponse> failed = new CompletableFuture<InferenceResponse>();
+                    failed.completeExceptionally(failure);
+                    return failed;
                 }
-            }, executor);
+            }
+            try {
+                return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
+                    @Override
+                    public InferenceResponse get() {
+                        return execute(request);
+                    }
+                }, executor);
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                CompletableFuture<InferenceResponse> rejected = new CompletableFuture<InferenceResponse>();
+                rejected.completeExceptionally(saturated);
+                return rejected;
+            }
         }
 
         @Override
@@ -330,9 +345,10 @@ public class DjlProvider implements RuntimeProvider {
         }
 
         private float[] embedTokenIds(int[] ids) {
-            long[] longIds = new long[ids.length];
-            for (int i = 0; i < ids.length; i++) {
-                longIds[i] = ids[i];
+            int[] effectiveIds = (ids == null || ids.length == 0) ? new int[]{0} : ids;
+            long[] longIds = new long[effectiveIds.length];
+            for (int i = 0; i < effectiveIds.length; i++) {
+                longIds[i] = effectiveIds[i];
             }
             java.util.concurrent.locks.Lock readLock = inferenceLock.readLock();
             readLock.lock();

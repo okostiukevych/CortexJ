@@ -68,11 +68,14 @@ public final class WorkerHost {
 
     public static final String PROTOCOL = "1";
     public static final String HELLO_EVENT = "hello";
+    static final int MAX_PROTOCOL_LINE_CHARS = 4 * 1024 * 1024;
+    private static final String CAPPED_LINE_MARKER = "capped";
 
     private static final Logger LOG = Logger.getLogger(WorkerHost.class.getName());
 
     private final RuntimeProvider provider;
     private final Object outputLock = new Object();
+    private final Object sessionLock = new Object();
     private final PrintSink out;
     private final AtomicLong modelCounter = new AtomicLong();
     private final Map<String, RuntimeModel> models =
@@ -183,7 +186,12 @@ public final class WorkerHost {
 
     void serve(BufferedReader in) throws IOException {
         while (!stopped) {
-            String line = in.readLine();
+            String line = readCappedLine(in, MAX_PROTOCOL_LINE_CHARS);
+            if (line == CAPPED_LINE_MARKER) {
+                respondError(0L, workerError(ErrorCode.CONF_INVALID,
+                        "protocol line exceeds maximum length of " + MAX_PROTOCOL_LINE_CHARS + " chars"));
+                continue;
+            }
             if (line == null) {
                 LOG.info("worker stdin closed - shutting down");
                 break;
@@ -194,6 +202,31 @@ public final class WorkerHost {
             handleLine(line);
         }
         cleanup();
+    }
+
+    private static String readCappedLine(BufferedReader reader, int capChars) throws IOException {
+        StringBuilder line = new StringBuilder(128);
+        int c;
+        while ((c = reader.read()) != -1) {
+            if (c == '\n') {
+                return line.toString();
+            }
+            if (c == '\r') {
+                continue;
+            }
+            if (line.length() >= capChars) {
+                int discarded = 0;
+                while ((c = reader.read()) != -1 && c != '\n') {
+                    discarded++;
+                    if (discarded >= capChars) {
+                        throw new IOException("protocol line exceeds maximum length without newline");
+                    }
+                }
+                return CAPPED_LINE_MARKER;
+            }
+            line.append((char) c);
+        }
+        return line.length() == 0 ? null : line.toString();
     }
 
     private void handleLine(String line) {
@@ -366,33 +399,38 @@ public final class WorkerHost {
     }
 
     private void handleOpen(long id, JsonNode root) {
-        ModelRuntime current = hosted;
-        if (current != null) {
-            throw workerError(ErrorCode.RUNTIME_LOAD_FAILED,
-                    "worker already hosts an open runtime session; close it before opening another");
+        synchronized (sessionLock) {
+            ModelRuntime current = hosted;
+            if (current != null) {
+                throw workerError(ErrorCode.RUNTIME_LOAD_FAILED,
+                        "worker already hosts an open runtime session; close it before opening another");
+            }
+            RuntimeOpenRequest request = new RuntimeOpenRequest(
+                    WorkerCodec.parseModelDescriptor(root.path("descriptor")),
+                    WorkerCodec.parseArtifact(root.path("artifact")),
+                    artifactPath(root),
+                    device(root),
+                    objectMap(root.path("options")),
+                    stringMap(root.path("headers")),
+                    localEnvironment(),
+                    localHardware(),
+                    null,
+                    io.cortexj.observability.PlatformEventListener.NOOP);
+            hosted = provider.open(request);
         }
-        RuntimeOpenRequest request = new RuntimeOpenRequest(
-                WorkerCodec.parseModelDescriptor(root.path("descriptor")),
-                WorkerCodec.parseArtifact(root.path("artifact")),
-                artifactPath(root),
-                device(root),
-                objectMap(root.path("options")),
-                stringMap(root.path("headers")),
-                localEnvironment(),
-                localHardware(),
-                null,
-                io.cortexj.observability.PlatformEventListener.NOOP);
-        hosted = provider.open(request);
         ObjectNode response = ok(id);
         response.put("runtimeOpened", true);
         emit(response);
     }
 
     private void handleLoad(long id, JsonNode root) {
-        ModelRuntime runtime = hosted;
-        if (runtime == null) {
-            throw workerError(ErrorCode.RUNTIME_UNAVAILABLE,
-                    "no runtime session is open; send 'open' before 'load'");
+        ModelRuntime runtime;
+        synchronized (sessionLock) {
+            runtime = hosted;
+            if (runtime == null) {
+                throw workerError(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "no runtime session is open; send 'open' before 'load'");
+            }
         }
         RuntimeModelRequest request = new RuntimeModelRequest(
                 WorkerCodec.parseModelDescriptor(root.path("descriptor")),
@@ -402,7 +440,17 @@ public final class WorkerHost {
                 objectMap(root.path("options")));
         RuntimeModel model = runtime.load(request);
         String token = "m" + modelCounter.incrementAndGet();
-        models.put(token, model);
+        synchronized (sessionLock) {
+            if (hosted != runtime) {
+                try {
+                    model.close();
+                } catch (Throwable ignored) {
+                }
+                throw workerError(ErrorCode.RUNTIME_UNAVAILABLE,
+                        "runtime session was closed while loading the model");
+            }
+            models.put(token, model);
+        }
         ObjectNode response = ok(id);
         response.put("modelToken", token);
         response.set("capabilities", WorkerCodec.modelCapabilities(model.capabilities()));
@@ -457,7 +505,7 @@ public final class WorkerHost {
         active.stream = stream;
         activeStreams.put(streamId, active);
         try {
-            stream.subscribe(new TokenConsumer() {
+            io.cortexj.stream.StreamSubscription subscription = stream.subscribe(new TokenConsumer() {
                 @Override
                 public void onToken(Token token) {
                     ObjectNode event = WorkerCodec.object();
@@ -489,6 +537,10 @@ public final class WorkerHost {
                     emit(event);
                 }
             });
+            active.subscription = subscription;
+            if (active.cancelled) {
+                active.cancel();
+            }
         } catch (Throwable subscribeFailure) {
             activeStreams.remove(streamId);
             throw subscribeFailure;
@@ -500,7 +552,7 @@ public final class WorkerHost {
         long streamId = root.path("streamId").asLong(-1L);
         ActiveStream active = activeStreams.remove(streamId);
         if (active != null) {
-            active.stream.close();
+            active.cancel();
         }
         emit(ok(id));
     }
@@ -536,11 +588,14 @@ public final class WorkerHost {
     }
 
     private void closeSessionQuietly() {
-        ModelRuntime runtime = hosted;
-        hosted = null;
+        ModelRuntime runtime;
+        synchronized (sessionLock) {
+            runtime = hosted;
+            hosted = null;
+        }
         for (Map.Entry<Long, ActiveStream> entry : activeStreams.entrySet()) {
             try {
-                entry.getValue().stream.close();
+                entry.getValue().cancel();
             } catch (Throwable ignored) {
                 // aborting an active stream must not block shutdown
             }
@@ -568,7 +623,7 @@ public final class WorkerHost {
             if (entry.getValue().modelToken.equals(token)) {
                 activeStreams.remove(entry.getKey());
                 try {
-                    entry.getValue().stream.close();
+                    entry.getValue().cancel();
                 } catch (Throwable ignored) {
                 }
             }
@@ -724,9 +779,29 @@ public final class WorkerHost {
     private static final class ActiveStream {
         final String modelToken;
         volatile TokenStream stream;
+        volatile io.cortexj.stream.StreamSubscription subscription;
+        volatile boolean cancelled;
 
         ActiveStream(String modelToken) {
             this.modelToken = modelToken;
+        }
+
+        void cancel() {
+            cancelled = true;
+            io.cortexj.stream.StreamSubscription sub = subscription;
+            if (sub != null) {
+                try {
+                    sub.cancel();
+                } catch (Throwable ignored) {
+                }
+            }
+            TokenStream s = stream;
+            if (s != null) {
+                try {
+                    s.close();
+                } catch (Throwable ignored) {
+                }
+            }
         }
     }
 

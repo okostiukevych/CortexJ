@@ -78,6 +78,7 @@ final class SharedEndpointRegistry {
         private final ConcurrentHashMap<String, Object> keyLocks;
         private final Object keyLock;
         private final AtomicInteger refcount = new AtomicInteger(1);
+        private boolean unregistered;
 
         SharedEndpoint(LlamaServerEndpoint delegate, String key,
                        ConcurrentHashMap<String, SharedEndpoint> registry,
@@ -102,7 +103,7 @@ final class SharedEndpointRegistry {
          */
         boolean tryRetain() {
             synchronized (keyLock) {
-                if (registry.get(key) != this) {
+                if (unregistered || registry.get(key) != this) {
                     return false;
                 }
                 refcount.incrementAndGet();
@@ -120,14 +121,34 @@ final class SharedEndpointRegistry {
          * both would see no endpoint and launch a duplicate llama-server.
          */
         void release() {
-            boolean last;
+            boolean stopNow = false;
             synchronized (keyLock) {
-                last = refcount.decrementAndGet() == 0;
-                if (last) {
+                if (refcount.decrementAndGet() <= 0 && !unregistered) {
+                    unregistered = true;
                     registry.remove(key, this);
+                    stopNow = true;
                 }
             }
-            if (last) {
+            if (stopNow) {
+                delegate.stop();
+            }
+        }
+
+        /**
+         * Evict a dead or unreachable endpoint immediately even if other
+         * handles still hold references, ensuring the next load spawns a
+         * fresh process and {@code delegate.stop()} fires at most once.
+         */
+        void evict() {
+            boolean stopNow = false;
+            synchronized (keyLock) {
+                if (!unregistered) {
+                    unregistered = true;
+                    registry.remove(key, this);
+                    stopNow = true;
+                }
+            }
+            if (stopNow) {
                 delegate.stop();
             }
         }

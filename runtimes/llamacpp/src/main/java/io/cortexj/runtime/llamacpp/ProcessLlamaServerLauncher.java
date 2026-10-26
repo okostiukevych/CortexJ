@@ -50,8 +50,21 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
     @Override
     public LlamaServerEndpoint launch(Path artifactPath, java.util.Map<String, Object> serverArgs)
             throws IOException {
+        validateServerArgs(serverArgs);
         return launchWithHealthUrl(artifactPath, null, gpuLayers(serverArgs),
                 resolvedLoraFiles(artifactPath, loraFlags(serverArgs)));
+    }
+
+    static void validateServerArgs(java.util.Map<String, Object> serverArgs) throws IOException {
+        if (serverArgs == null) {
+            return;
+        }
+        for (String key : serverArgs.keySet()) {
+            if (!"gpuLayers".equals(key) && !"lora".equals(key)) {
+                throw new IOException("Unsupported llama.cpp server option '" + key
+                        + "'; supported options are 'gpuLayers' and 'lora'");
+            }
+        }
     }
 
     /**
@@ -87,10 +100,11 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
                     + " 'path[:scale]' strings, got: " + value);
         }
         String entry = ((String) value).trim();
-        int scaleAt = entry.lastIndexOf(':');
+        int scaleAt = scaleColonIndex(entry);
         if (scaleAt >= 0) {
             try {
-                if (Double.parseDouble(entry.substring(scaleAt + 1)) <= 0.0) {
+                double scale = Double.parseDouble(entry.substring(scaleAt + 1));
+                if (Double.isNaN(scale) || Double.isInfinite(scale) || scale <= 0.0) {
                     throw new NumberFormatException("non-positive");
                 }
             } catch (NumberFormatException notAScale) {
@@ -101,6 +115,15 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
         return entry;
     }
 
+    static int scaleColonIndex(String entry) {
+        int scaleAt = entry.lastIndexOf(':');
+        if (scaleAt == 1 && entry.length() >= 3 && Character.isLetter(entry.charAt(0))
+                && (entry.charAt(2) == '\\' || entry.charAt(2) == '/')) {
+            return -1;
+        }
+        return scaleAt;
+    }
+
     /** Missing adapter files fail typed before any process starts. */
     private static java.util.List<String> resolvedLoraFiles(Path artifactPath,
                                                             java.util.List<String> flags)
@@ -108,7 +131,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
         Path parent = artifactPath.toAbsolutePath().getParent();
         java.util.List<String> resolved = new java.util.ArrayList<String>();
         for (String entry : flags) {
-            int scaleAt = entry.lastIndexOf(':');
+            int scaleAt = scaleColonIndex(entry);
             String pathPart = scaleAt >= 0 ? entry.substring(0, scaleAt) : entry;
             java.nio.file.Path loraPath = java.nio.file.Paths.get(pathPart);
             if (!loraPath.isAbsolute() && parent != null) {
@@ -118,7 +141,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
                 throw new IOException("llama.cpp option 'lora' points to a missing adapter"
                         + " file: " + loraPath);
             }
-            resolved.add(loraPath.toAbsolutePath() + (scaleAt >= 0 ? entry.substring(scaleAt) : ""));
+            resolved.add(loraPath.toAbsolutePath().normalize() + (scaleAt >= 0 ? entry.substring(scaleAt) : ""));
         }
         return resolved;
     }
@@ -130,11 +153,25 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
      */
     static String cacheKey(Path artifactPath, java.util.Map<String, Object> serverArgs) {
         Object gpuLayers = serverArgs == null ? null : serverArgs.get("gpuLayers");
-        StringBuilder key = new StringBuilder(artifactPath.toAbsolutePath().toString());
+        Path parent = artifactPath.toAbsolutePath().getParent();
+        StringBuilder key = new StringBuilder(artifactPath.toAbsolutePath().normalize().toString());
         key.append("#ngl=").append(gpuLayers == null ? "auto" : String.valueOf(gpuLayers));
         try {
             for (String lora : loraFlags(serverArgs)) {
-                key.append("#lora=").append(lora);
+                int scaleAt = scaleColonIndex(lora);
+                String pathPart = scaleAt >= 0 ? lora.substring(0, scaleAt) : lora;
+                String scalePart = scaleAt >= 0 ? lora.substring(scaleAt) : "";
+                String normalizedPath = pathPart;
+                try {
+                    Path loraPath = Paths.get(pathPart);
+                    if (!loraPath.isAbsolute() && parent != null) {
+                        loraPath = parent.resolve(loraPath);
+                    }
+                    normalizedPath = loraPath.toAbsolutePath().normalize().toString();
+                } catch (RuntimeException ignored) {
+                    // keep raw pathPart if invalid path syntax on current OS
+                }
+                key.append("#lora=").append(normalizedPath).append(scalePart);
             }
         } catch (IOException invalid) {
             // invalid options fail at launch; the key just stays adapter-less
@@ -187,6 +224,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
     LlamaServerEndpoint launchWithHealthUrl(Path artifactPath, String healthBaseUrl,
                                             java.util.Map<String, Object> serverArgs)
             throws IOException {
+        validateServerArgs(serverArgs);
         return launchWithHealthUrl(artifactPath, healthBaseUrl, gpuLayers(serverArgs),
                 resolvedLoraFiles(artifactPath, loraFlags(serverArgs)));
     }
@@ -243,7 +281,7 @@ final class ProcessLlamaServerLauncher implements LlamaServerLauncher {
 
         final String baseUrl = "http://127.0.0.1:" + port;
         try {
-            LlamaServerLauncher.awaitHealthy(effectiveHealthUrl, startupTimeoutMillis);
+            LlamaServerLauncher.awaitHealthy(effectiveHealthUrl, startupTimeoutMillis, process);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             killProcess(process);

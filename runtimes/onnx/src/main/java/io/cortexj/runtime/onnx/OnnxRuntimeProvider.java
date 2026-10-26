@@ -3,6 +3,7 @@ package io.cortexj.runtime.onnx;
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
+import ai.onnxruntime.OrtException;
 import io.cortexj.ErrorCode;
 import io.cortexj.error.InferenceException;
 import io.cortexj.error.ModelLoadException;
@@ -313,7 +314,13 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
         @Override
         public CompletionStage<InferenceResponse> executeAsync(final InferenceRequest request) {
             if (executor == null) {
-                return CompletableFuture.completedFuture(execute(request));
+                try {
+                    return CompletableFuture.completedFuture(execute(request));
+                } catch (Throwable failure) {
+                    CompletableFuture<InferenceResponse> failed = new CompletableFuture<InferenceResponse>();
+                    failed.completeExceptionally(failure);
+                    return failed;
+                }
             }
             try {
                 return CompletableFuture.supplyAsync(new java.util.function.Supplier<InferenceResponse>() {
@@ -352,11 +359,12 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
         }
 
         private float[] runSession(int[] ids) {
-            long[] longIds = new long[ids.length];
-            for (int i = 0; i < ids.length; i++) {
-                longIds[i] = ids[i];
+            int[] effectiveIds = (ids == null || ids.length == 0) ? new int[]{0} : ids;
+            long[] longIds = new long[effectiveIds.length];
+            for (int i = 0; i < effectiveIds.length; i++) {
+                longIds[i] = effectiveIds[i];
             }
-            long[] mask = new long[ids.length];
+            long[] mask = new long[effectiveIds.length];
             for (int i = 0; i < mask.length; i++) {
                 mask[i] = 1L;
             }
@@ -369,15 +377,22 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
                 }
                 try (OnnxTensor input = OnnxTensor.createTensor(environment(),
                         LongBuffer.wrap(longIds), new long[]{1, longIds.length})) {
-                    String sessionInputName = inputName != null
-                            ? inputName
-                            : session.getInputNames().iterator().next();
+                    String sessionInputName = inputName;
+                    if (sessionInputName == null) {
+                        java.util.Set<String> names = session.getInputNames();
+                        if (names == null || names.isEmpty()) {
+                            throw new InferenceException(ErrorCode.INFERENCE_FAILED,
+                                    "ONNX model declares no input tensors",
+                                    "Use an ONNX graph with at least one input tensor.");
+                        }
+                        sessionInputName = names.iterator().next();
+                    }
                     Map<String, OnnxTensor> inputs = new LinkedHashMap<String, OnnxTensor>();
                     inputs.put(sessionInputName, input);
                     List<OnnxTensor> owned = new ArrayList<OnnxTensor>();
                     try {
                         for (AuxiliaryInput auxiliary : auxiliaryInputs) {
-                            long[] fill = auxiliary.fillOnes ? mask : new long[ids.length];
+                            long[] fill = auxiliary.fillOnes ? mask : new long[effectiveIds.length];
                             OnnxTensor tensor = OnnxTensor.createTensor(environment(),
                                     LongBuffer.wrap(fill), new long[]{1, fill.length});
                             owned.add(tensor);
@@ -404,7 +419,7 @@ public class OnnxRuntimeProvider implements RuntimeProvider {
                             }
                         }
                     }
-                } catch (Exception e) {
+                } catch (OrtException e) {
                     InferenceException failure = new InferenceException(ErrorCode.INFERENCE_FAILED,
                             "ONNX inference failed: " + e.getMessage(), e);
                     failure.detail("runtime", id.value());

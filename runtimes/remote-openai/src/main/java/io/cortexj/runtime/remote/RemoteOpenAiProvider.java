@@ -58,15 +58,20 @@ public final class RemoteOpenAiProvider implements RuntimeProvider {
             failure.detail("runtime", id.value());
             return RuntimeProbeResult.misconfigured("No remote runtime endpoint configured.", failure);
         }
+        String redactedBaseUrl = io.cortexj.spi.support.HttpGuards.redactUrlForLogging(baseUrl);
         if (context.isOffline()) {
             return RuntimeProbeResult.degraded(
-                    "remote endpoint configured (" + baseUrl + ") but unreachable in offline mode");
+                    "remote endpoint configured (" + redactedBaseUrl + ") but unreachable in offline mode");
         }
+        String apiKey = firstNonEmpty(
+                context.configurationValue(CONFIG_API_KEY),
+                System.getenv("CORTEXJ_REMOTE_API_KEY"),
+                System.getenv("OPENAI_API_KEY"));
         try {
             HttpJsonClient client = HttpJsonClient.fromConfiguration(context.configuration());
-            HttpJsonClient.Response response = client.get(baseUrl, "/v1/models", null);
+            HttpJsonClient.Response response = client.get(baseUrl, "/v1/models", apiKey);
             if (response.isOk()) {
-                return RuntimeProbeResult.available("openai-compatible endpoint reachable: " + baseUrl);
+                return RuntimeProbeResult.available("openai-compatible endpoint reachable: " + redactedBaseUrl);
             }
             return RuntimeProbeResult.degraded("endpoint responded with HTTP " + response.status);
         } catch (Exception e) {

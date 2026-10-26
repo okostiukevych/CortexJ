@@ -288,6 +288,42 @@ class SharedEndpointRegistryTest {
                         + "one small lock per distinct artifact beats a duplicate-process window");
     }
 
+    @Test
+    void evictRemovesAndStopsSharedEndpointEvenWhenRefcountExceedsOne() throws Exception {
+        CountingLauncher launcher = new CountingLauncher();
+        SharedEndpointRegistry registry = new SharedEndpointRegistry();
+        Path model = artifact("crash-shared.gguf");
+        String key = model.toAbsolutePath().toString();
+
+        SharedEndpointRegistry.SharedEndpoint first = registry.acquire(key, launcher, model);
+        SharedEndpointRegistry.SharedEndpoint second = registry.acquire(key, launcher, model);
+        assertEquals(1, launcher.launchCount.get());
+
+        // Simulate crash detected by first handle
+        first.evict();
+        first.release();
+
+        assertEquals(0, registry.liveEndpointCount(),
+                "evict must immediately remove the dead endpoint from the registry");
+        assertEquals(1, secondBasStops(launcher),
+                "evict must stop the dead endpoint immediately even while second handle is open");
+
+        // A new acquire must spawn a fresh server immediately
+        SharedEndpointRegistry.SharedEndpoint respawned = registry.acquire(key, launcher, model);
+        assertEquals(2, launcher.launchCount.get(),
+                "subsequent acquire after evict must launch a fresh server");
+
+        // Releasing the old second handle must not stop the first endpoint a second time or affect respawned
+        second.release();
+        assertEquals(1, launcher.launched.get(0).stopCount.get(),
+                "first endpoint must be stopped at most once");
+        assertEquals(0, launcher.launched.get(1).stopCount.get(),
+                "respawned endpoint must remain running while held");
+
+        respawned.release();
+        assertEquals(1, launcher.launched.get(1).stopCount.get());
+    }
+
     private static void awaitQuietly(CyclicBarrier barrier) {
         try {
             barrier.await(10, TimeUnit.SECONDS);
