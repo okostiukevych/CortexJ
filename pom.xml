@@ -76,6 +76,7 @@
     <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
     <central-publishing-plugin.version>0.12.0</central-publishing-plugin.version>
     <netty.bom.version>4.1.139.Final</netty.bom.version>
+    <jetty.bom.version>9.4.58.v20250814</jetty.bom.version>
         <cyclonedx-maven-plugin.version>2.9.1</cyclonedx-maven-plugin.version>
   </properties>
 
@@ -588,6 +589,29 @@
         <groupId>org.jline</groupId>
         <artifactId>jline-style</artifactId>
         <version>3.29.0</version>
+      </dependency>
+      <!-- Supply chain (post-1.0.2 weekly CVE lane): hadoop-yarn-client pulls
+           org.jline:jline 3.9.0 (CVE-2026-56740/56741, 7.5); second entry
+           pins it to the same patched line as jline-style. -->
+      <dependency>
+        <groupId>org.jline</groupId>
+        <artifactId>jline</artifactId>
+        <version>3.29.0</version>
+      </dependency>
+      <!-- Supply chain (post-1.0.2 weekly CVE lane): jetty arrives transitively
+           via hadoop-client (data-parquet). The 9.4 line is EOL: 9.4.58.v20250814
+           is the final publicly released 9.4.x (fixes CVE-2025-5115); the later
+           9.4 fixes (CVE-2026-2332/5795/10050) exist only behind commercial
+           availability. The BOM pins everything to the final public release;
+           data-parquet excludes the machinery its data path never loads
+           (hadoop's embedded HTTP server security layer + YARN's websocket
+           client) so unpatchable CVEs do not ride the classpath. -->
+      <dependency>
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-bom</artifactId>
+        <version>${jetty.bom.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
       <dependency>
         <groupId>io.netty</groupId>

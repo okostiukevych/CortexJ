@@ -241,6 +241,9 @@ jobs:
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
           key: owasp-nvd-${{ hashFiles('**/pom.xml') }}
+          # Keep the (multi-hour) NVD feed even when the scan step fails on
+          # findings: otherwise every triage round restarts the download.
+          save-always: true
           restore-keys: |
             owasp-nvd-
       - name: Scan (fail on untriaged CVSS >= 7; one retry on NVD-API instability)
