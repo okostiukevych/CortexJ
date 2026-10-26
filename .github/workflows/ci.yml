@@ -222,7 +222,9 @@ jobs:
   # Dependency CVE sweep (Audit-2, issue #242). NVD data is cached between
   # runs; the scan fails on untriaged CVSS>=7 findings (in-repo suppressions
   # carry reasons + review dates). OSS Index stays disabled (no credentials);
-  # remote errors warn only.
+  # remote errors warn only. NVD API outages (524) are a known transient:
+  # the scan retries once and attributes the failure; a dispatch re-run once
+  # NVD probes 200 re-seeds the cache on a cold start.
   cve-scan:
     name: Dependency CVE sweep (OWASP, weekly)
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -241,14 +243,32 @@ jobs:
           key: owasp-nvd-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             owasp-nvd-
-      - name: Scan (fail on untriaged CVSS >= 7)
+      - name: Scan (fail on untriaged CVSS >= 7; one retry on NVD-API instability)
+        shell: bash
         run: |
-          mvn -B org.owasp:dependency-check-maven:12.1.3:check \
-            -DfailBuildOnCVSS=7 \
-            -DossindexAnalyzerEnabled=false \
-            -DossIndexWarnOnlyOnRemoteErrors=true \
-            -DsuppressionFiles=dependency-check-suppressions.xml \
-            -Dformat=JSON
+          set -o pipefail
+          attempt=0
+          while [ "$attempt" -lt 2 ]; do
+            attempt=$((attempt + 1))
+            if mvn -B org.owasp:dependency-check-maven:12.1.3:check \
+              -DfailBuildOnCVSS=7 \
+              -DossindexAnalyzerEnabled=false \
+              -DossIndexWarnOnlyOnRemoteErrors=true \
+              -DsuppressionFiles=dependency-check-suppressions.xml \
+              -Dformat=JSON 2>&1 | tee dependency-check-scan.log; then
+              echo "scan attempt ${attempt}: ok"
+              exit 0
+            fi
+            if ! grep -qE "NvdApiException|NVD Returned Status Code|Error updating the NVD Data|No documents exist" dependency-check-scan.log; then
+              echo "scan attempt ${attempt} failed for a reason other than NVD-API instability; not retrying"
+              exit 1
+            fi
+            echo "scan attempt ${attempt} failed on NVD-API instability (524-style transient); retrying in 5 min"
+            [ "$attempt" -lt 2 ] && sleep 300
+          done
+          echo "NVD API unhealthy across both attempts (known transient outages)."
+          echo "Remedy: once https://services.nvd.nist.gov probes 200, dispatch this workflow again."
+          exit 1
 
   # Supply-chain lane (spec §100/§99): every build produces CycloneDX SBOMs
   # for all modules (collected as an artifact) and a dependency hygiene report
