@@ -138,20 +138,23 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void startSpan(PlatformEvent event, String name) {
-        // audit #101: the span is created inside computeIfAbsent so a losing
-        // concurrent load never starts a span it would then discard unclosed
         if (spansByModel.size() >= MAX_SPAN_KEYS) {
             sweepStaleSpans();
         }
-        java.util.Deque<SpanFrame> stack = spansByModel.get(spanKey(event));
-        if (stack == null) {
-            java.util.Deque<SpanFrame> fresh = new java.util.concurrent.ConcurrentLinkedDeque<SpanFrame>();
-            java.util.Deque<SpanFrame> raced = spansByModel.putIfAbsent(spanKey(event), fresh);
-            stack = raced == null ? fresh : raced;
-        }
-        stack.push(new SpanFrame(tracer.spanBuilder(name)
+        final String key = spanKey(event);
+        final SpanFrame frame = new SpanFrame(tracer.spanBuilder(name)
                 .setAttribute(MODEL, event.attributes().getOrDefault("model", "unknown"))
-                .startSpan(), System.currentTimeMillis()));
+                .startSpan(), System.currentTimeMillis());
+        spansByModel.compute(key, new java.util.function.BiFunction<String, java.util.Deque<SpanFrame>, java.util.Deque<SpanFrame>>() {
+            @Override
+            public java.util.Deque<SpanFrame> apply(String k, java.util.Deque<SpanFrame> existing) {
+                java.util.Deque<SpanFrame> stack = existing != null
+                        ? existing
+                        : new java.util.ArrayDeque<SpanFrame>();
+                stack.push(frame);
+                return stack;
+            }
+        });
     }
 
     private static void recordLong(String raw,
@@ -182,16 +185,17 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void endSpan(PlatformEvent event) {
-        java.util.Deque<SpanFrame> stack = spansByModel.get(spanKey(event));
-        if (stack == null) {
-            return;
-        }
-        SpanFrame frame = stack.poll();
-        if (stack.isEmpty()) {
-            spansByModel.remove(spanKey(event), stack);
-        }
-        if (frame != null) {
-            endFrame(frame, event);
+        final String key = spanKey(event);
+        final SpanFrame[] popped = new SpanFrame[1];
+        spansByModel.computeIfPresent(key, new java.util.function.BiFunction<String, java.util.Deque<SpanFrame>, java.util.Deque<SpanFrame>>() {
+            @Override
+            public java.util.Deque<SpanFrame> apply(String k, java.util.Deque<SpanFrame> stack) {
+                popped[0] = stack.poll();
+                return stack.isEmpty() ? null : stack;
+            }
+        });
+        if (popped[0] != null) {
+            endFrame(popped[0], event);
         }
     }
 
@@ -207,25 +211,27 @@ public final class OtelEventListener implements PlatformEventListener {
     }
 
     private void sweepStaleSpans() {
-        long cutoff = System.currentTimeMillis() - STALE_SPAN_MILLIS;
-        for (Map.Entry<String, java.util.Deque<SpanFrame>> entry : spansByModel.entrySet()) {
-            java.util.Deque<SpanFrame> stack = entry.getValue();
-            if (stack == null || stack.isEmpty()) {
-                spansByModel.remove(entry.getKey(), stack);
-                continue;
-            }
-            boolean allStale = true;
-            for (SpanFrame frame : stack) {
-                if (frame != null && frame.startedMillis >= cutoff) {
-                    allStale = false;
-                    break;
+        final long cutoff = System.currentTimeMillis() - STALE_SPAN_MILLIS;
+        for (String key : spansByModel.keySet()) {
+            final java.util.List<SpanFrame> evicted = new java.util.ArrayList<SpanFrame>();
+            spansByModel.computeIfPresent(key, new java.util.function.BiFunction<String, java.util.Deque<SpanFrame>, java.util.Deque<SpanFrame>>() {
+                @Override
+                public java.util.Deque<SpanFrame> apply(String k, java.util.Deque<SpanFrame> stack) {
+                    java.util.Iterator<SpanFrame> it = stack.iterator();
+                    while (it.hasNext()) {
+                        SpanFrame frame = it.next();
+                        if (frame == null || frame.startedMillis < cutoff) {
+                            if (frame != null) {
+                                evicted.add(frame);
+                            }
+                            it.remove();
+                        }
+                    }
+                    return stack.isEmpty() ? null : stack;
                 }
-            }
-            if (allStale && spansByModel.remove(entry.getKey(), stack)) {
-                SpanFrame frame;
-                while ((frame = stack.poll()) != null) {
-                    endFrame(frame, null);
-                }
+            });
+            for (SpanFrame frame : evicted) {
+                endFrame(frame, null);
             }
         }
     }

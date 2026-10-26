@@ -127,6 +127,11 @@ class CircuitBreakerTest {
             assertFalse(planner.probeShared(provider).isUsable());
             assertEquals(6, provider.probeCount.get(),
                     "after the cooldown one trial probe must go through");
+            // Immediately after the failed half-open trial probe, the circuit must re-open
+            planner.invalidateProbeCache();
+            assertFalse(planner.probeShared(provider).isUsable());
+            assertEquals(6, provider.probeCount.get(),
+                    "a single failed half-open probe must immediately re-open the circuit");
         } finally {
             System.clearProperty("cortexj.planner.circuitCooldownMillis");
         }

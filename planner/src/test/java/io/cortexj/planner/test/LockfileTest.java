@@ -250,4 +250,17 @@ class LockfileTest {
                 () -> ModelLockfile.parse(Arrays.asList(
                         "lockfileVersion: next", "model: org/model")));
     }
+
+    @Test
+    void lockfileSanitizesEmbeddedNewlinesToPreventYamlKeyInjection() {
+        ModelLockfile lockfile = ModelLockfile.builder("org/model\nruntime: injected-runtime")
+                .revision("r1\r\nsha256: injected")
+                .artifactFile("file.gguf\nruntime: evil")
+                .build();
+        ModelLockfile parsed = ModelLockfile.parse(Arrays.asList(lockfile.toYaml().split("\n")));
+        org.junit.jupiter.api.Assertions.assertNull(parsed.runtimeId(),
+                "newlines in model or artifact fields must not inject a runtime key");
+        org.junit.jupiter.api.Assertions.assertNull(parsed.artifactSha256(),
+                "newlines in revision must not inject a sha256 key");
+    }
 }

@@ -358,12 +358,14 @@ public final class DefaultExecutionPlanner implements Planner {
             return;
         }
         boolean checksummed = false;
-        if (outcome.resolved.artifacts() != null) {
+        if (!outcome.viable.isEmpty() && outcome.viable.get(0).artifact() != null
+                && outcome.viable.get(0).artifact().format() != ArtifactFormat.REMOTE) {
+            checksummed = hasStrongChecksum(outcome.viable.get(0).artifact().checksum());
+        } else if (outcome.resolved.artifacts() != null) {
             for (ResolvedArtifact artifact : outcome.resolved.artifacts()) {
                 if (artifact != null && artifact.artifact() != null
-                        && artifact.artifact().checksum() != null
-                        && artifact.artifact().checksum().value() != null
-                        && !artifact.artifact().checksum().value().trim().isEmpty()) {
+                        && artifact.artifact().format().isExecutableWeights()
+                        && hasStrongChecksum(artifact.artifact().checksum())) {
                     checksummed = true;
                     break;
                 }
@@ -375,6 +377,17 @@ public final class DefaultExecutionPlanner implements Planner {
                             + "' carries no trust note and no artifact checksum and will be "
                             + "refused at load under TRUSTED_ONLY."));
         }
+    }
+
+    private static boolean hasStrongChecksum(Checksum checksum) {
+        if (checksum == null || checksum.value() == null || checksum.value().trim().isEmpty()
+                || checksum.algorithm() == null) {
+            return false;
+        }
+        String normalized = checksum.algorithm().trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.equals("sha256") || normalized.equals("sha-256")
+                || normalized.equals("sha384") || normalized.equals("sha-384")
+                || normalized.equals("sha512") || normalized.equals("sha-512");
     }
 
     /**
@@ -630,9 +643,13 @@ public final class DefaultExecutionPlanner implements Planner {
         Long last = lastProbeFailureMillis.get(key);
         long now = System.currentTimeMillis();
         if (last == null || now - last.longValue() >= circuitCooldownMillis()) {
-            // half-open: let one trial through, counting resumes after it
-            consecutiveProbeFailures.remove(key);
-            lastProbeFailureMillis.remove(key);
+            // half-open: let one trial through with counter at threshold - 1 so a
+            // single failed trial immediately re-opens the circuit instead of
+            // allowing another full threshold of failures
+            if (last != null && !lastProbeFailureMillis.replace(key, last, Long.valueOf(now))) {
+                return true;
+            }
+            counter.set(CIRCUIT_BREAKER_THRESHOLD - 1);
             return false;
         }
         return true;

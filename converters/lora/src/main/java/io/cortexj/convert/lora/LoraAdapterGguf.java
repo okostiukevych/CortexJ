@@ -222,11 +222,29 @@ public final class LoraAdapterGguf {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        try (OutputStream stream = Files.newOutputStream(output)) {
-            GgufBinaryWriter writer = new GgufBinaryWriter(stream);
-            doc.writeHeader(writer);
-            for (GgufDocument.TensorInfo tensor : doc.tensors) {
-                writer.write(payload.get(tensor.name));
+        Path temp = output.resolveSibling(output.getFileName() + ".part");
+        boolean moved = false;
+        try {
+            try (OutputStream stream = Files.newOutputStream(temp)) {
+                GgufBinaryWriter writer = new GgufBinaryWriter(stream);
+                doc.writeHeader(writer);
+                for (GgufDocument.TensorInfo tensor : doc.tensors) {
+                    writer.write(payload.get(tensor.name));
+                }
+                writer.flush();
+            }
+            try {
+                Files.move(temp, output, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                Files.move(temp, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            moved = true;
+        } finally {
+            if (!moved) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
             }
         }
         return request.output();

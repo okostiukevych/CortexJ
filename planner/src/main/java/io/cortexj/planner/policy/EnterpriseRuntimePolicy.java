@@ -128,8 +128,7 @@ public final class EnterpriseRuntimePolicy implements ExecutionPolicy {
                     "external downloads are forbidden by the enterprise runtime policy; "
                             + "pull the artifact into the cache first (cortexj pull) or use a local model");
         }
-        if (requireVerifiedArtifacts
-                && (candidate.artifact() == null || candidate.artifact().checksum() == null)) {
+        if (requireVerifiedArtifacts && !hasVerifiedChecksum(candidate)) {
             return PolicyDecision.reject(ReasonCode.POLICY_APPLIED,
                     "unverified artifacts are forbidden by the enterprise runtime policy; "
                             + "artifact '" + (candidate.artifact() == null
@@ -151,6 +150,22 @@ public final class EnterpriseRuntimePolicy implements ExecutionPolicy {
             }
         }
         return PolicyDecision.allow();
+    }
+
+    private static boolean hasVerifiedChecksum(ExecutionCandidate candidate) {
+        if (candidate == null || candidate.artifact() == null
+                || candidate.artifact().checksum() == null) {
+            return false;
+        }
+        String value = candidate.artifact().checksum().value();
+        String algorithm = candidate.artifact().checksum().algorithm();
+        if (value == null || value.trim().isEmpty() || algorithm == null) {
+            return false;
+        }
+        String normalized = algorithm.trim().toLowerCase(Locale.ROOT);
+        return normalized.equals("sha256") || normalized.equals("sha-256")
+                || normalized.equals("sha384") || normalized.equals("sha-384")
+                || normalized.equals("sha512") || normalized.equals("sha-512");
     }
 
     private static Set<String> remoteRuntimes(Properties properties) {

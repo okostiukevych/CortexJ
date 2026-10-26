@@ -143,8 +143,14 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
                 GgufBinaryWriter writer = new GgufBinaryWriter(out);
                 document.writeHeader(writer);
                 byte[] buffer = new byte[1 << 16];
+                long position = 0L;
                 for (SafetensorsFile.TensorInfo tensor : file.tensors()) {
+                    long skip = tensor.dataOffsets[0] - position;
+                    if (skip > 0) {
+                        skipExactly(input, skip, buffer);
+                    }
                     copyExactly(input, out, tensor.byteSize, buffer);
+                    position = tensor.dataOffsets[1];
                 }
                 writer.flush();
             }
@@ -415,8 +421,14 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
         if (!vocab.isObject()) {
             throw new IOException("tokenizer.json has no object vocab");
         }
-        int vocabSize = longOf(config, "vocab_size", 0) > 0
-                ? (int) longOf(config, "vocab_size", 0) : vocab.size();
+        long rawVocabSize = longOf(config, "vocab_size", 0);
+        if (rawVocabSize > 2_000_000L) {
+            throw new IOException("vocab_size in config.json is unreasonably large: " + rawVocabSize);
+        }
+        int vocabSize = rawVocabSize > 0 ? (int) rawVocabSize : vocab.size();
+        if (vocabSize < 0 || vocabSize > 2_000_000) {
+            throw new IOException("vocab_size is unreasonably large: " + vocabSize);
+        }
         String[] tokens = new String[vocabSize];
         java.util.Iterator<String> names = vocab.fieldNames();
         while (names.hasNext()) {
@@ -558,6 +570,18 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
         return fallback;
     }
 
+    private static void skipExactly(InputStream input, long bytes, byte[] buffer) throws IOException {
+        long remaining = bytes;
+        while (remaining > 0) {
+            int chunk = (int) Math.min(buffer.length, remaining);
+            int read = input.read(buffer, 0, chunk);
+            if (read < 0) {
+                throw new IOException("safetensors data section is truncated before tensor offset");
+            }
+            remaining -= read;
+        }
+    }
+
     private static void copyExactly(InputStream input, OutputStream output,
                                     long bytes, byte[] buffer) throws IOException {
         long remaining = bytes;
@@ -634,29 +658,64 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             // tensors sorted by their data offset: the safetensors layout guarantees
             // a contiguous, gap-free data section in this order
             Map<Long, TensorInfo> byOffset = new TreeMap<Long, TensorInfo>();
-            List<String> unsupported = new ArrayList<String>();
             for (Iterator<Map.Entry<String, JsonNode>> fields = header.fields();
                  fields.hasNext();) {
                 Map.Entry<String, JsonNode> field = fields.next();
+                if ("__metadata__".equals(field.getKey())) {
+                    continue;
+                }
                 JsonNode entry = field.getValue();
-                if (!entry.has("dtype")) {
-                    continue; // __metadata__ or unknown non-tensor entries
+                if (!entry.isObject() || !entry.has("dtype") || !entry.has("shape")
+                        || !entry.has("data_offsets")) {
+                    throw new IOException("safetensors entry '" + field.getKey()
+                            + "' is missing required tensor fields (dtype, shape, data_offsets)");
                 }
                 String dtype = entry.path("dtype").asText();
+                if (!supported(dtype)) {
+                    throw new IOException("unsupported safetensors dtype: "
+                            + dtype + " (tensor " + field.getKey() + ")");
+                }
                 JsonNode shapeNode = entry.path("shape");
                 long[] shape = new long[shapeNode.size()];
+                long elements = 1L;
                 for (int i = 0; i < shape.length; i++) {
                     shape[i] = shapeNode.get(i).asLong();
+                    if (shape[i] < 0) {
+                        throw new IOException("safetensors tensor '" + field.getKey()
+                                + "' has negative dimension: " + shape[i]);
+                    }
+                    try {
+                        elements = Math.multiplyExact(elements, shape[i]);
+                    } catch (ArithmeticException overflow) {
+                        throw new IOException("safetensors tensor '" + field.getKey()
+                                + "' shape overflows element count");
+                    }
                 }
                 JsonNode offsets = entry.path("data_offsets");
+                if (!offsets.isArray() || offsets.size() != 2) {
+                    throw new IOException("safetensors tensor '" + field.getKey()
+                            + "' must declare a 2-element data_offsets array");
+                }
                 long[] pair = {offsets.get(0).asLong(), offsets.get(1).asLong()};
                 // audit 2026-10-07: overlapping or inverted data_offsets would
                 // silently duplicate/rewind bytes - reject the file instead.
-                if (pair[1] < pair[0]) {
+                if (pair[0] < 0 || pair[1] < pair[0]) {
                     throw new IOException("safetensors tensor '" + field.getKey()
-                            + "' has inverted data_offsets");
+                            + "' has invalid or inverted data_offsets");
+                }
+                long expectedBytes;
+                try {
+                    expectedBytes = Math.multiplyExact(elements, elementSize(dtype));
+                } catch (ArithmeticException overflow) {
+                    throw new IOException("safetensors tensor '" + field.getKey()
+                            + "' byte size overflows");
                 }
                 TensorInfo tensor = new TensorInfo(field.getKey(), dtype, shape, pair);
+                if (tensor.byteSize != expectedBytes) {
+                    throw new IOException("safetensors tensor '" + field.getKey()
+                            + "' data_offsets span " + tensor.byteSize
+                            + " bytes but shape/dtype require " + expectedBytes + " bytes");
+                }
                 if (byOffset.containsKey(Long.valueOf(pair[0]))) {
                     throw new IOException("safetensors tensor '" + field.getKey()
                             + "' overlaps another tensor at offset " + pair[0]);
@@ -666,14 +725,11 @@ public final class SafetensorsToGgufConverter implements ModelConverter {
             if (byOffset.isEmpty()) {
                 throw new IOException("safetensors header declares no tensors");
             }
-            if (!unsupported.isEmpty()) {
-                throw new IOException("unsupported dtypes: " + unsupported);
-            }
             List<TensorInfo> ordered = new ArrayList<TensorInfo>(byOffset.values());
-            for (int i = 0; i < ordered.size(); i++) {
-                if (!supported(ordered.get(i).dtype)) {
-                    throw new IOException("unsupported safetensors dtype: "
-                            + ordered.get(i).dtype + " (tensor " + ordered.get(i).name + ")");
+            for (int i = 1; i < ordered.size(); i++) {
+                if (ordered.get(i).dataOffsets[0] < ordered.get(i - 1).dataOffsets[1]) {
+                    throw new IOException("safetensors tensor '" + ordered.get(i).name
+                            + "' overlaps previous tensor '" + ordered.get(i - 1).name + "'");
                 }
             }
             return new SafetensorsFile(ordered, 8 + headerSize);

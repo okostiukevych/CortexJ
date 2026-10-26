@@ -174,8 +174,17 @@ public final class GgufFloatConverter implements ModelConverter {
                 }
 
                 byte[] buffer = new byte[1 << 16];
+                long currentDataPos = 0L;
                 for (int i = 0; i < document.tensors.size(); i++) {
                     GgufDocument.TensorInfo tensor = document.tensors.get(i);
+                    if (tensor.offset < currentDataPos) {
+                        throw new IOException("GGUF tensor '" + tensor.name + "' offset "
+                                + tensor.offset + " precedes current stream position " + currentDataPos);
+                    }
+                    if (tensor.offset > currentDataPos) {
+                        reader.skip(tensor.offset - currentDataPos);
+                        currentDataPos = tensor.offset;
+                    }
                     int targetType = targetType(tensor, direction);
                     long declaredSize = tensor.byteSize();
                     if (targetType == tensor.type) {
@@ -186,6 +195,7 @@ public final class GgufFloatConverter implements ModelConverter {
                     } else {
                         convertFloats(reader, writer, tensor.elementCount(), false);
                     }
+                    currentDataPos += declaredSize;
                 }
                 writer.flush();
             }

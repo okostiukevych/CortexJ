@@ -211,7 +211,6 @@ public abstract class RuntimeProviderContract {
         runtime.close();
     }
 
-    @Test
     /**
      * Audit 2026-10-10: server-side runtimes (remote-openai) never fail a
      * load on the artifact path - execution happens on the server and the
@@ -223,6 +222,7 @@ public abstract class RuntimeProviderContract {
         return true;
     }
 
+    @Test
     public void failedLoadIsTypedAndProviderStaysUsable() {
         RuntimeProbeResult probe = provider().probe(contractProbeContext());
         assumeTrue(probe.isUsable(),

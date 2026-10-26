@@ -294,7 +294,7 @@ class GgufFloatConverterTest {
         document.tensors.add(new GgufDocument.TensorInfo(
                 "a.weight", new long[]{first.length, 1L}, GgufDocument.TENSOR_F32, 0L));
         document.tensors.add(new GgufDocument.TensorInfo(
-                "b.weight", new long[]{256L}, 12, 0L));
+                "b.weight", new long[]{256L}, 12, 0L, 144L));
         document.tensors.add(new GgufDocument.TensorInfo(
                 "c.weight", new long[]{last.length, 1L}, GgufDocument.TENSOR_F32, 0L));
         document.tensors.add(new GgufDocument.TensorInfo(

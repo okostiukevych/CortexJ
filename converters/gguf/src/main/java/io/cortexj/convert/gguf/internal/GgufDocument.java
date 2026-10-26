@@ -33,11 +33,11 @@ public final class GgufDocument {
     private static final int TENSOR_Q5_K = 13;
     private static final int TENSOR_Q6_K = 14;
     private static final int TENSOR_Q8_K = 15;
-    private static final int TENSOR_I8 = 24;
-    private static final int TENSOR_I16 = 25;
-    private static final int TENSOR_I32 = 26;
-    private static final int TENSOR_I64 = 27;
-    private static final int TENSOR_F64 = 28;
+    public static final int TENSOR_I8 = 24;
+    public static final int TENSOR_I16 = 25;
+    public static final int TENSOR_I32 = 26;
+    public static final int TENSOR_I64 = 27;
+    public static final int TENSOR_F64 = 28;
 
     private static final int MAX_TENSOR_DIMENSIONS = 63;
     // audit 2026-10-08: unbounded int64 counts allocate without bound below
@@ -104,10 +104,20 @@ public final class GgufDocument {
             }
             switch (type) {
                 case TENSOR_F32:
+                case TENSOR_I32:
+                case 18:
                     return Math.multiplyExact(elementCount(), 4L);
                 case TENSOR_F16:
                 case TENSOR_BF16:
+                case TENSOR_I16:
+                case 17:
                     return Math.multiplyExact(elementCount(), 2L);
+                case TENSOR_I64:
+                case TENSOR_F64:
+                case 19:
+                    return Math.multiplyExact(elementCount(), 8L);
+                case TENSOR_I8:
+                case 16:
                 default:
                     return elementCount();
             }
@@ -275,12 +285,16 @@ public final class GgufDocument {
                 blockElements = 256;
                 blockBytes = 292L;
                 break;
+            case 16:
             case TENSOR_I8:
                 return byteSizeOf(shape, 1L);
+            case 17:
             case TENSOR_I16:
                 return byteSizeOf(shape, 2L);
+            case 18:
             case TENSOR_I32:
                 return byteSizeOf(shape, 4L);
+            case 19:
             case TENSOR_I64:
             case TENSOR_F64:
                 return byteSizeOf(shape, 8L);
@@ -292,7 +306,11 @@ public final class GgufDocument {
             if (dimension < 0) {
                 throw new GgufFormatException("negative GGUF tensor dimension: " + dimension);
             }
-            elements = Math.multiplyExact(elements, dimension);
+            try {
+                elements = Math.multiplyExact(elements, dimension);
+            } catch (ArithmeticException overflow) {
+                throw new GgufFormatException("GGUF tensor dimension product overflow");
+            }
         }
         if (elements % blockElements != 0) {
             throw new GgufFormatException("GGUF tensor of type " + type + " has " + elements
@@ -313,7 +331,11 @@ public final class GgufDocument {
             if (dimension < 0) {
                 throw new GgufFormatException("negative GGUF tensor dimension: " + dimension);
             }
-            elements = Math.multiplyExact(elements, dimension);
+            try {
+                elements = Math.multiplyExact(elements, dimension);
+            } catch (ArithmeticException overflow) {
+                throw new GgufFormatException("GGUF tensor dimension product overflow");
+            }
         }
         try {
             return Math.multiplyExact(elements, bytesPerElement);

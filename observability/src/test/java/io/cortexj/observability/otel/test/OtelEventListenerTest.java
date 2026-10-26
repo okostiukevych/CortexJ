@@ -364,4 +364,41 @@ class OtelEventListenerTest {
         assertEquals(1, downloads.getLongSumData().getPoints().size(),
                 "distinct artifacts must share one series");
     }
+
+    @Test
+    void concurrentLoadsOfSameModelKeyCompleteAllSpansWithoutLeak() throws Exception {
+        final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                .build();
+        final OtelEventListener listener = new OtelEventListener(
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
+
+        final int threads = 8;
+        final java.util.concurrent.CountDownLatch startGate = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch doneGate = new java.util.concurrent.CountDownLatch(threads);
+        for (int i = 0; i < threads; i++) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        startGate.await();
+                        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_STARTED,
+                                PlatformEvent.Level.INFO, "downloading", "shared-model", "weights.gguf", null));
+                        listener.onEvent(event(PlatformEvent.Type.DOWNLOAD_COMPLETED,
+                                PlatformEvent.Level.INFO, "downloaded", "shared-model", "weights.gguf", "64"));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        doneGate.countDown();
+                    }
+                }
+            }).start();
+        }
+        startGate.countDown();
+        assertTrue(doneGate.await(10, java.util.concurrent.TimeUnit.SECONDS));
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        assertEquals(threads, spans.size(), "every concurrent download on the same key must end its span");
+    }
 }

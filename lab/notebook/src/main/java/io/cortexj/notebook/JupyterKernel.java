@@ -54,6 +54,9 @@ public final class JupyterKernel implements AutoCloseable {
         this.iopub = context.createSocket(SocketType.PUB);
         this.stdin = context.createSocket(SocketType.ROUTER);
         this.control = context.createSocket(SocketType.ROUTER);
+        this.heartbeat.setReceiveTimeOut(200);
+        this.shell.setReceiveTimeOut(200);
+        this.control.setReceiveTimeOut(200);
         // port < 0 binds an ephemeral port; bindToRandomPort returns it
         this.heartbeatPort = heartbeatPort < 0
                 ? this.heartbeat.bindToRandomPort("tcp://127.0.0.1")
@@ -214,9 +217,17 @@ public final class JupyterKernel implements AutoCloseable {
 
     private void controlLoop() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
-            List<byte[]> frames = receiveRouted(control);
+            List<byte[]> frames;
+            try {
+                frames = receiveRouted(control);
+            } catch (Throwable e) {
+                if (!running.get() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                continue;
+            }
             if (frames == null) {
-                break;
+                continue;
             }
             try {
                 handleControl(frames);
@@ -237,12 +248,16 @@ public final class JupyterKernel implements AutoCloseable {
         if (delimiterAt < 0 || frames.size() < delimiterAt + 6) {
             return;
         }
+        String signature = new String(frames.get(delimiterAt + 1), java.nio.charset.StandardCharsets.US_ASCII);
         WireMessage message = new WireMessage(
                 new String(frames.get(delimiterAt + 2), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 3), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 4), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 5), java.nio.charset.StandardCharsets.UTF_8),
                 List.of());
+        if (key.length > 0 && !WireMessage.verify(message, key, signature)) {
+            return;
+        }
         List<byte[]> routing = new ArrayList<>(frames.subList(0, delimiterAt));
         switch (message.messageType()) {
             case "shutdown_request": {
@@ -266,34 +281,50 @@ public final class JupyterKernel implements AutoCloseable {
     }
 
     private void sendFrames(ZMQ.Socket socket, List<byte[]> routing, WireMessage message) {
-        // the ROUTER routes by the leading identity frames: echo them back
-        // in the received order
-        for (byte[] routingFrame : routing) {
-            socket.send(routingFrame, ZMQ.SNDMORE);
+        synchronized (socket) {
+            // the ROUTER routes by the leading identity frames: echo them back
+            // in the received order
+            for (byte[] routingFrame : routing) {
+                socket.send(routingFrame, ZMQ.SNDMORE);
+            }
+            socket.send(WireMessage.delimiter(), ZMQ.SNDMORE);
+            socket.send(message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII), ZMQ.SNDMORE);
+            socket.send(message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+            socket.send(message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+            socket.send(message.metadata().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
+            socket.send(message.content().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
-        socket.send(WireMessage.delimiter(), ZMQ.SNDMORE);
-        socket.send(message.signature(key).getBytes(java.nio.charset.StandardCharsets.US_ASCII), ZMQ.SNDMORE);
-        socket.send(message.header().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        socket.send(message.parentHeader().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        socket.send(message.metadata().getBytes(java.nio.charset.StandardCharsets.UTF_8), ZMQ.SNDMORE);
-        socket.send(message.content().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private void heartbeatLoop() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
-            byte[] ping = heartbeat.recv();
-            if (ping == null) {
-                break;
+            try {
+                byte[] ping = heartbeat.recv();
+                if (ping == null) {
+                    continue;
+                }
+                heartbeat.send(ping);
+            } catch (Throwable e) {
+                if (!running.get() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
             }
-            heartbeat.send(ping);
         }
     }
 
     private void shellLoop() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
-            List<byte[]> frames = receiveRouted(shell);
+            List<byte[]> frames;
+            try {
+                frames = receiveRouted(shell);
+            } catch (Throwable e) {
+                if (!running.get() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                continue;
+            }
             if (frames == null) {
-                break;
+                continue;
             }
             try {
                 handleShell(frames);
@@ -319,7 +350,17 @@ public final class JupyterKernel implements AutoCloseable {
                 frames.add(frame);
                 // signature + 4 JSON parts
                 for (int i = 0; i < 5; i++) {
-                    frames.add(socket.recv());
+                    byte[] part = socket.recv();
+                    if (part == null) {
+                        return null;
+                    }
+                    frames.add(part);
+                }
+                while (socket.hasReceiveMore()) {
+                    byte[] extra = socket.recv();
+                    if (extra != null) {
+                        frames.add(extra);
+                    }
                 }
                 return frames;
             }
@@ -341,12 +382,16 @@ public final class JupyterKernel implements AutoCloseable {
         if (delimiterAt < 0 || frames.size() < delimiterAt + 6) {
             return;
         }
+        String signature = new String(frames.get(delimiterAt + 1), java.nio.charset.StandardCharsets.US_ASCII);
         WireMessage message = new WireMessage(
                 new String(frames.get(delimiterAt + 2), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 3), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 4), java.nio.charset.StandardCharsets.UTF_8),
                 new String(frames.get(delimiterAt + 5), java.nio.charset.StandardCharsets.UTF_8),
                 List.of());
+        if (key.length > 0 && !WireMessage.verify(message, key, signature)) {
+            return;
+        }
         List<byte[]> routing = new ArrayList<>(frames.subList(0, delimiterAt));
         switch (message.messageType()) {
             case "kernel_info_request":
@@ -419,8 +464,10 @@ public final class JupyterKernel implements AutoCloseable {
     }
 
     private void sendFrames(ZMQ.Socket socket, byte[][] frames) {
-        for (int i = 0; i < frames.length; i++) {
-            socket.send(frames[i], i < frames.length - 1 ? ZMQ.SNDMORE : 0);
+        synchronized (socket) {
+            for (int i = 0; i < frames.length; i++) {
+                socket.send(frames[i], i < frames.length - 1 ? ZMQ.SNDMORE : 0);
+            }
         }
     }
 
@@ -437,21 +484,26 @@ public final class JupyterKernel implements AutoCloseable {
     }
 
     private static String stringValue(String json, String field, String fallback) {
-        int at = json.indexOf("\"" + field + "\"");
-        if (at < 0) {
-            return fallback;
-        }
-        int colon = json.indexOf(':', at);
-        int open = json.indexOf('"', colon);
-        int close = json.indexOf('"', open + 1);
-        return json.substring(open + 1, close);
+        return WireMessage.stringValue(json, field, fallback);
     }
 
     @Override
     public void close() {
         running.set(false);
+        Thread current = Thread.currentThread();
         for (Thread worker : workers) {
-            worker.interrupt();
+            if (worker != current) {
+                worker.interrupt();
+            }
+        }
+        for (Thread worker : workers) {
+            if (worker != current) {
+                try {
+                    worker.join(2_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
         heartbeat.close();
         shell.close();

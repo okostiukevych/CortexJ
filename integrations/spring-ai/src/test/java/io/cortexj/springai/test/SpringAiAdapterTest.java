@@ -476,4 +476,14 @@ class SpringAiAdapterTest {
                         EmbeddingOptions.builder().build()));
         assertEquals(2, response.getResults().size());
     }
+
+    @Test
+    void constructorFailureClosesOwnedPlatform() {
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJChatModel("nonexistent-Invalid://model"));
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJStreamingChatModel("nonexistent-Invalid://model"));
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJEmbeddingModel("nonexistent-Invalid://model"));
+    }
 }

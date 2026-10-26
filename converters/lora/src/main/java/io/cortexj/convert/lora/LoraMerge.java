@@ -152,61 +152,87 @@ public final class LoraMerge {
         manifest.put("base.model", request.baseModel().toString());
         manifest.put("quant.policy", request.quantPolicy().name());
 
+        Path output = request.outputModel().toAbsolutePath();
+        Path parent = output.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Path temp = output.resolveSibling(output.getFileName() + ".part");
+        boolean moved = false;
         try (var channel = java.nio.channels.FileChannel.open(
                 request.baseModel(), java.nio.file.StandardOpenOption.READ)) {
             for (GgufDocument.TensorInfo tensor : base.tensors) {
                 Mapping mapping = byTensor.get(tensor.name);
+                long trueSize = trueSizes.get(tensor.name);
                 if (mapping == null) {
-                    // untouched: verbatim bytes, true on-disk size
-                    byte[] raw = readBytes(channel,
-                            base.dataStartOffset + tensor.offset, trueSizes.get(tensor.name));
+                    // untouched: stream verbatim bytes on write without holding in heap
                     merged.tensors.add(new GgufDocument.TensorInfo(tensor.name,
-                            tensor.dimensions.clone(), tensor.type, 0,
-                            trueSizes.get(tensor.name)));
-                    newData.put(tensor.name, raw);
+                            tensor.dimensions.clone(), tensor.type, tensor.offset,
+                            trueSize));
                     continue;
                 }
                 byte[] raw = readBytes(channel,
-                        base.dataStartOffset + tensor.offset, trueSizes.get(tensor.name));
+                        base.dataStartOffset + tensor.offset, trueSize);
                 MergedTensor produced = mergeTensor(tensor, raw, mapping, request.quantPolicy());
                 merged.tensors.add(new GgufDocument.TensorInfo(tensor.name,
-                        tensor.dimensions.clone(), produced.type, 0, produced.data.length));
+                        tensor.dimensions.clone(), produced.type, tensor.offset, produced.data.length));
                 newData.put(tensor.name, produced.data);
                 mergedTensors.add(tensor.name);
                 manifest.put("tensor." + tensor.name,
                         GgufDequant.typeName(tensor.type) + "->"
                                 + GgufDequant.typeName(produced.type));
             }
-        }
 
-        // adapter provenance: every adapter checksummed
-        for (Mapping mapping : request.mappings()) {
-            manifest.put("adapter." + mapping.ggufTensor(),
-                    sha256Hex(Files.readAllBytes(mapping.adapterFile())));
-        }
+            // adapter provenance: every adapter checksummed
+            for (Mapping mapping : request.mappings()) {
+                manifest.put("adapter." + mapping.ggufTensor(),
+                        sha256Hex(Files.readAllBytes(mapping.adapterFile())));
+            }
 
-        merged.upsert("cortexj.lora.merged", GgufType.STRING, "true");
-        merged.upsert("cortexj.lora.converter", GgufType.STRING, "cortexj-convert-lora/0.1.0");
-        // the writer pads tensor data to 64: declare it so any reader
-        // (including ours, defaulting to the 32-bit file-format default) lands right
-        merged.upsert("general.alignment", 4, 64);
+            merged.upsert("cortexj.lora.merged", GgufType.STRING, "true");
+            merged.upsert("cortexj.lora.converter", GgufType.STRING, "cortexj-convert-lora/0.1.0");
+            // the writer pads tensor data to 64: declare it so any reader
+            // (including ours, defaulting to the 32-bit file-format default) lands right
+            merged.upsert("general.alignment", 4, 64);
 
-        Path output = request.outputModel();
-        try (OutputStream stream = Files.newOutputStream(output)) {
-            GgufBinaryWriter writer = new GgufBinaryWriter(stream);
-            merged.writeHeader(writer);
-            for (GgufDocument.TensorInfo tensor : merged.tensors) {
-                writer.write(newData.get(tensor.name));
+            try (OutputStream stream = new java.io.BufferedOutputStream(Files.newOutputStream(temp), 1 << 16)) {
+                GgufBinaryWriter writer = new GgufBinaryWriter(stream);
+                merged.writeHeader(writer);
+                for (int i = 0; i < merged.tensors.size(); i++) {
+                    GgufDocument.TensorInfo tensor = merged.tensors.get(i);
+                    byte[] modified = newData.get(tensor.name);
+                    if (modified != null) {
+                        writer.write(modified);
+                    } else {
+                        GgufDocument.TensorInfo baseTensor = base.tensors.get(i);
+                        streamBytes(channel, base.dataStartOffset + baseTensor.offset,
+                                trueSizes.get(tensor.name), writer);
+                    }
+                }
+                writer.flush();
+            }
+            try {
+                Files.move(temp, output, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                Files.move(temp, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            moved = true;
+        } finally {
+            if (!moved) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
             }
         }
-        Path manifestPath = Path.of(output + ".manifest.properties");
+        Path manifestPath = Path.of(request.outputModel() + ".manifest.properties");
         StringBuilder manifestBody = new StringBuilder();
         for (Map.Entry<String, String> entry : manifest.entrySet()) {
             manifestBody.append(entry.getKey()).append('=').append(entry.getValue())
                     .append('\n');
         }
         Files.writeString(manifestPath, manifestBody.toString(), StandardCharsets.UTF_8);
-        return new Result(output, manifestPath, mergedTensors, manifest);
+        return new Result(request.outputModel(), manifestPath, mergedTensors, manifest);
     }
 
     private static final class MergedTensor {
@@ -293,6 +319,30 @@ public final class LoraMerge {
             sizes.put(ordered.get(i).name, end - ordered.get(i).offset);
         }
         return sizes;
+    }
+
+    private static void streamBytes(java.nio.channels.FileChannel channel, long position, long count,
+                                    GgufBinaryWriter writer) throws IOException {
+        if (count < 0) {
+            throw new IOException("tensor data size is negative: " + count);
+        }
+        byte[] chunk = new byte[1 << 16];
+        ByteBuffer buffer = ByteBuffer.wrap(chunk);
+        long remaining = count;
+        long cursor = position;
+        while (remaining > 0) {
+            int toRead = (int) Math.min(chunk.length, remaining);
+            buffer.clear().limit(toRead);
+            while (buffer.hasRemaining()) {
+                int read = channel.read(buffer, cursor);
+                if (read < 0) {
+                    throw new IOException("truncated tensor data at " + cursor);
+                }
+                cursor += read;
+            }
+            writer.write(chunk, 0, toRead);
+            remaining -= toRead;
+        }
     }
 
     private static byte[] readBytes(java.nio.channels.FileChannel channel, long position, long count)

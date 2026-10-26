@@ -91,7 +91,8 @@ public final class GgufDequant {
     }
 
     private static float[] readF32(byte[] data, long elements) throws IOException {
-        require(data, elements * 4, "F32");
+        requireElements(elements);
+        require(data, Math.multiplyExact(elements, 4L), "F32");
         float[] values = new float[(int) elements];
         ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < values.length; i++) {
@@ -101,7 +102,8 @@ public final class GgufDequant {
     }
 
     private static float[] readF16(byte[] data, long elements) throws IOException {
-        require(data, elements * 2, "F16");
+        requireElements(elements);
+        require(data, Math.multiplyExact(elements, 2L), "F16");
         float[] values = new float[(int) elements];
         for (int i = 0; i < values.length; i++) {
             int bits = (data[2 * i] & 0xFF) | ((data[2 * i + 1] & 0xFF) << 8);
@@ -111,13 +113,20 @@ public final class GgufDequant {
     }
 
     private static float[] readBF16(byte[] data, long elements) throws IOException {
-        require(data, elements * 2, "BF16");
+        requireElements(elements);
+        require(data, Math.multiplyExact(elements, 2L), "BF16");
         float[] values = new float[(int) elements];
         for (int i = 0; i < values.length; i++) {
             int bits = ((data[2 * i] & 0xFF) << 16) | ((data[2 * i + 1] & 0xFF) << 24);
             values[i] = Float.intBitsToFloat(bits);
         }
         return values;
+    }
+
+    private static void requireElements(long elements) throws IOException {
+        if (elements < 0 || elements > Integer.MAX_VALUE) {
+            throw new IOException("unreasonable GGUF tensor element count: " + elements);
+        }
     }
 
     private static void require(byte[] data, long needed, String what) throws IOException {
@@ -153,6 +162,7 @@ public final class GgufDequant {
     }
 
     private static float[] dequantQ80(byte[] data, long elements) throws IOException {
+        requireElements(elements);
         int blocks = (int) ((elements + 31) / 32);
         require(data, (long) blocks * 34, "Q8_0");
         float[] values = new float[(int) elements];
@@ -168,6 +178,7 @@ public final class GgufDequant {
 
     private static float[] dequantQ40(byte[] data, long elements, boolean withMin)
             throws IOException {
+        requireElements(elements);
         int blockBytes = withMin ? 20 : 18;
         int blocks = (int) ((elements + 31) / 32);
         require(data, (long) blocks * blockBytes, withMin ? "Q4_1" : "Q4_0");
@@ -189,6 +200,7 @@ public final class GgufDequant {
 
     private static float[] dequantQ50(byte[] data, long elements, boolean withMin)
             throws IOException {
+        requireElements(elements);
         int blockBytes = withMin ? 24 : 22;
         int blocks = (int) ((elements + 31) / 32);
         require(data, (long) blocks * blockBytes, withMin ? "Q5_1" : "Q5_0");

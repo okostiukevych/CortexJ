@@ -110,6 +110,12 @@ class EnterpriseRuntimePolicyTest {
         };
         assertFalse(evaluate(policy, candidate("llamacpp", DeviceType.CPU, false, null, verified)).isRejection());
         assertTrue(evaluate(policy, candidate("llamacpp", DeviceType.CPU, false, null, null)).isRejection());
+        ModelArtifact weakMd5 = new ModelArtifact.Abstract(
+                "model.gguf", ArtifactFormat.GGUF, 1024L,
+                io.cortexj.model.Checksum.of("md5", "d41d8cd98f00b204e9800998ecf8427e"), null) {
+        };
+        assertTrue(evaluate(policy, candidate("llamacpp", DeviceType.CPU, false, null, weakMd5)).isRejection(),
+                "weak checksum algorithms must be rejected by requireVerifiedArtifacts");
     }
 
     @Test

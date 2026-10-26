@@ -253,4 +253,14 @@ class LangChain4jAdapterTest {
         assertEquals(2f, response.content().get(1).vector()[0]);
         assertEquals(3, model.embed("hello").content().vector().length);
     }
+
+    @Test
+    void constructorFailureClosesOwnedPlatform() {
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJChatModel("nonexistent-Invalid://model"));
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJStreamingChatModel("nonexistent-Invalid://model"));
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> new CortexJEmbeddingModel("nonexistent-Invalid://model"));
+    }
 }

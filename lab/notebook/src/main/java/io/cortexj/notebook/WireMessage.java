@@ -101,13 +101,24 @@ public final class WireMessage {
     }
 
     private static String quote(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        if (value == null) {
+            return "\"\"";
+        }
+        return "\"" + value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t") + "\"";
     }
 
     /**
      * Computes the HMAC-SHA256 signature over the four JSON parts.
      */
     public String signature(byte[] key) {
+        if (key == null || key.length == 0) {
+            return "";
+        }
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(key, "HmacSHA256"));
@@ -131,6 +142,9 @@ public final class WireMessage {
      * Verifies a signature against the four JSON parts (constant-time).
      */
     public static boolean verify(WireMessage message, byte[] key, String expectedSignature) {
+        if (key == null || key.length == 0) {
+            return true;
+        }
         if (expectedSignature == null) {
             return false;
         }
@@ -139,14 +153,57 @@ public final class WireMessage {
         return MessageDigest.isEqual(left, right);
     }
 
-    private static String stringValue(String json, String field, String fallback) {
+    static String stringValue(String json, String field, String fallback) {
+        if (json == null || field == null) {
+            return fallback;
+        }
         int at = json.indexOf("\"" + field + "\"");
         if (at < 0) {
             return fallback;
         }
-        int colon = json.indexOf(':', at);
-        int open = json.indexOf('"', colon);
-        int close = json.indexOf('"', open + 1);
-        return json.substring(open + 1, close);
+        int colon = json.indexOf(':', at + field.length() + 2);
+        if (colon < 0) {
+            return fallback;
+        }
+        int open = json.indexOf('"', colon + 1);
+        if (open < 0) {
+            return fallback;
+        }
+        StringBuilder out = new StringBuilder();
+        int i = open + 1;
+        while (i < json.length()) {
+            char ch = json.charAt(i);
+            if (ch == '\\' && i + 1 < json.length()) {
+                char next = json.charAt(i + 1);
+                switch (next) {
+                    case '"':
+                        out.append('"');
+                        break;
+                    case '\\':
+                        out.append('\\');
+                        break;
+                    case 'n':
+                        out.append('\n');
+                        break;
+                    case 'r':
+                        out.append('\r');
+                        break;
+                    case 't':
+                        out.append('\t');
+                        break;
+                    default:
+                        out.append(next);
+                        break;
+                }
+                i += 2;
+                continue;
+            }
+            if (ch == '"') {
+                return out.toString();
+            }
+            out.append(ch);
+            i++;
+        }
+        return fallback;
     }
 }

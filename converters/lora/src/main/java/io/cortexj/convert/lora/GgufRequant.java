@@ -31,7 +31,7 @@ public final class GgufRequant {
     }
 
     private static byte[] toF32(float[] values) {
-        ByteBuffer buffer = ByteBuffer.allocate(values.length * 4)
+        ByteBuffer buffer = ByteBuffer.allocate(Math.multiplyExact(values.length, 4))
                 .order(ByteOrder.LITTLE_ENDIAN);
         for (float value : values) {
             buffer.putFloat(value);
@@ -40,7 +40,7 @@ public final class GgufRequant {
     }
 
     private static byte[] toF16(float[] values) {
-        byte[] data = new byte[values.length * 2];
+        byte[] data = new byte[Math.multiplyExact(values.length, 2)];
         for (int i = 0; i < values.length; i++) {
             int bits = floatToFp16(values[i]);
             data[2 * i] = (byte) (bits & 0xFF);
@@ -50,10 +50,14 @@ public final class GgufRequant {
     }
 
     static int floatToFp16(float value) {
-        int bits = Float.floatToIntBits(value);
-        int sign = (bits >> 16) & 0x8000;
-        int exponent = ((bits >> 23) & 0xFF) - 112;
+        int bits = Float.floatToRawIntBits(value);
+        int sign = (bits >>> 16) & 0x8000;
+        int rawExp = (bits >>> 23) & 0xFF;
         int mantissa = bits & 0x7FFFFF;
+        if (rawExp == 0xFF) {
+            return mantissa != 0 ? (sign | 0x7E00) : (sign | 0x7C00);
+        }
+        int exponent = rawExp - 112;
         if (exponent <= 0) {
             return sign;
         }
@@ -64,8 +68,8 @@ public final class GgufRequant {
     }
 
     private static byte[] toQ80(float[] values) {
-        int blocks = (values.length + 31) / 32;
-        byte[] data = new byte[blocks * 34];
+        int blocks = (int) (((long) values.length + 31L) / 32L);
+        byte[] data = new byte[Math.multiplyExact(blocks, 34)];
         for (int b = 0; b < blocks; b++) {
             float max = 0;
             for (int i = 0; i < 32 && b * 32 + i < values.length; i++) {
@@ -84,8 +88,8 @@ public final class GgufRequant {
     }
 
     private static byte[] toQ40(float[] values) {
-        int blocks = (values.length + 31) / 32;
-        byte[] data = new byte[blocks * 18];
+        int blocks = (int) (((long) values.length + 31L) / 32L);
+        byte[] data = new byte[Math.multiplyExact(blocks, 18)];
         for (int b = 0; b < blocks; b++) {
             float max = 0;
             for (int i = 0; i < 32 && b * 32 + i < values.length; i++) {

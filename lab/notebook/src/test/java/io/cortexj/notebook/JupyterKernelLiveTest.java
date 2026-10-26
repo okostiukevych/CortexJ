@@ -115,6 +115,14 @@ class JupyterKernelLiveTest {
             reader.join(5000);
             assertNotNull(resultContent.get(), "execute_result must arrive on iopub");
             assertTrue(resultContent.get().contains("\"3\""), resultContent.get());
+
+            // execute Java snippet containing quoted string literal
+            WireMessage quotedExec = WireMessage.reply(null, "execute_request",
+                    "{\"code\":\"\\\"hello\\\" + \\\"_world\\\"\",\"silent\":false}");
+            send(shell, quotedExec);
+            WireMessage quotedReply = receive(shell);
+            assertEquals("execute_reply", quotedReply.messageType());
+            assertTrue(quotedReply.content().contains("\"ok\""), quotedReply.content());
         }
     }
 

@@ -59,4 +59,15 @@ class WireMessageTest {
         assertEquals("sess-1", message.sessionId());
         assertFalse(message.messageId().isEmpty());
     }
+
+    @Test
+    void emptyKeyDisablesSigningAndStringValueUnescapesJson() {
+        WireMessage message = WireMessage.reply(null, "execute_reply", "{\"status\":\"ok\"}");
+        assertEquals("", message.signature(new byte[0]));
+        assertTrue(WireMessage.verify(message, new byte[0], ""));
+        assertEquals("\"line1\\nline2\\t\\\"quoted\\\"\"",
+                WireMessage.quoteValue("line1\nline2\t\"quoted\""));
+        assertEquals("String s = \"hello\\nworld\";",
+                WireMessage.stringValue("{\"code\":\"String s = \\\"hello\\\\nworld\\\";\"}", "code", ""));
+    }
 }

@@ -30,10 +30,21 @@ public final class CortexJStreamingChatModel implements StreamingChatModel, Auto
     }
 
     private CortexJStreamingChatModel(CortexJ platform, String modelReference, boolean ownsPlatform) {
-        SpringAiSupport.requireChatAdapterSupport();
-        this.platform = platform;
-        this.ownsPlatform = ownsPlatform;
-        this.handle = platform.models().load(ModelReference.of(modelReference));
+        try {
+            SpringAiSupport.requireChatAdapterSupport();
+            this.platform = platform;
+            this.ownsPlatform = ownsPlatform;
+            this.handle = platform.models().load(ModelReference.of(modelReference));
+        } catch (Throwable t) {
+            if (ownsPlatform && platform != null) {
+                try {
+                    platform.close();
+                } catch (Throwable suppressed) {
+                    t.addSuppressed(suppressed);
+                }
+            }
+            throw t;
+        }
     }
 
     @Override

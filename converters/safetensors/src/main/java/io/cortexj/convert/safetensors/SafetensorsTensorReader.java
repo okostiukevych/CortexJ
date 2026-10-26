@@ -20,6 +20,7 @@ import java.util.Map;
 public final class SafetensorsTensorReader {
 
     public static Map<String, float[]> readAllFloats(Path file) throws IOException {
+        long fileSize = Files.size(file);
         SafetensorsToGgufConverter.SafetensorsFile parsed =
                 SafetensorsToGgufConverter.SafetensorsFile.read(file);
         Map<String, float[]> out = new LinkedHashMap<String, float[]>();
@@ -27,6 +28,11 @@ public final class SafetensorsTensorReader {
             SafetensorsToGgufConverter.SafetensorsFile.skipHeader(in);
             long position = 0;
             for (SafetensorsToGgufConverter.SafetensorsFile.TensorInfo tensor : parsed.tensors()) {
+                if (tensor.byteSize < 0 || tensor.byteSize > Integer.MAX_VALUE
+                        || parsed.headerBytes + tensor.dataOffsets[1] > fileSize) {
+                    throw new IOException("safetensors tensor '" + tensor.name
+                            + "' exceeds file size (" + fileSize + " bytes)");
+                }
                 long skip = tensor.dataOffsets[0] - position;
                 if (skip > 0) {
                     long skipped = 0;
