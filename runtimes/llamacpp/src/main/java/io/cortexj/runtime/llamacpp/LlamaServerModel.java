@@ -261,7 +261,15 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                     return;
                 }
                 connection.setConnectTimeout(CONNECT_TIMEOUT);
-                connection.setReadTimeout(READ_TIMEOUT);
+                // poll-style read timeout: a blocked socket read cannot be
+                // interrupted by cancel()/close() (fd close does not wake a
+                // blocked reader), so the loop wakes at short intervals and
+                // re-checks the cancel/close flags - the ceiling below still
+                // bounds a silent-but-open stream. SO_TIMEOUT is captured by
+                // the socket at connect time, so the short poll value must be
+                // set here - setting it after getResponseCode is a no-op on
+                // the live socket (audit #95 regression fix).
+                connection.setReadTimeout(SSE_POLL_MILLIS);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -274,12 +282,6 @@ final class LlamaServerModel implements RuntimeModel, TextGenerationCapability {
                     throw new IOException("HTTP " + connection.getResponseCode()
                             + " from llama-server streaming endpoint");
                 }
-                // poll-style read timeout: a blocked socket read cannot be
-                // interrupted by cancel()/close() (fd close does not wake a
-                // blocked reader), so the loop wakes at short intervals and
-                // re-checks the cancel/close flags - the ceiling below still
-                // bounds a silent-but-open stream
-                connection.setReadTimeout(SSE_POLL_MILLIS);
                 TokenUsage usage = TokenUsage.unknown();
                 FinishReason finishReason = FinishReason.STOP;
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(
