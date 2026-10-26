@@ -69,7 +69,7 @@ public final class ModelInterfaces {
                     return System.identityHashCode(proxy);
                 }
                 if ("toString".equals(methodName)) {
-                    return "ModelInterfacesProxy[" + handle.descriptor().id() + "]";
+                    return "ModelInterfacesProxy[" + handle.descriptor().canonicalId() + "]";
                 }
                 return method.invoke(this, args);
             }
