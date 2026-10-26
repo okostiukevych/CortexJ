@@ -172,6 +172,14 @@ public final class LocalExperimentStore implements ExperimentStore {
     }
 
     private Path runDirectory(String id) {
+        if (id == null || id.isEmpty() || id.contains("..") || id.contains("/") || id.contains("\\")) {
+            throw new IllegalArgumentException("invalid experiment id: " + id);
+        }
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path resolved = normalizedRoot.resolve(id).normalize();
+        if (!resolved.startsWith(normalizedRoot)) {
+            throw new IllegalArgumentException("experiment id escapes store root: " + id);
+        }
         return root.resolve(id);
     }
 
@@ -268,6 +276,10 @@ public final class LocalExperimentStore implements ExperimentStore {
             for (Map.Entry<String, Long> seed : manifest.seeds().entrySet()) {
                 manifestProperties.setProperty("seed." + seed.getKey(),
                         String.valueOf(seed.getValue()));
+            }
+            for (Map.Entry<String, String> parameter : parameters.entrySet()) {
+                manifestProperties.setProperty("parameter." + parameter.getKey(),
+                        parameter.getValue());
             }
             manifestProperties.setProperty("createdAtMillis",
                     String.valueOf(manifest.createdAtMillis()));

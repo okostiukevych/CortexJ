@@ -125,4 +125,11 @@ class JsonReaderTest {
         assertEquals(1L, root.path("a").asLong());
         assertEquals(0, root.path("b").size());
     }
+
+    @Test
+    void streamExceedingMaxStringLengthFailsFast() {
+        Json.Limits smallLimits = new Json.Limits(16, 16L, 16L);
+        java.io.InputStream oversized = new java.io.ByteArrayInputStream(new byte[256]);
+        assertThrows(Json.JsonParseException.class, () -> JsonReader.parse(oversized, smallLimits));
+    }
 }

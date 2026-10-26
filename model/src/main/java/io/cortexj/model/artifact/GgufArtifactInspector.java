@@ -22,7 +22,9 @@ public final class GgufArtifactInspector implements ArtifactInspector {
 
     private static final long MAX_STRING_LENGTH = 1024L * 1024L;
     private static final long MAX_ARRAY_ELEMENTS = 1024L * 1024L;
-    private static final int MAX_METADATA_DEPTH = 8;
+    private static final long MAX_METADATA_ENTRIES = 65_536L;
+    private static final long MAX_TOTAL_METADATA_BYTES = 32L * 1024L * 1024L;
+    private static final int MAX_METADATA_DEPTH = 4;
 
     private static final int T_UINT8 = 0;
     private static final int T_INT8 = 1;
@@ -33,10 +35,10 @@ public final class GgufArtifactInspector implements ArtifactInspector {
     private static final int T_FLOAT32 = 6;
     private static final int T_BOOL = 7;
     private static final int T_STRING = 8;
-    private static final int T_ARRAY = 10;
-    private static final int T_UINT64 = 11;
-    private static final int T_INT64 = 12;
-    private static final int T_FLOAT64 = 13;
+    private static final int T_ARRAY = 9;
+    private static final int T_UINT64 = 10;
+    private static final int T_INT64 = 11;
+    private static final int T_FLOAT64 = 12;
 
     @Override
     public boolean supports(ArtifactFormat format) {
@@ -62,7 +64,13 @@ public final class GgufArtifactInspector implements ArtifactInspector {
             throw new IllegalArgumentException("Unsupported GGUF version: " + version);
         }
         long tensorCount = reader.readLong();
+        if (tensorCount < 0) {
+            throw new MalformedArtifactException("Invalid GGUF tensor count: " + tensorCount);
+        }
         long metadataCount = reader.readLong();
+        if (metadataCount < 0 || metadataCount > MAX_METADATA_ENTRIES) {
+            throw new MalformedArtifactException("Unreasonable GGUF metadata count: " + metadataCount);
+        }
 
         ArtifactInspection.Builder builder = ArtifactInspection.builder(ArtifactFormat.GGUF);
         builder.metadata("ggufVersion", String.valueOf(version));
@@ -151,9 +159,18 @@ public final class GgufArtifactInspector implements ArtifactInspector {
 
         private final InputStream input;
         private final byte[] buffer = new byte[8];
+        private long totalMetadataBytes;
 
         GgufReader(InputStream input) {
             this.input = input;
+        }
+
+        private void accountBytes(long bytes) {
+            if (bytes < 0 || totalMetadataBytes + bytes > MAX_TOTAL_METADATA_BYTES) {
+                throw new MalformedArtifactException(
+                        "GGUF metadata exceeds maximum byte budget (" + MAX_TOTAL_METADATA_BYTES + " bytes)");
+            }
+            totalMetadataBytes += bytes;
         }
 
         int readInt() throws IOException {
@@ -179,6 +196,7 @@ public final class GgufArtifactInspector implements ArtifactInspector {
             if (length < 0 || length > MAX_STRING_LENGTH) {
                 throw new MalformedArtifactException("Unreasonable GGUF string length: " + length);
             }
+            accountBytes(length);
             byte[] bytes = new byte[(int) length];
             int offset = 0;
             while (offset < bytes.length) {
@@ -224,7 +242,8 @@ public final class GgufArtifactInspector implements ArtifactInspector {
                     if (length < 0 || length > MAX_ARRAY_ELEMENTS) {
                         throw new MalformedArtifactException("Unreasonable array length: " + length);
                     }
-                    List<Object> values = new ArrayList<Object>();
+                    accountBytes(length);
+                    List<Object> values = new ArrayList<Object>((int) Math.min(length, 1024L));
                     for (long i = 0; i < length; i++) {
                         values.add(readValue(elementType, depth + 1));
                     }

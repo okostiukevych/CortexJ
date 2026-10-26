@@ -47,6 +47,8 @@ class LocalExperimentStoreTest {
             ExperimentRecord second = store.get(secondId);
             assertNotNull(first);
             assertNotNull(second);
+            assertEquals("2e-4", first.parameters().get("learningRate"));
+            assertEquals("3", first.parameters().get("epochs"));
             assertEquals(first.parameters(), second.parameters());
             assertEquals(first.metrics(), second.metrics());
             assertEquals(first.datasetFingerprint(), second.datasetFingerprint());
@@ -60,6 +62,8 @@ class LocalExperimentStoreTest {
 
             List<ExperimentRecord> all = store.list();
             assertEquals(2, all.size());
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> store.get("../escape"));
         } finally {
             deleteRecursively(root);
         }

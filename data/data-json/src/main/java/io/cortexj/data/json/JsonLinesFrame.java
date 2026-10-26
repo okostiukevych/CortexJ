@@ -40,14 +40,11 @@ public final class JsonLinesFrame {
         if (records.isEmpty()) {
             throw new IOException("JSONL file has no records: " + path);
         }
-        List<String> names = new ArrayList<>();
+        java.util.LinkedHashSet<String> nameSet = new java.util.LinkedHashSet<>();
         for (Map<String, String> record : records) {
-            for (String key : record.keySet()) {
-                if (!names.contains(key)) {
-                    names.add(key);
-                }
-            }
+            nameSet.addAll(record.keySet());
         }
+        List<String> names = new ArrayList<>(nameSet);
         List<ColType> types = new ArrayList<>();
         for (String name : names) {
             types.add(inferType(records, name));
@@ -211,6 +208,9 @@ public final class JsonLinesFrame {
                         break;
                     case 'n':
                         current.append('\n');
+                        break;
+                    case 'r':
+                        current.append('\r');
                         break;
                     case 't':
                         current.append('\t');

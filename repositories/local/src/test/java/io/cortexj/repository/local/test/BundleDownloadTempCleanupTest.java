@@ -217,4 +217,28 @@ class BundleDownloadTempCleanupTest {
         BundleReport report = bundler().verify(bundle);
         assertTrue(report.isOk(), "the bundle must verify cleanly, issues: " + report.issues());
     }
+
+    @Test
+    void downloadPerformsSingleGetRequest() throws Exception {
+        final java.util.concurrent.atomic.AtomicInteger requestCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        final byte[] payload = new byte[DECLARED_SIZE];
+        server.createContext("/model.bin", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                requestCount.incrementAndGet();
+                drain(exchange);
+                exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                exchange.sendResponseHeaders(200, payload.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(payload);
+                }
+            }
+        });
+        Path bundleDir = tempDir.resolve("single-get-bundle");
+        bundler().create(ModelReference.of("test/bundle-model"), bundleDir,
+                ResolutionContext.create(false, io.cortexj.spi.repository.TokenSupplier.none(), null, null));
+        org.junit.jupiter.api.Assertions.assertEquals(1, requestCount.get(),
+                "downloadInto must not open a second GET request after checking status 200");
+    }
 }

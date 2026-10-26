@@ -40,6 +40,7 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
     public static final String CORTEXJ_HF_TOKEN_ENV = "CORTEXJ_HF_TOKEN";
 
     private static final int MAX_REDIRECTS = 5;
+    private static final int MAX_METADATA_BYTES = 16 * 1024 * 1024;
     private static final int METADATA_CACHE_MAX_ENTRIES = 256;
     private static final int METADATA_FETCH_STRIPES = 16;
     // audit 2026-10-10: thundering-herd guard - N concurrent plan()/load()
@@ -147,13 +148,21 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             throw failure;
         }
         String slug = modelSlug(reference);
-        JsonNode response = fetchModelInfo(slug, token(context));
-        return parseModelInfo(slug, response);
+        String resolvedToken = token(context);
+        JsonNode response = fetchModelInfo(slug, resolvedToken);
+        return parseModelInfo(slug, response, resolvedToken);
     }
 
     public ResolvedModel parseModelInfo(String slug, JsonNode response) {
+        return parseModelInfo(slug, response, null);
+    }
+
+    private ResolvedModel parseModelInfo(String slug, JsonNode response, String token) {
         String canonicalId = response.path("id").asText(slug);
         String revision = response.path("sha").asText(null);
+        if (revision != null) {
+            validateRevision(slug, revision);
+        }
         String pipelineTag = response.path("pipeline_tag").asText(null);
         String license = extractLicense(response);
 
@@ -186,6 +195,7 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             if (fileName == null) {
                 continue;
             }
+            validateRelativeFileName(slug, fileName);
             ArtifactFormat format = ArtifactFormat.fromFileName(fileName);
             if (format == ArtifactFormat.UNKNOWN) {
                 continue;
@@ -225,11 +235,24 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                 metadata.put("quantization", quantization);
             }
             metadata.put("integrity", checksum != null ? "sha256-verified" : "unverified");
-            String downloadUrl = apiBase + "/" + slug + "/resolve/" + (revision == null ? "main" : revision) + "/" + fileName;
+            String resolvedRevision = revision == null ? "main" : revision;
+            String downloadUrl = apiBase + "/" + encodeSlug(slug) + "/resolve/"
+                    + encodeSlug(resolvedRevision) + "/" + encodeSlug(fileName);
+            URI downloadUri;
+            try {
+                downloadUri = URI.create(downloadUrl);
+            } catch (IllegalArgumentException invalidUri) {
+                throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                        "Invalid download URI for artifact " + fileName + " in " + slug,
+                        "Verify the model identifier and artifact filename.", invalidUri);
+            }
 
             HfArtifact artifact = new HfArtifact(canonicalId + "/" + fileName, format, size, checksum, metadata);
             Map<String, String> headers = new LinkedHashMap<String, String>();
-            artifacts.add(new HfResolvedArtifact(artifact, URI.create(downloadUrl), headers));
+            if (token != null && !token.isEmpty()) {
+                headers.put("Authorization", "Bearer " + token);
+            }
+            artifacts.add(new HfResolvedArtifact(artifact, downloadUri, headers));
         }
 
         // audit #61: a community upload or an artifact without a verified LFS
@@ -254,24 +277,89 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
         return new ResolvedModel(builder.artifacts(toArtifactList(artifacts)).build(), revision, id, artifacts);
     }
 
+    private static void validateRevision(String slug, String revision) {
+        if (revision.trim().isEmpty()
+                || revision.indexOf('/') >= 0
+                || revision.indexOf('\\') >= 0
+                || revision.contains("..")
+                || containsControlChar(revision)) {
+            throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "Hugging Face reported an unsafe revision '" + revision + "' for " + slug,
+                    "Verify the Hugging Face repository metadata.");
+        }
+    }
+
+    private static void validateRelativeFileName(String slug, String fileName) {
+        if (fileName.trim().isEmpty()
+                || fileName.startsWith("/")
+                || fileName.endsWith("/")
+                || fileName.indexOf('\\') >= 0
+                || containsControlChar(fileName)) {
+            throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "Hugging Face reported an unsafe artifact path '" + fileName + "' for " + slug,
+                    "Artifact paths must be relative inside the repository.");
+        }
+        String[] segments = fileName.split("/", -1);
+        for (String segment : segments) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                        "Hugging Face reported a path-traversal artifact path '" + fileName + "' for " + slug,
+                        "Artifact paths must not contain '.' or '..' segments.");
+            }
+        }
+    }
+
+    private static boolean containsControlChar(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c == 0x7f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String metadataCacheKey(String slug, String token) {
+        return apiBase + "|" + tokenFingerprint(token) + "|" + slug;
+    }
+
+    private static String tokenFingerprint(String token) {
+        if (token == null || token.isEmpty()) {
+            return "anon";
+        }
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(16);
+            for (int i = 0; i < 8 && i < hash.length; i++) {
+                hex.append(Character.forDigit((hash[i] >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(hash[i] & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return Integer.toHexString(token.hashCode());
+        }
+    }
+
     private JsonNode fetchModelInfo(String slug, String token) {
+        String cacheKey = metadataCacheKey(slug, token);
         long ttl = metadataTtlMillis();
         if (ttl > 0) {
-            CachedMetadata cached = metadataCache.get(slug);
+            CachedMetadata cached = metadataCache.get(cacheKey);
             if (cached != null) {
                 if (System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
                     return cached.node;
                 }
                 // audit #83: evict the expired entry instead of leaving it resident
-                metadataCache.remove(slug);
+                metadataCache.remove(cacheKey);
             }
         }
         // audit 2026-10-10: singleflight per stripe - concurrent misses of
         // the same slug serialize here; the winner fetches, the losers find
         // the fresh entry in the re-check below
-        synchronized (metadataFetchLock(slug)) {
+        synchronized (metadataFetchLock(cacheKey)) {
             if (ttl > 0) {
-                CachedMetadata cached = metadataCache.get(slug);
+                CachedMetadata cached = metadataCache.get(cacheKey);
                 if (cached != null
                         && System.currentTimeMillis() - cached.fetchedAtMillis < ttl) {
                     return cached.node;
@@ -279,7 +367,7 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
             }
             JsonNode response = fetchModelInfoFromApi(slug, token);
             if (ttl > 0) {
-                metadataCache.put(slug, new CachedMetadata(response, System.currentTimeMillis()));
+                metadataCache.put(cacheKey, new CachedMetadata(response, System.currentTimeMillis()));
             }
             return response;
         }
@@ -382,7 +470,8 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                     throw failed;
                 }
                 try (InputStream input = connection.getInputStream()) {
-                    return mapper.readTree(input);
+                    byte[] bodyBytes = readCappedBytes(input, MAX_METADATA_BYTES, slug);
+                    return mapper.readTree(bodyBytes);
                 }
             } catch (IOException e) {
                 if (connection != null) {
@@ -403,6 +492,23 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
                 "Check the apiBase configuration for redirect loops.");
         tooMany.detail("redirects", String.valueOf(MAX_REDIRECTS));
         throw tooMany;
+    }
+
+    private static byte[] readCappedBytes(InputStream input, int maxBytes, String slug) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(Math.min(maxBytes, 16 * 1024));
+        byte[] chunk = new byte[8192];
+        int total = 0;
+        int read;
+        while ((read = input.read(chunk)) >= 0) {
+            total += read;
+            if (total > maxBytes) {
+                throw new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                        "Hugging Face metadata response for " + slug + " exceeds " + maxBytes + " bytes",
+                        "Verify the Hugging Face API endpoint.");
+            }
+            buffer.write(chunk, 0, read);
+        }
+        return buffer.toByteArray();
     }
 
     static String encodeSlug(String slug) {
@@ -464,10 +570,16 @@ public final class HuggingFaceRepositoryProvider implements ModelRepositoryProvi
         return stripped;
     }
 
-    private static String token(ResolutionContext context) {
-        TokenSupplier supplier = context.tokenSupplier();
+    private String token(ResolutionContext context) {
+        TokenSupplier supplier = context == null ? null : context.tokenSupplier();
         if (supplier != null) {
             String token = supplier.token();
+            if (token != null && !token.isEmpty()) {
+                return token;
+            }
+        }
+        if (defaultTokenSupplier != null) {
+            String token = defaultTokenSupplier.token();
             if (token != null && !token.isEmpty()) {
                 return token;
             }

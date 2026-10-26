@@ -28,7 +28,11 @@ public final class Fingerprint {
                     canonical.append('\0');
                 }
                 String cell = row.get(i);
-                canonical.append(cell == null ? "<null>" : cell);
+                if (cell == null) {
+                    canonical.append("0:");
+                } else {
+                    canonical.append("1:").append(cell.length()).append(':').append(cell);
+                }
             }
             canonical.append('\n');
         }

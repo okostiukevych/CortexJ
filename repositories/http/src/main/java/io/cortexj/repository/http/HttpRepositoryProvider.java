@@ -89,8 +89,8 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         if (context.isOffline()) {
             throw offline(url);
         }
-        HeadInfo head = resolveHead(url);
         String fileName = fileNameOf(url);
+        HeadInfo head = resolveHead(url);
         ArtifactFormat format = ArtifactFormat.fromFileName(fileName);
         Map<String, String> metadata = new LinkedHashMap<String, String>();
         // audit 2026-10-08: descriptor metadata surfaces in explanations -
@@ -145,6 +145,33 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
         return failure;
     }
 
+    static java.net.Proxy egressProxy() {
+        String host = System.getProperty("cortexj.proxy.host");
+        if (host == null || host.trim().isEmpty()) {
+            host = System.getenv("CORTEXJ_PROXY_HOST");
+        }
+        String port = System.getProperty("cortexj.proxy.port");
+        if (port == null || port.trim().isEmpty()) {
+            port = System.getenv("CORTEXJ_PROXY_PORT");
+        }
+        if (host == null || host.trim().isEmpty() || port == null || port.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return new java.net.Proxy(java.net.Proxy.Type.HTTP,
+                    new java.net.InetSocketAddress(host.trim(), Integer.parseInt(port.trim())));
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+    }
+
+    private static HttpURLConnection open(URL url) throws IOException {
+        java.net.Proxy proxy = egressProxy();
+        return proxy == null
+                ? (HttpURLConnection) url.openConnection()
+                : (HttpURLConnection) url.openConnection(proxy);
+    }
+
     private static HeadInfo head(String url) {
         try {
             // audit 2026-10-07 (#111): validate the SSRF posture before the
@@ -161,7 +188,7 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
                 failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
                 throw failure;
             }
-            HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+            HttpURLConnection connection = open(new URL(url));
             try {
                 connection.setRequestMethod("HEAD");
                 // audit 2026-10-07 (#111): do not follow redirects blindly -
@@ -227,17 +254,62 @@ public final class HttpRepositoryProvider implements ModelRepositoryProvider {
     }
 
     private static String fileNameOf(String url) {
-        String path = url;
-        int query = path.indexOf('?');
-        if (query >= 0) {
-            path = path.substring(0, query);
+        java.net.URI uri;
+        try {
+            uri = java.net.URI.create(url);
+        } catch (IllegalArgumentException invalidUri) {
+            ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "Invalid HTTP model URL: " + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url),
+                    "Provide a valid HTTP(S) artifact URL with a file name.");
+            failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+            throw failure;
         }
-        int slash = path.lastIndexOf('/');
-        String name = slash >= 0 ? path.substring(slash + 1) : path;
-        if (name.trim().isEmpty()) {
-            name = "http-model";
+        String rawPath = uri.getRawPath();
+        if (rawPath == null || rawPath.isEmpty() || rawPath.endsWith("/")) {
+            ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "HTTP model URL has no artifact file name in path: "
+                            + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url),
+                    "Point the URL directly at a model artifact file (for example '.../model.gguf').");
+            failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+            throw failure;
+        }
+        int slash = rawPath.lastIndexOf('/');
+        String rawName = slash >= 0 ? rawPath.substring(slash + 1) : rawPath;
+        String name;
+        try {
+            name = java.net.URLDecoder.decode(rawName.replace("+", "%2B"), "UTF-8");
+        } catch (java.io.UnsupportedEncodingException | IllegalArgumentException invalidEncoding) {
+            ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "HTTP model URL contains malformed percent-encoding in file name: "
+                            + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url),
+                    "Check the URL path encoding.");
+            failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+            throw failure;
+        }
+        if (name.trim().isEmpty()
+                || ".".equals(name)
+                || "..".equals(name)
+                || name.contains("..")
+                || name.indexOf('/') >= 0
+                || name.indexOf('\\') >= 0
+                || hasControlChars(name)) {
+            ModelResolutionException failure = new ModelResolutionException(ErrorCode.MODEL_RESOLUTION_FAILED,
+                    "HTTP model URL contains an unsafe artifact file name '" + name + "'",
+                    "Point the URL directly at a valid model artifact file.");
+            failure.detail("reference", io.cortexj.spi.support.HttpGuards.redactUrlForLogging(url));
+            throw failure;
         }
         return name;
+    }
+
+    private static boolean hasControlChars(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c == 0x7f) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class HeadInfo {

@@ -112,4 +112,35 @@ class HfMetadataCacheTest {
         assertEquals(model.artifacts().get(0).artifact().checksum().value(),
                 cached.artifacts().get(0).artifact().checksum().value());
     }
+
+    @Test
+    void defaultTokenSupplierPopulatesDownloadHeadersAndScopesCacheByToken() throws Exception {
+        io.cortexj.spi.repository.TokenSupplier defaultSupplier = new io.cortexj.spi.repository.TokenSupplier() {
+            @Override
+            public String token() {
+                return "hf_default_token";
+            }
+        };
+        HuggingFaceRepositoryProvider provider = new HuggingFaceRepositoryProvider(apiBase, defaultSupplier);
+        ModelReference reference = ModelReference.of("hf:test-owner/test-model");
+
+        ResolvedModel resolved = provider.resolve(reference, online());
+        assertEquals("Bearer hf_default_token",
+                resolved.artifacts().get(0).downloadHeaders().get("Authorization"),
+                "defaultTokenSupplier must populate Authorization header on resolved artifacts");
+        assertEquals(1, apiHits.get());
+
+        ResolutionContext otherTokenContext = ResolutionContext.create(false,
+                new io.cortexj.spi.repository.TokenSupplier() {
+                    @Override
+                    public String token() {
+                        return "hf_override_token";
+                    }
+                }, null, null);
+        ResolvedModel resolvedOther = provider.resolve(reference, otherTokenContext);
+        assertEquals("Bearer hf_override_token",
+                resolvedOther.artifacts().get(0).downloadHeaders().get("Authorization"));
+        assertEquals(2, apiHits.get(),
+                "different auth tokens must not share metadata cache entries");
+    }
 }

@@ -532,4 +532,62 @@ class ModelBundlerTest {
             }
         }
     }
+
+    @Test
+    void publishStagedRejectsSymlinkInExistingOutputDirectory() throws Exception {
+        Path sourceFile = tempDir.resolve("weights.gguf");
+        Files.write(sourceFile, new byte[]{1, 2, 3, 4});
+        Path outside = tempDir.resolve("outside");
+        Files.createDirectories(outside);
+
+        Path bundleDir = tempDir.resolve("existing-bundle");
+        Files.createDirectories(bundleDir);
+        Path plantedLink = bundleDir.resolve("weights.gguf");
+        try {
+            Files.createSymbolicLink(plantedLink, outside.resolve("escaped.gguf"));
+        } catch (UnsupportedOperationException | java.io.IOException symlinkNotSupported) {
+            return;
+        }
+
+        ModelBundler bundler = new ModelBundler(
+                java.util.Collections.<io.cortexj.spi.repository.ModelRepositoryProvider>singletonList(localProvider()),
+                null);
+        assertThrows(io.cortexj.error.ArtifactResolutionException.class,
+                new org.junit.jupiter.api.function.Executable() {
+                    @Override
+                    public void execute() {
+                        bundler.create(ModelReference.ofFile(sourceFile.toString()), bundleDir, context(false));
+                    }
+                });
+        assertFalse(Files.exists(outside.resolve("escaped.gguf")),
+                "publishStaged must not write through a pre-planted symlink in outputDirectory");
+    }
+
+    @Test
+    void verifyRejectsSymlinkSubdirectoryForMissingArtifact() throws Exception {
+        Path bundleDir = tempDir.resolve("symlink-verify-bundle");
+        Files.createDirectories(bundleDir);
+        Path outside = tempDir.resolve("outside-verify");
+        Files.createDirectories(outside);
+        try {
+            Files.createSymbolicLink(bundleDir.resolve("sub"), outside);
+        } catch (UnsupportedOperationException | java.io.IOException symlinkNotSupported) {
+            return;
+        }
+        String manifest = "{\"manifestVersion\":\"1.0\",\"id\":\"test/model\",\"revision\":\"r1\","
+                + "\"artifacts\":[{\"file\":\"sub/missing.gguf\",\"format\":\"GGUF\",\"size\":4}]}";
+        Files.write(bundleDir.resolve(ModelBundler.MANIFEST_FILE),
+                manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        final ModelBundler bundler = new ModelBundler(
+                java.util.Collections.<io.cortexj.spi.repository.ModelRepositoryProvider>singletonList(localProvider()),
+                null);
+        assertThrows(io.cortexj.error.ArtifactResolutionException.class,
+                new org.junit.jupiter.api.function.Executable() {
+                    @Override
+                    public void execute() {
+                        bundler.verify(bundleDir);
+                    }
+                });
+    }
 }

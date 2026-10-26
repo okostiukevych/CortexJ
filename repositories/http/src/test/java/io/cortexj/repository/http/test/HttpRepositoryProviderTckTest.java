@@ -117,4 +117,35 @@ class HttpRepositoryProviderTckTest extends RepositoryProviderContract {
             System.setProperty("cortexj.http.allowPrivateHosts", "true");
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void rejectsUrlWithoutFilenameOrWithEncodedTraversal() {
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.cortexj.error.ModelResolutionException.class,
+                new org.junit.jupiter.api.function.Executable() {
+                    @Override
+                    public void execute() {
+                        provider().resolve(ModelReference.of("http://127.0.0.1:" + port + "/models/"),
+                                onlineContext());
+                    }
+                });
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.cortexj.error.ModelResolutionException.class,
+                new org.junit.jupiter.api.function.Executable() {
+                    @Override
+                    public void execute() {
+                        provider().resolve(ModelReference.of("http://127.0.0.1:" + port + "/models/%2e%2e"),
+                                onlineContext());
+                    }
+                });
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.cortexj.error.ModelResolutionException.class,
+                new org.junit.jupiter.api.function.Executable() {
+                    @Override
+                    public void execute() {
+                        provider().resolve(ModelReference.of("http://127.0.0.1:" + port + "/models/a%2fb.gguf"),
+                                onlineContext());
+                    }
+                });
+    }
 }

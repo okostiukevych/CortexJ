@@ -245,17 +245,53 @@ public final class LocalRepositoryProvider implements ModelRepositoryProvider {
             // must hold for the real path or a manifest entry can link
             // outside the root and be read through the link
             Path realRoot = normalizedRoot.toRealPath();
-            Path realResolved = resolved.toRealPath();
-            if (!realResolved.startsWith(realRoot)) {
-                ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
-                        "Artifact path resolves outside the model directory through a symlink: " + child,
-                        "Manifest artifact paths must stay inside the model directory "
-                                + "and must not symlink outside it.");
-                escaped.detail("path", child);
-                throw escaped;
+            Path relative = normalizedRoot.relativize(resolved);
+            Path current = normalizedRoot;
+            for (int i = 0; i < relative.getNameCount(); i++) {
+                Path part = relative.getName(i);
+                if (part.toString().isEmpty()) {
+                    continue;
+                }
+                current = current.resolve(part);
+                if (Files.isSymbolicLink(current)) {
+                    Path realCurrent;
+                    try {
+                        realCurrent = current.toRealPath();
+                    } catch (IOException danglingLink) {
+                        ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                                "Artifact path contains a dangling symlink: " + child,
+                                "Manifest artifact paths must stay inside the model directory "
+                                        + "and must not symlink outside it.");
+                        escaped.detail("path", child);
+                        throw escaped;
+                    }
+                    if (!realCurrent.startsWith(realRoot)) {
+                        ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                                "Artifact path resolves outside the model directory through a symlink: " + child,
+                                "Manifest artifact paths must stay inside the model directory "
+                                        + "and must not symlink outside it.");
+                        escaped.detail("path", child);
+                        throw escaped;
+                    }
+                }
+            }
+            Path probe = resolved;
+            while (probe != null && !Files.exists(probe, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                probe = probe.getParent();
+            }
+            if (probe != null) {
+                Path realProbe = probe.toRealPath();
+                if (!realProbe.startsWith(realRoot)) {
+                    ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                            "Artifact path resolves outside the model directory through a symlink: " + child,
+                            "Manifest artifact paths must stay inside the model directory "
+                                    + "and must not symlink outside it.");
+                    escaped.detail("path", child);
+                    throw escaped;
+                }
             }
         } catch (IOException e) {
-            // missing artifact entry: fall back to the lexical check above
+            // root directory does not exist yet: lexical + symlink checks above still apply
         }
         return resolved;
     }

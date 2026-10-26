@@ -110,4 +110,23 @@ class LocalRepositoryProviderTest {
         assertEquals(TaskCapability.TEXT_GENERATION, LocalRepositoryProvider.taskForFormat(ArtifactFormat.GGUF));
         assertEquals(TaskCapability.EMBEDDING, LocalRepositoryProvider.taskForFormat(ArtifactFormat.ONNX));
     }
+
+    @Test
+    void symlinkSubdirectoryWithMissingFileInManifestRejected() throws IOException {
+        Path directory = tempDir.resolve("symlink-model");
+        Files.createDirectories(directory);
+        Path outside = tempDir.resolve("outside-model-dir");
+        Files.createDirectories(outside);
+        try {
+            Files.createSymbolicLink(directory.resolve("sub"), outside);
+        } catch (UnsupportedOperationException | IOException symlinkNotSupported) {
+            return;
+        }
+        String manifest = "{\"id\":\"evil\",\"artifacts\":[{\"file\":\"sub/missing.gguf\"}]}";
+        Files.write(directory.resolve(LocalRepositoryProvider.MANIFEST_FILE),
+                manifest.getBytes(StandardCharsets.UTF_8));
+        ArtifactResolutionException exception = assertThrows(ArtifactResolutionException.class,
+                () -> provider.resolve(ModelReference.ofFile(directory.toString()), context()));
+        assertEquals("CORTEXJ-ARTIFACT-2005", exception.code());
+    }
 }

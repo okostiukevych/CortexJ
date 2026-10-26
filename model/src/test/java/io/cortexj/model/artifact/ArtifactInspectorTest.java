@@ -159,8 +159,8 @@ class ArtifactInspectorTest {
         writeLong(bytes, 0L);
         writeLong(bytes, 1L);
         writeString(bytes, "test.array");
-        writeInt(bytes, 10);
-        writeInt(bytes, 10);
+        writeInt(bytes, 9);
+        writeInt(bytes, 9);
         writeLong(bytes, 2L);
         writeLong(bytes, 2L);
         return bytes.toByteArray();
@@ -185,7 +185,7 @@ class ArtifactInspectorTest {
         writeLong(bytes, 0L);
         writeLong(bytes, 1L);
         writeString(bytes, "test.array");
-        writeInt(bytes, 10);
+        writeInt(bytes, 9);
         writeInt(bytes, 5);
         writeLong(bytes, length);
         return bytes.toByteArray();
@@ -221,7 +221,7 @@ class ArtifactInspectorTest {
         GgufArtifactInspector.GgufReader reader =
                 new GgufArtifactInspector.GgufReader(new ByteArrayInputStream(new byte[64]));
         MalformedArtifactException e = assertThrows(MalformedArtifactException.class,
-                () -> reader.readValue(10, 8));
+                () -> reader.readValue(9, 8));
         assertTrue(e.getMessage().contains("nested deeper"));
     }
 
@@ -272,5 +272,26 @@ class ArtifactInspectorTest {
         ArtifactInspectorRegistry registry = new ArtifactInspectorRegistry();
         Path missing = Files.createTempDirectory("registry-missing").resolve("nope.gguf");
         assertNull(registry.inspectOrNull(ArtifactFormat.GGUF, missing));
+    }
+
+    @Test
+    void ggufInspectorRejectsExcessiveMetadataCountAndNegativeTensorCount() throws IOException {
+        GgufArtifactInspector inspector = new GgufArtifactInspector();
+
+        ByteArrayOutputStream hugeMetaCount = new ByteArrayOutputStream();
+        writeInt(hugeMetaCount, GGUF_MAGIC);
+        writeInt(hugeMetaCount, 3);
+        writeLong(hugeMetaCount, 1L);
+        writeLong(hugeMetaCount, 65_537L);
+        assertThrows(MalformedArtifactException.class,
+                () -> inspector.inspectStream(new ByteArrayInputStream(hugeMetaCount.toByteArray())));
+
+        ByteArrayOutputStream negTensors = new ByteArrayOutputStream();
+        writeInt(negTensors, GGUF_MAGIC);
+        writeInt(negTensors, 3);
+        writeLong(negTensors, -1L);
+        writeLong(negTensors, 0L);
+        assertThrows(MalformedArtifactException.class,
+                () -> inspector.inspectStream(new ByteArrayInputStream(negTensors.toByteArray())));
     }
 }

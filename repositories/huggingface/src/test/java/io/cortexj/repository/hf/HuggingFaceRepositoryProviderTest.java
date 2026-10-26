@@ -136,4 +136,26 @@ class HuggingFaceRepositoryProviderTest {
                 () -> provider.parseModelInfo("x/y", mapper.readTree(json)));
         assertEquals("CORTEXJ-MODEL-1004", exception.code());
     }
+
+    @Test
+    void rejectsPathTraversalInSiblingFilenameAndRevision() throws Exception {
+        String badFileJson = "{\"id\":\"x/y\",\"sha\":\"abc\",\"siblings\":[{\"rfilename\":\"../escape.gguf\"}]}";
+        assertThrows(ModelResolutionException.class,
+                () -> provider.parseModelInfo("x/y", mapper.readTree(badFileJson)));
+
+        String badShaJson = "{\"id\":\"x/y\",\"sha\":\"../abc\",\"siblings\":[{\"rfilename\":\"model.gguf\"}]}";
+        assertThrows(ModelResolutionException.class,
+                () -> provider.parseModelInfo("x/y", mapper.readTree(badShaJson)));
+    }
+
+    @Test
+    void encodesSpecialCharactersInArtifactDownloadUri() throws Exception {
+        String json = "{\"id\":\"x/y\",\"sha\":\"abc123\",\"siblings\":["
+                + "{\"rfilename\":\"sub dir/model #1.gguf\",\"size\":10}]}";
+        ResolvedModel model = provider.parseModelInfo("x/y", mapper.readTree(json));
+        assertEquals(1, model.artifacts().size());
+        String uri = model.artifacts().get(0).location().toString();
+        assertTrue(uri.endsWith("/x/y/resolve/abc123/sub%20dir/model%20%231.gguf"),
+                "special characters in rfilename must be percent-encoded in download URI, got: " + uri);
+    }
 }

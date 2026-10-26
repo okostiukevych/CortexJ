@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 public final class JsonReader {
 
     private static final int BUFFER = 64 * 1024;
+    public static final int DEFAULT_MAX_INPUT_BYTES = 64 * 1024 * 1024;
 
     private JsonReader() {
     }
@@ -44,8 +45,9 @@ public final class JsonReader {
 
     public static Json parse(InputStream utf8, Json.Limits limits)
             throws Json.JsonParseException, IOException {
-        byte[] bytes = readAll(utf8);
-        return parse(bytes, limits);
+        Json.Limits effective = limits == null ? Json.Limits.defaults() : limits;
+        byte[] bytes = readAll(utf8, maxInputBytes(effective));
+        return parse(bytes, effective);
     }
 
     public static Json parse(String text) throws Json.JsonParseException {
@@ -366,11 +368,27 @@ public final class JsonReader {
         }
     }
 
-    private static byte[] readAll(InputStream in) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(BUFFER);
-        byte[] buffer = new byte[BUFFER];
+    private static long maxInputBytes(Json.Limits limits) {
+        long scaled = (long) limits.maxStringLength() * 8L;
+        if (scaled < 4096L) {
+            scaled = 4096L;
+        }
+        return Math.min((long) DEFAULT_MAX_INPUT_BYTES, scaled);
+    }
+
+    private static byte[] readAll(InputStream in, long maxBytes)
+            throws IOException, Json.JsonParseException {
+        int chunkSize = (int) Math.min((long) BUFFER, Math.max(1024L, maxBytes));
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(chunkSize, 8192));
+        byte[] buffer = new byte[chunkSize];
+        long total = 0L;
         int read;
         while ((read = in.read(buffer)) > 0) {
+            total += read;
+            if (total > maxBytes) {
+                throw new Json.JsonParseException(
+                        "JSON input stream exceeds maximum allowed size of " + maxBytes + " bytes");
+            }
             out.write(buffer, 0, read);
         }
         return out.toByteArray();

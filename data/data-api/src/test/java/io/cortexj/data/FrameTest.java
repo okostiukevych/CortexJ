@@ -51,6 +51,12 @@ class FrameTest {
                 new SimpleColumn<Long>("id", Long.class, Arrays.asList(9L, 2L, 3L)),
                 new SimpleColumn<String>("text", String.class, Arrays.asList("a", null, "c"))));
         assertTrue(!Fingerprint.ofFrame(frame()).equals(Fingerprint.ofFrame(other)));
+
+        // Null cell vs literal "<null>" string must produce distinct fingerprints
+        Frame literalNull = new SimpleFrame(frame().schema(), Arrays.<Column<?>>asList(
+                new SimpleColumn<Long>("id", Long.class, Arrays.asList(1L, 2L, 3L)),
+                new SimpleColumn<String>("text", String.class, Arrays.asList("a", "<null>", "c"))));
+        assertTrue(!Fingerprint.ofFrame(frame()).equals(Fingerprint.ofFrame(literalNull)));
     }
 
     @Test

@@ -62,6 +62,7 @@ public final class ModelBundler {
     }
 
     public Path create(ModelReference reference, Path outputDirectory, ResolutionContext context) {
+        ensureNoSymlinkInTargetTree(outputDirectory, outputDirectory);
         ResolvedModel resolved = resolve(reference, context);
         // audit 2026-10-10: a failed create must not leave a half-written
         // bundle behind (a later verify would report confusing checksum
@@ -95,12 +96,14 @@ public final class ModelBundler {
     }
 
     private void buildBundle(ResolvedModel resolved, ResolutionContext context, Path outputDirectory) {
+        ensureNoSymlinkInTargetTree(outputDirectory, outputDirectory);
         try {
             Files.createDirectories(outputDirectory);
         } catch (IOException e) {
             throw new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
                     "Cannot create bundle directory " + outputDirectory + ": " + e.getMessage(), e);
         }
+        ensureNoSymlinkInTargetTree(outputDirectory, outputDirectory);
 
         ArrayNode artifactEntries = mapper.createArrayNode();
         ObjectNode manifest = mapper.createObjectNode();
@@ -129,7 +132,8 @@ public final class ModelBundler {
         Map<String, Path> tokenizerSources = new LinkedHashMap<String, Path>();
         for (ResolvedArtifact artifact : resolved.artifacts()) {
             String fileName = uniqueBundleName(resolved, artifact, usedNames);
-            Path target = outputDirectory.resolve(fileName);
+            Path target = resolveContained(outputDirectory, fileName);
+            ensureNoSymlinkInTargetTree(outputDirectory, target);
             Path parent = target.getParent();
             if (parent != null) {
                 try {
@@ -139,14 +143,7 @@ public final class ModelBundler {
                             "Cannot create bundle subdirectory " + parent + ": "
                                     + directoriesFailed.getMessage(), directoriesFailed);
                 }
-                // audit 2026-10-10: a pre-planted symlink in the output tree
-                // (e.g. outputDirectory/onnx -> /etc) must not receive the
-                // artifact bytes - verify() is symlink-safe, create() now is too
-                if (Files.isSymbolicLink(parent)) {
-                    throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
-                            "Bundle subdirectory is a symlink: " + parent,
-                            "Bundle artifact paths must stay inside the bundle directory.");
-                }
+                ensureNoSymlinkInTargetTree(outputDirectory, target);
             }
             obtainInto(artifact, resolved, target, context);
             verifyDeclaredChecksum(artifact, fileName, target);
@@ -185,6 +182,7 @@ public final class ModelBundler {
         manifest.set("artifacts", artifactEntries);
 
         Path manifestPath = outputDirectory.resolve(MANIFEST_FILE);
+        ensureNoSymlinkInTargetTree(outputDirectory, manifestPath);
         try {
             mapper.writerWithDefaultPrettyPrinter().writeValue(manifestPath.toFile(), manifest);
         } catch (IOException e) {
@@ -214,7 +212,12 @@ public final class ModelBundler {
             }
             for (Map.Entry<String, Path> tokenizer : tokenizerSources.entrySet()) {
                 Path sibling = directory.resolve(tokenizer.getKey());
-                if (Files.isRegularFile(sibling)) {
+                if (Files.isSymbolicLink(sibling)) {
+                    throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                            "Bundle tokenizer sibling is a symlink: " + sibling,
+                            "Bundle artifact paths must stay inside the bundle directory.");
+                }
+                if (Files.isRegularFile(sibling, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
                     continue;
                 }
                 try {
@@ -341,14 +344,64 @@ public final class ModelBundler {
                 .detail("reference", reference.value());
     }
 
+    private static void ensureNoSymlinkInTargetTree(Path rootDirectory, Path targetPath) {
+        Path normalizedRoot = rootDirectory.toAbsolutePath().normalize();
+        Path normalizedTarget = targetPath.toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(normalizedRoot)) {
+            throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                    "Bundle directory is a symlink: " + rootDirectory,
+                    "Bundle artifact paths must stay inside the bundle directory.");
+        }
+        if (!normalizedTarget.startsWith(normalizedRoot)) {
+            throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                    "Bundle artifact path escapes the bundle directory: " + targetPath,
+                    "Bundle artifact paths must stay inside the bundle directory.");
+        }
+        Path relative = normalizedRoot.relativize(normalizedTarget);
+        Path current = normalizedRoot;
+        for (int i = 0; i < relative.getNameCount(); i++) {
+            Path part = relative.getName(i);
+            if (part.toString().isEmpty()) {
+                continue;
+            }
+            current = current.resolve(part);
+            if (Files.isSymbolicLink(current)) {
+                throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                        "Bundle path contains a symlink: " + current,
+                        "Bundle artifact paths must stay inside the bundle directory.");
+            }
+        }
+        if (Files.exists(normalizedRoot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            try {
+                Path realRoot = normalizedRoot.toRealPath();
+                Path probe = normalizedTarget;
+                while (probe != null && !Files.exists(probe, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    probe = probe.getParent();
+                }
+                if (probe != null && probe.startsWith(normalizedRoot)) {
+                    Path realProbe = probe.toRealPath();
+                    if (!realProbe.startsWith(realRoot)) {
+                        throw new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                                "Bundle path resolves outside the bundle directory through a symlink: " + targetPath,
+                                "Bundle artifact paths must stay inside the bundle directory.");
+                    }
+                }
+            } catch (IOException e) {
+                throw new ArtifactResolutionException(ErrorCode.ARTIFACT_RESOLUTION_FAILED,
+                        "Cannot verify real path containment for " + targetPath + ": " + e.getMessage(), e);
+            }
+        }
+    }
+
     /**
      * Moves a staged bundle into its final location. A missing output
      * directory is published with a single atomic rename; an existing one
      * is updated entry by entry (bundle create merges into existing dirs).
      */
     private static void publishStaged(Path staging, Path outputDirectory) {
+        ensureNoSymlinkInTargetTree(outputDirectory, outputDirectory);
         try {
-            if (!Files.exists(outputDirectory)) {
+            if (!Files.exists(outputDirectory, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
                 Path parent = outputDirectory.getParent();
                 if (parent != null) {
                     Files.createDirectories(parent);
@@ -360,6 +413,7 @@ public final class ModelBundler {
                     // fall through to the per-entry move below
                 }
             }
+            ensureNoSymlinkInTargetTree(outputDirectory, outputDirectory);
             final Path staged = staging;
             final Path output = outputDirectory;
             Files.walkFileTree(staging, new java.nio.file.SimpleFileVisitor<Path>() {
@@ -367,7 +421,10 @@ public final class ModelBundler {
                 public java.nio.file.FileVisitResult preVisitDirectory(
                         Path dir, java.nio.file.attribute.BasicFileAttributes attrs)
                         throws IOException {
-                    Files.createDirectories(output.resolve(staged.relativize(dir)));
+                    Path targetDir = output.resolve(staged.relativize(dir));
+                    ensureNoSymlinkInTargetTree(output, targetDir);
+                    Files.createDirectories(targetDir);
+                    ensureNoSymlinkInTargetTree(output, targetDir);
                     return java.nio.file.FileVisitResult.CONTINUE;
                 }
 
@@ -376,6 +433,7 @@ public final class ModelBundler {
                         Path file, java.nio.file.attribute.BasicFileAttributes attrs)
                         throws IOException {
                     Path target = output.resolve(staged.relativize(file));
+                    ensureNoSymlinkInTargetTree(output, target);
                     try {
                         Files.move(file, target,
                                 StandardCopyOption.ATOMIC_MOVE,
@@ -473,25 +531,9 @@ public final class ModelBundler {
         Path temp = target.resolveSibling(target.getFileName() + ".part-"
                 + Long.toHexString(System.nanoTime())
                 + "-" + TEMP_SEQUENCE.incrementAndGet());
-        RedirectTarget redirect = resolveRedirectTarget(artifact);
-        URL url = redirect.url;
-        Map<String, String> effectiveHeaders = redirect.headers;
-        HttpURLConnection connection = open(url);
+        HttpURLConnection connection = openFollowingRedirects(artifact);
         boolean moved = false;
         try {
-            connection.setConnectTimeout(CONNECT_TIMEOUT);
-            connection.setReadTimeout(READ_TIMEOUT);
-            // audit #128: auto-follow stays off - redirects are followed
-            // manually below (resolveRedirectTarget) so every hop passes the
-            // SSRF guard and credentials never leak cross-origin
-            connection.setInstanceFollowRedirects(false);
-            for (Map.Entry<String, String> header : effectiveHeaders.entrySet()) {
-                connection.setRequestProperty(header.getKey(), header.getValue());
-            }
-            int status = connection.getResponseCode();
-            if (status != 200) {
-                throw new IOException("HTTP " + status + " while downloading " + artifact.artifact().id());
-            }
             try (InputStream input = connection.getInputStream()) {
                 long copied = 0L;
                 try (java.io.OutputStream output = Files.newOutputStream(temp)) {
@@ -537,13 +579,8 @@ public final class ModelBundler {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
             }
             moved = true;
-        } catch (IOException downloadFailure) {
-            connection.disconnect();
-            throw downloadFailure;
-        } catch (RuntimeException downloadFailure) {
-            connection.disconnect();
-            throw downloadFailure;
         } finally {
+            connection.disconnect();
             if (!moved) {
                 // audit M-10: a failed or truncated download must not strand
                 // a model-sized partial next to the bundle
@@ -596,7 +633,7 @@ public final class ModelBundler {
                 : (HttpURLConnection) url.openConnection(proxy);
     }
 
-    private RedirectTarget resolveRedirectTarget(ResolvedArtifact artifact) throws IOException {
+    private HttpURLConnection openFollowingRedirects(ResolvedArtifact artifact) throws IOException {
         String raw = artifact.location() == null ? null : artifact.location().toString();
         if (raw == null || raw.isEmpty()) {
             throw new IOException("Artifact " + artifact.artifact().id() + " has no downloadable location");
@@ -619,17 +656,21 @@ public final class ModelBundler {
                 throw new IOException("Redirect target uses a non-http(s) scheme: "
                         + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(current.toString()));
             }
-            HttpURLConnection probe = open(current.toURL());
+            HttpURLConnection connection = open(current.toURL());
+            boolean keepOpen = false;
             try {
-                probe.setConnectTimeout(CONNECT_TIMEOUT);
-                probe.setReadTimeout(READ_TIMEOUT);
-                probe.setInstanceFollowRedirects(false);
+                connection.setConnectTimeout(CONNECT_TIMEOUT);
+                connection.setReadTimeout(READ_TIMEOUT);
+                // audit #128: auto-follow stays off - redirects are followed
+                // manually below so every hop passes the SSRF guard and
+                // credentials never leak cross-origin
+                connection.setInstanceFollowRedirects(false);
                 for (Map.Entry<String, String> header : hopHeaders.entrySet()) {
-                    probe.setRequestProperty(header.getKey(), header.getValue());
+                    connection.setRequestProperty(header.getKey(), header.getValue());
                 }
-                int status = probe.getResponseCode();
+                int status = connection.getResponseCode();
                 if (status >= 300 && status < 400) {
-                    String target = probe.getHeaderField("Location");
+                    String target = connection.getHeaderField("Location");
                     if (target == null) {
                         throw new IOException("Redirect without Location header from "
                                 + io.cortexj.spi.support.HttpGuards.redactUrlForLogging(
@@ -649,24 +690,17 @@ public final class ModelBundler {
                     continue;
                 }
                 if (status == 200) {
-                    return new RedirectTarget(current.toURL(), hopHeaders);
+                    keepOpen = true;
+                    return connection;
                 }
-                throw new IOException("HTTP " + status + " while resolving " + artifact.artifact().id());
+                throw new IOException("HTTP " + status + " while downloading " + artifact.artifact().id());
             } finally {
-                probe.disconnect();
+                if (!keepOpen) {
+                    connection.disconnect();
+                }
             }
         }
         throw new IOException("Too many redirects while downloading " + artifact.artifact().id());
-    }
-
-    private static final class RedirectTarget {
-        final URL url;
-        final Map<String, String> headers;
-
-        RedirectTarget(URL url, Map<String, String> headers) {
-            this.url = url;
-            this.headers = headers;
-        }
     }
 
     private static boolean sameOrigin(java.net.URI a, java.net.URI b) {
@@ -744,17 +778,53 @@ public final class ModelBundler {
             // must hold for the real path or a bundle entry can link
             // outside the root and be hashed/read through the link
             Path realRoot = normalizedRoot.toRealPath();
-            Path realResolved = resolved.toRealPath();
-            if (!realResolved.startsWith(realRoot)) {
-                ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
-                        "Bundle artifact path resolves outside the bundle directory through a symlink: " + child,
-                        "Manifest artifact paths must stay inside the bundle directory "
-                                + "and must not symlink outside it.");
-                escaped.detail("path", child);
-                throw escaped;
+            Path relative = normalizedRoot.relativize(resolved);
+            Path current = normalizedRoot;
+            for (int i = 0; i < relative.getNameCount(); i++) {
+                Path part = relative.getName(i);
+                if (part.toString().isEmpty()) {
+                    continue;
+                }
+                current = current.resolve(part);
+                if (Files.isSymbolicLink(current)) {
+                    Path realCurrent;
+                    try {
+                        realCurrent = current.toRealPath();
+                    } catch (IOException danglingLink) {
+                        ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                                "Bundle artifact path contains a dangling symlink: " + child,
+                                "Manifest artifact paths must stay inside the bundle directory "
+                                        + "and must not symlink outside it.");
+                        escaped.detail("path", child);
+                        throw escaped;
+                    }
+                    if (!realCurrent.startsWith(realRoot)) {
+                        ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                                "Bundle artifact path resolves outside the bundle directory through a symlink: " + child,
+                                "Manifest artifact paths must stay inside the bundle directory "
+                                        + "and must not symlink outside it.");
+                        escaped.detail("path", child);
+                        throw escaped;
+                    }
+                }
+            }
+            Path probe = resolved;
+            while (probe != null && !Files.exists(probe, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                probe = probe.getParent();
+            }
+            if (probe != null) {
+                Path realProbe = probe.toRealPath();
+                if (!realProbe.startsWith(realRoot)) {
+                    ArtifactResolutionException escaped = new ArtifactResolutionException(ErrorCode.ARTIFACT_PATH_TRAVERSAL,
+                            "Bundle artifact path resolves outside the bundle directory through a symlink: " + child,
+                            "Manifest artifact paths must stay inside the bundle directory "
+                                    + "and must not symlink outside it.");
+                    escaped.detail("path", child);
+                    throw escaped;
+                }
             }
         } catch (IOException e) {
-            // missing artifact entry: fall back to the lexical check above
+            // root directory does not exist yet: lexical + symlink checks above still apply
         }
         return resolved;
     }
@@ -781,8 +851,8 @@ public final class ModelBundler {
         }
         String[] segments = relative.split("/");
         StringBuilder hierarchical = new StringBuilder();
-        for (String segment : segments) {
-            String cleaned = sanitizeSegment(segment);
+        for (int i = 0; i < segments.length; i++) {
+            String cleaned = sanitizeSegment(segments[i]);
             if (cleaned.isEmpty()) {
                 cleaned = "artifact";
             }
@@ -790,13 +860,21 @@ public final class ModelBundler {
                 hierarchical.append('/');
             }
             hierarchical.append(cleaned);
+            if (i < segments.length - 1) {
+                String currentPrefix = hierarchical.toString();
+                String existingPrefix = findExistingDirectoryPrefix(usedNames, currentPrefix);
+                if (existingPrefix != null) {
+                    hierarchical.setLength(0);
+                    hierarchical.append(existingPrefix);
+                }
+            }
         }
         String candidate = hierarchical.length() == 0 ? "artifact" : hierarchical.toString();
         // audit 2026-10-10: case-sensitive dedup let A/x and a/x coexist in
         // the manifest and overwrite each other on case-insensitive
         // filesystems (macOS/Windows) - collide on the folded name
-        if (!usedNames.contains(candidate.toLowerCase(Locale.ROOT))) {
-            usedNames.add(candidate.toLowerCase(Locale.ROOT));
+        if (!containsIgnoreCase(usedNames, candidate)) {
+            usedNames.add(candidate);
             return candidate;
         }
         int slash = candidate.lastIndexOf('/');
@@ -807,11 +885,31 @@ public final class ModelBundler {
         String extension = dot <= 0 ? "" : leaf.substring(dot);
         for (int counter = 2; ; counter++) {
             String disambiguated = directory + stem + "-" + counter + extension;
-            if (!usedNames.contains(disambiguated.toLowerCase(Locale.ROOT))) {
-                usedNames.add(disambiguated.toLowerCase(Locale.ROOT));
+            if (!containsIgnoreCase(usedNames, disambiguated)) {
+                usedNames.add(disambiguated);
                 return disambiguated;
             }
         }
+    }
+
+    private static boolean containsIgnoreCase(java.util.Set<String> usedNames, String candidate) {
+        String folded = candidate.toLowerCase(Locale.ROOT);
+        for (String existing : usedNames) {
+            if (existing.toLowerCase(Locale.ROOT).equals(folded)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String findExistingDirectoryPrefix(java.util.Set<String> usedNames, String prefix) {
+        String targetPrefix = (prefix + "/").toLowerCase(Locale.ROOT);
+        for (String existing : usedNames) {
+            if (existing.toLowerCase(Locale.ROOT).startsWith(targetPrefix)) {
+                return existing.substring(0, prefix.length());
+            }
+        }
+        return null;
     }
 
     private static String sanitizeSegment(String name) {

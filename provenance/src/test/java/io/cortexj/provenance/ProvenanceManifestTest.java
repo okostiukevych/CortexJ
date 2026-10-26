@@ -59,4 +59,36 @@ class ProvenanceManifestTest {
     void nullModelIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> ProvenanceManifest.builder().build());
     }
+
+    @Test
+    void collectionsAreUnmodifiableAndIgnoreNullEntries() {
+        ProvenanceManifest manifest = ProvenanceManifest.builder()
+                .model(ModelIdentity.of("hf:test", "rev1"))
+                .parameter("k", "v")
+                .parameter(null, "ignored")
+                .parameter("ignored", null)
+                .seed("s", 7L)
+                .seed(null, 99L)
+                .parentArtifact("parent-1")
+                .parentArtifact(null)
+                .checksum("weights.gguf", "sha256:123")
+                .checksum(null, "sha256:ignored")
+                .checksum("ignored.gguf", null)
+                .build();
+
+        assertEquals(1, manifest.parameters().size());
+        assertEquals(1, manifest.seeds().size());
+        assertEquals(1, manifest.parentArtifacts().size());
+        assertEquals(1, manifest.checksums().size());
+        assertEquals("", manifest.producer());
+        assertEquals("", manifest.jdk());
+        assertEquals("", manifest.osArch());
+        assertEquals("", manifest.backend());
+        assertEquals("", manifest.hardware());
+
+        assertThrows(UnsupportedOperationException.class, () -> manifest.parameters().put("x", "y"));
+        assertThrows(UnsupportedOperationException.class, () -> manifest.seeds().put("x", 1L));
+        assertThrows(UnsupportedOperationException.class, () -> manifest.parentArtifacts().add("x"));
+        assertThrows(UnsupportedOperationException.class, () -> manifest.checksums().put("x", "y"));
+    }
 }
