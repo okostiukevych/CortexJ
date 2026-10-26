@@ -91,4 +91,33 @@ class HttpGuardsTest {
         assertEquals("CORTEXJ_HTTP_ALLOW_PRIVATE_HOSTS", HttpGuards.ALLOW_PRIVATE_HOSTS_ENV);
         assertEquals("cortexj.http.allowPrivateHosts", HttpGuards.ALLOW_PRIVATE_HOSTS_PROPERTY);
     }
+
+    @Test
+    void cgnatUlaZeroAndMappedPrivateAddressesAreBlocked() throws Exception {
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://100.64.0.1/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://100.127.255.254/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://0.0.0.1/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://192.0.0.1/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://255.255.255.255/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://[fc00::1]/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://[fd12:3456:789a::1]/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://[::ffff:127.0.0.1]/model.gguf"));
+        assertThrows(IllegalArgumentException.class,
+                () -> HttpGuards.requirePublicHttpUrl("http://[::ffff:169.254.169.254]/model.gguf"));
+
+        // Public IPv4 outside CGNAT (100.63.255.255 and 100.128.0.1) is allowed
+        HttpGuards.requirePublicHttpUrl("http://100.63.255.255/model.gguf");
+        HttpGuards.requirePublicHttpUrl("http://100.128.0.1/model.gguf");
+        org.junit.jupiter.api.Assertions.assertFalse(
+                HttpGuards.isBlockedAddress(java.net.InetAddress.getByName("8.8.8.8")));
+        assertTrue(HttpGuards.isBlockedAddress(null));
+    }
 }

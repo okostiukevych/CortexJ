@@ -73,11 +73,7 @@ public final class HttpGuards {
                     + redactUrlForLogging(url));
         }
         for (InetAddress address : addresses) {
-            if (address.isLoopbackAddress()
-                    || address.isSiteLocalAddress()
-                    || address.isLinkLocalAddress()
-                    || address.isAnyLocalAddress()
-                    || address.isMulticastAddress()) {
+            if (isBlockedAddress(address)) {
                 throw new IllegalArgumentException("model URL resolves to a private address ("
                         + address.getHostAddress() + ") which is blocked by default: "
                         + redactUrlForLogging(url) + ". For intranet mirrors set "
@@ -85,6 +81,87 @@ public final class HttpGuards {
                         + ALLOW_PRIVATE_HOSTS_ENV + "=1.");
             }
         }
+    }
+
+    static boolean isBlockedAddress(InetAddress address) {
+        if (address == null) {
+            return true;
+        }
+        if (address.isLoopbackAddress()
+                || address.isSiteLocalAddress()
+                || address.isLinkLocalAddress()
+                || address.isAnyLocalAddress()
+                || address.isMulticastAddress()) {
+            return true;
+        }
+        byte[] raw = address.getAddress();
+        if (raw == null) {
+            return true;
+        }
+        if (raw.length == 4) {
+            return isBlockedIpv4Bytes(raw[0] & 0xFF, raw[1] & 0xFF, raw[2] & 0xFF, raw[3] & 0xFF);
+        }
+        if (raw.length == 16) {
+            // IPv6 Unique Local Addresses (fc00::/7, RFC 4193)
+            if ((raw[0] & 0xFE) == 0xFC) {
+                return true;
+            }
+            // IPv4-mapped (::ffff:w.x.y.z) and IPv4-compatible (::w.x.y.z) IPv6 addresses
+            boolean prefixZeros = true;
+            for (int i = 0; i < 10; i++) {
+                if (raw[i] != 0) {
+                    prefixZeros = false;
+                    break;
+                }
+            }
+            if (prefixZeros) {
+                int b10 = raw[10] & 0xFF;
+                int b11 = raw[11] & 0xFF;
+                if ((b10 == 0xFF && b11 == 0xFF) || (b10 == 0x00 && b11 == 0x00)) {
+                    if (isBlockedIpv4Bytes(raw[12] & 0xFF, raw[13] & 0xFF, raw[14] & 0xFF, raw[15] & 0xFF)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isBlockedIpv4Bytes(int b0, int b1, int b2, int b3) {
+        // 0.0.0.0/8 ("this" network, RFC 1122)
+        if (b0 == 0) {
+            return true;
+        }
+        // 10.0.0.0/8 (private)
+        if (b0 == 10) {
+            return true;
+        }
+        // 100.64.0.0/10 (Carrier-Grade NAT / shared address space, RFC 6598)
+        if (b0 == 100 && (b1 & 0xC0) == 64) {
+            return true;
+        }
+        // 127.0.0.0/8 (loopback)
+        if (b0 == 127) {
+            return true;
+        }
+        // 169.254.0.0/16 (link-local / cloud metadata)
+        if (b0 == 169 && b1 == 254) {
+            return true;
+        }
+        // 172.16.0.0/12 (private)
+        if (b0 == 172 && (b1 & 0xF0) == 16) {
+            return true;
+        }
+        // 192.0.0.0/24 (IETF protocol assignments, RFC 6890)
+        if (b0 == 192 && b1 == 0 && b2 == 0) {
+            return true;
+        }
+        // 192.168.0.0/16 (private)
+        if (b0 == 192 && b1 == 168) {
+            return true;
+        }
+        // 255.255.255.255/32 (limited broadcast)
+        return b0 == 255 && b1 == 255 && b2 == 255 && b3 == 255;
     }
 
     /**

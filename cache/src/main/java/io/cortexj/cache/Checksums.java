@@ -77,17 +77,17 @@ public final class Checksums {
         if (normalized.equals("sha256") || normalized.equals("sha-256")) {
             return "SHA-256";
         }
-        // audit 2026-10-07: MD5/SHA-1 are rejected as trust inputs - a
-        // repository that declares them gets a fast typed failure instead of
-        // a silently weak integrity check (collision-prone digests must never
-        // satisfy TRUSTED_ONLY or cache verification).
-        if (normalized.equals("sha1") || normalized.equals("sha-1")
-                || normalized.equals("md5")) {
-            throw new IllegalArgumentException(
-                    "Weak checksum algorithm '" + algorithm + "' is not accepted; "
-                            + "use SHA-256 or stronger.");
+        if (normalized.equals("sha384") || normalized.equals("sha-384")) {
+            return "SHA-384";
         }
-        return algorithm.trim();
+        if (normalized.equals("sha512") || normalized.equals("sha-512")) {
+            return "SHA-512";
+        }
+        // Only strong cryptographic digests on the explicit allowlist are accepted;
+        // MD5, SHA-1, and non-standard/weak aliases are rejected.
+        throw new IllegalArgumentException(
+                "Weak or unsupported checksum algorithm '" + algorithm + "' is not accepted; "
+                        + "use SHA-256, SHA-384, or SHA-512.");
     }
 
     private static String toHex(byte[] bytes) {
