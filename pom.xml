@@ -588,15 +588,15 @@
       <dependency>
         <groupId>org.jline</groupId>
         <artifactId>jline-style</artifactId>
-        <version>3.29.0</version>
+        <version>3.30.14</version>
       </dependency>
       <!-- Supply chain (post-1.0.2 weekly CVE lane): hadoop-yarn-client pulls
-           org.jline:jline 3.9.0 (CVE-2026-56740/56741, 7.5); second entry
-           pins it to the same patched line as jline-style. -->
+           org.jline:jline 3.9.0 (CVE-2026-56740/56741, 7.5). The patched
+           release is 3.30.14 (earlier 3.29.0 still matches the ranges). -->
       <dependency>
         <groupId>org.jline</groupId>
         <artifactId>jline</artifactId>
-        <version>3.29.0</version>
+        <version>3.30.14</version>
       </dependency>
       <!-- Supply chain (post-1.0.2 weekly CVE lane): jetty arrives transitively
            via hadoop-client (data-parquet). The 9.4 line is EOL: 9.4.58.v20250814

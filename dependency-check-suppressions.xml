@@ -41,4 +41,21 @@
         <cve>CVE-2026-0994</cve>
     </suppress>
 
+    <!--
+      FALSE POSITIVE (verified 2026-10-27): CVE-2026-54285 is a memory
+      exhaustion flaw in the OpenTelemetry **JavaScript** client
+      (@opentelemetry/core < 2.8.0, fixed 2.8.0): unbounded allocation when
+      parsing oversized baggage headers. The OWASP CPE heuristic matched our
+      JVM artifact io.opentelemetry:opentelemetry-api by the shared vendor
+      product name "opentelemetry" alone. The jar contains no JavaScript and
+      no shared code with the JS client; the Java baggage propagator is an
+      in-memory, W3C-bounded implementation. Suppressed across the
+      io.opentelemetry group for this CVE; review 2027-01-27.
+    -->
+    <suppress>
+        <notes>False positive: OpenTelemetry JS-client DoS matched the Java opentelemetry-api jar by CPE name collision</notes>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry/.*$</packageUrl>
+        <cve>CVE-2026-54285</cve>
+    </suppress>
+
 </suppressions>

@@ -37,29 +37,21 @@
       <version>3.4.3</version>
       <!-- Supply chain (post-1.0.2 weekly CVE lane): this module reads/writes
            Parquet files. The hadoop fat client drags in its embedded HTTP
-           server security layer (jetty-security: CVE-2026-5795/10050, fixes
-           exist only on unattainable 9.4.61/9.4.63) and the YARN websocket
-           client (jetty-io/http: CVE-2026-2332, needs unreachable 9.4.60)
-           which the data path never loads. Excluding them keeps the
-           unpatchable-on-9.4 CVEs off the classpath. jetty-servlet/webapp/xml
-           util(-ajax) remain, pinned by the parent jetty-bom to 9.4.58.v20250814
-           (final public 9.4 release, fixes CVE-2025-5115). -->
+           server machinery (jetty-* incl. the security layer) and the YARN
+           websocket client; the data path never loads them (zero source
+           imports). Their remaining CVEs (CVE-2026-2332/5795/10050) are fixed
+           only on the unpublished 9.4.60-63 line, and any 9.4.x artifact still
+           matches the affected ranges - even 9.4.58 (final public release).
+           The whole jetty family is therefore excluded; the parent jetty-bom
+           pins any future occurrence to 9.4.58.v20250814 (CVE-2025-5115). -->
       <exclusions>
         <exclusion>
           <groupId>org.eclipse.jetty</groupId>
-          <artifactId>jetty-security</artifactId>
+          <artifactId>*</artifactId>
         </exclusion>
         <exclusion>
           <groupId>org.eclipse.jetty.websocket</groupId>
-          <artifactId>websocket-client</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.eclipse.jetty.websocket</groupId>
-          <artifactId>websocket-common</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.eclipse.jetty.websocket</groupId>
-          <artifactId>websocket-api</artifactId>
+          <artifactId>*</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
