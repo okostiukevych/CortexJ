@@ -34,7 +34,7 @@
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client</artifactId>
-      <version>3.4.3</version>
+      <version>3.5.0</version>
       <!-- Supply chain (post-1.0.2 weekly CVE lane): this module reads/writes
            Parquet files. The hadoop fat client drags in its embedded HTTP
            server machinery (jetty-* incl. the security layer) and the YARN
