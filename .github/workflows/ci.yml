@@ -236,42 +236,44 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Cache dependency-check data (NVD feed)
-        uses: actions/cache@v6
+      - name: Restore dependency-check data (NVD feed)
+        uses: actions/cache/restore@v6
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
-          key: owasp-nvd-${{ hashFiles('**/pom.xml') }}
-          # Keep the (multi-hour) NVD feed even when the scan step fails on
-          # findings: otherwise every triage round restarts the download.
-          save-always: true
+          # Stable key on purpose: the multi-hour feed must survive pom edits
+          # and failed scan attempts. Incremental runs are the steady state.
+          key: owasp-nvd-feed-v1
           restore-keys: |
             owasp-nvd-
-      - name: Scan (fail on untriaged CVSS >= 7; one retry on NVD-API instability)
+      - name: Scan (fail on untriaged CVSS >= 7)
         shell: bash
         run: |
           set -o pipefail
-          attempt=0
-          while [ "$attempt" -lt 2 ]; do
-            attempt=$((attempt + 1))
-            if mvn -B org.owasp:dependency-check-maven:12.1.3:check \
-              -DfailBuildOnCVSS=7 \
-              -DossindexAnalyzerEnabled=false \
-              -DossIndexWarnOnlyOnRemoteErrors=true \
-              -DsuppressionFiles=dependency-check-suppressions.xml \
-              -Dformat=JSON 2>&1 | tee dependency-check-scan.log; then
-              echo "scan attempt ${attempt}: ok"
-              exit 0
-            fi
-            if ! grep -qE "NvdApiException|NVD Returned Status Code|Error updating the NVD Data|No documents exist" dependency-check-scan.log; then
-              echo "scan attempt ${attempt} failed for a reason other than NVD-API instability; not retrying"
-              exit 1
-            fi
-            echo "scan attempt ${attempt} failed on NVD-API instability (524-style transient); retrying in 5 min"
-            [ "$attempt" -lt 2 ] && sleep 300
-          done
-          echo "NVD API unhealthy across both attempts (known transient outages)."
-          echo "Remedy: once https://services.nvd.nist.gov probes 200, dispatch this workflow again."
+          # One pass: a second full attempt would need a second multi-hour
+          # download, which cannot fit the 6h job cap when NVD throttles.
+          # dependency-check recovers from transient 524s mid-download itself.
+          if mvn -B org.owasp:dependency-check-maven:12.1.3:check \
+            -DfailBuildOnCVSS=7 \
+            -DossindexAnalyzerEnabled=false \
+            -DossIndexWarnOnlyOnRemoteErrors=true \
+            -DsuppressionFiles=dependency-check-suppressions.xml \
+            -Dformat=JSON 2>&1 | tee dependency-check-scan.log; then
+            echo "scan: ok"
+            exit 0
+          fi
+          echo "scan failed; classifying the cause for the record:"
+          grep -cE "NvdApiException|NVD Returned Status Code|Error updating the NVD Data|No documents exist" dependency-check-scan.log \
+            || true
+          grep -E "identified with vulnerabilities that have a CVSS" dependency-check-scan.log | tail -20 || true
           exit 1
+      # Save the feed even when the scan fails or is cancelled after a long
+      # download: the next run then continues incrementally instead of cold.
+      - name: Save dependency-check data (NVD feed)
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: owasp-nvd-feed-v1
 
   # Supply-chain lane (spec §100/§99): every build produces CycloneDX SBOMs
   # for all modules (collected as an artifact) and a dependency hygiene report
